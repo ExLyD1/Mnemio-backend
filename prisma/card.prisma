@@ -1,0 +1,35 @@
+model Card {
+  id         String   @id @default(uuid())
+  userId     String
+  deckId     String
+  word       String
+  definition String
+  phonetic   String?
+  imageUrl   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User  @relation(fields: [userId], references: [id])
+  deck Deck  @relation(fields: [deckId], references: [id])
+  cardProgresses CardProgress[]
+
+  @@map("cards")
+}
+
+model CardProgress {
+  id             String    @id @default(uuid())
+  userId         String
+  cardId         String
+  interval       Int       @default(1)
+  easeFactor     Float     @default(2.5)
+  repetitions    Int       @default(0)
+  nextReviewAt   DateTime  @default(now())
+  lastReviewedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+  card Card @relation(fields: [cardId], references: [id])
+
+  @@map("card_progresses")
+}

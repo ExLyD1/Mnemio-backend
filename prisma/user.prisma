@@ -1,0 +1,56 @@
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  avatarUrl    String?
+  xp           Int      @default(0)
+  streak       Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cards               Card[]
+  decks               Deck[]
+  folders             Folder[]
+  cardProgresses      CardProgress[]
+  studySessions       StudySession[]
+  achievements        Achievement[]
+  deckCollaborators   DeckCollaborator[]
+  folderCollaborators FolderCollaborator[]
+
+  @@map("users")
+}
+
+model Achievement {
+  id          String   @id @default(uuid())
+  userId      String
+  name        String
+  description String
+  iconUrl     String
+  unlockedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("achievements")
+}
+
+model StudySession {
+  id             String   @id @default(uuid())
+  userId         String
+  deckId         String
+  mode           String
+  xpEarned       Int      @default(0)
+  cardsStudied   Int      @default(0)
+  correctAnswers Int      @default(0)
+  duration       Int      @default(0)
+  completedAt    DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+  deck Deck @relation(fields: [deckId], references: [id])
+
+  @@map("study_sessions")
+}
