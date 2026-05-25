@@ -5,6 +5,7 @@ import { env } from './config/env.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { registerJwt } from './plugins/jwt.js';
 import authRoutes from './routes/auth.routes.js';
+import usersRoutes from './routes/users.routes.js';
 
 export const API_PREFIX = '/api/v1';
 
@@ -37,6 +38,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     await fastify.register(
         async (api) => {
             await api.register(authRoutes);
+            await api.register(usersRoutes);
         },
         { prefix: API_PREFIX },
     );
