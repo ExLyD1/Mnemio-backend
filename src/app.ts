@@ -10,6 +10,7 @@ import decksRoutes from './routes/decks.routes.js';
 import cardsRoutes from './routes/cards.routes.js';
 import srsRoutes from './routes/srs.routes.js';
 import sessionsRoutes from './routes/sessions.routes.js';
+import dashboardRoutes from './routes/dashboard.routes.js';
 
 export const API_PREFIX = '/api/v1';
 
@@ -47,6 +48,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(cardsRoutes);
             await api.register(srsRoutes);
             await api.register(sessionsRoutes);
+            await api.register(dashboardRoutes);
         },
         { prefix: API_PREFIX },
     );
