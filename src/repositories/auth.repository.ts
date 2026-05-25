@@ -1,5 +1,6 @@
 import { prisma } from '../db/prisma.js';
-import type { InputJsonValue } from '../../generated/prisma/internal/prismaNamespace.js';
+import { Prisma } from '../../generated/prisma/client.js';
+type InputJsonValue = Prisma.InputJsonValue;
 
 export const findUserByEmail = (email: string) =>
     prisma.user.findUnique({ where: { email: email.toLowerCase() } });
