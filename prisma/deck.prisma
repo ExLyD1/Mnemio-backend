@@ -2,19 +2,21 @@ model Deck {
   id             String   @id @default(uuid())
   authorId       String
   title          String
-  description    String
+  description    String   @default("")
   sourceLanguage String
   targetLanguage String
   isPublic       Boolean  @default(false)
+  cardCount      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  author        User               @relation(fields: [authorId], references: [id])
+  author        User               @relation(fields: [authorId], references: [id], onDelete: Cascade)
   cards         Card[]
   studySessions StudySession[]
   collaborators DeckCollaborator[]
   folderDecks   FolderDeck[]
 
+  @@index([authorId, updatedAt])
   @@map("decks")
 }
 
@@ -25,8 +27,9 @@ model DeckCollaborator {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  deck Deck @relation(fields: [deckId], references: [id])
-  user User @relation(fields: [userId], references: [id])
+  deck Deck @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([deckId, userId])
   @@map("deck_collaborators")
 }
