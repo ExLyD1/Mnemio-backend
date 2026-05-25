@@ -1,10 +1,12 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyError, FastifyInstance } from 'fastify';
 import { ZodError, z } from 'zod';
 import { AppError } from '../shared/errors.js';
 import { env } from '../config/env.js';
 
 export const registerErrorHandler = (fastify: FastifyInstance) => {
-    fastify.setErrorHandler((error, request, reply) => {
+    fastify.setErrorHandler((rawError, request, reply) => {
+        const error = rawError as FastifyError & { code?: string };
+
         if (error instanceof AppError) {
             return reply.status(error.statusCode).send(error.toPayload());
         }
@@ -21,26 +23,25 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
         if (error.validation) {
             return reply.status(400).send({
                 code: 'VALIDATION_ERROR',
-                message: error.message,
+                message: error.message ?? 'Validation failed',
                 details: { issues: error.validation },
             });
         }
 
         // Prisma known constraint errors (P2002 unique, P2025 not found)
-        const code = (error as { code?: string }).code;
-        if (code === 'P2002') {
+        if (error.code === 'P2002') {
             return reply.status(409).send({
                 code: 'CONFLICT',
                 message: 'A record with this value already exists',
             });
         }
-        if (code === 'P2025') {
+        if (error.code === 'P2025') {
             return reply.status(404).send({ code: 'NOT_FOUND', message: 'Record not found' });
         }
 
         request.log.error({ err: error }, 'Unhandled error');
 
-        const message = env.NODE_ENV === 'production' ? 'Internal server error' : error.message;
+        const message = env.NODE_ENV === 'production' ? 'Internal server error' : (error.message ?? 'Internal error');
         return reply.status(500).send({ code: 'INTERNAL', message });
     });
 

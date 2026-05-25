@@ -1,4 +1,5 @@
 import { prisma } from '../db/prisma.js';
+import type { InputJsonValue } from '../../generated/prisma/internal/prismaNamespace.js';
 
 export const findUserByEmail = (email: string) =>
     prisma.user.findUnique({ where: { email: email.toLowerCase() } });
@@ -99,13 +100,14 @@ export const writeAuditLog = (data: {
     ip?: string | null;
     userAgent?: string | null;
     details?: Record<string, unknown> | null;
-}) =>
-    prisma.auditLog.create({
-        data: {
-            userId: data.userId ?? null,
-            event: data.event,
-            ip: data.ip ?? null,
-            userAgent: data.userAgent ?? null,
-            details: data.details ?? undefined,
-        },
+}) => {
+    const base = {
+        userId: data.userId ?? null,
+        event: data.event,
+        ip: data.ip ?? null,
+        userAgent: data.userAgent ?? null,
+    };
+    return prisma.auditLog.create({
+        data: data.details ? { ...base, details: data.details as InputJsonValue } : base,
     });
+};

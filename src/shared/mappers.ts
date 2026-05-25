@@ -1,4 +1,4 @@
-import type { User } from '../../generated/prisma/models.js';
+import type { UserModel as User } from '../../generated/prisma/models/User.js';
 
 export type PublicUser = {
     id: string;

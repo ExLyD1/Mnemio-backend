@@ -1,6 +1,6 @@
 import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
-import type { User } from '../../generated/prisma/models.js';
+import type { UserModel as User } from '../../generated/prisma/models/User.js';
 import * as authRepo from '../repositories/auth.repository.js';
 import { toPublicUser, needsProfile, type PublicUser } from '../shared/mappers.js';
 import { BadRequestError, ConflictError, UnauthorizedError, RateLimitedError } from '../shared/errors.js';
