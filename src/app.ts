@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.routes.js';
 import usersRoutes from './routes/users.routes.js';
 import decksRoutes from './routes/decks.routes.js';
 import cardsRoutes from './routes/cards.routes.js';
+import srsRoutes from './routes/srs.routes.js';
 
 export const API_PREFIX = '/api/v1';
 
@@ -43,6 +44,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(usersRoutes);
             await api.register(decksRoutes);
             await api.register(cardsRoutes);
+            await api.register(srsRoutes);
         },
         { prefix: API_PREFIX },
     );
