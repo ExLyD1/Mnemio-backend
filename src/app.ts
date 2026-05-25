@@ -1,7 +1,12 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import rateLimit from '@fastify/rate-limit';
 import { env } from './config/env.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
+import { registerJwt } from './plugins/jwt.js';
+import authRoutes from './routes/auth.routes.js';
+
+export const API_PREFIX = '/api/v1';
 
 export const buildApp = async (): Promise<FastifyInstance> => {
     const fastify = Fastify({
@@ -18,9 +23,23 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         credentials: true,
     });
 
+    await fastify.register(rateLimit, {
+        global: false,
+        max: 120,
+        timeWindow: '1 minute',
+    });
+
+    await registerJwt(fastify);
     registerErrorHandler(fastify);
 
     fastify.get('/health', async () => ({ status: 'ok' }));
+
+    await fastify.register(
+        async (api) => {
+            await api.register(authRoutes);
+        },
+        { prefix: API_PREFIX },
+    );
 
     return fastify;
 };
