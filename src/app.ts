@@ -1,46 +1,26 @@
-import Fastify from 'fastify';
-import userRoutes from './routes/user.routes.ts';
+import Fastify, { type FastifyInstance } from 'fastify';
+import cors from '@fastify/cors';
+import { env } from './config/env.js';
+import { registerErrorHandler } from './plugins/error-handler.js';
 
-import EventEmitter from 'node:events';
+export const buildApp = async (): Promise<FastifyInstance> => {
+    const fastify = Fastify({
+        logger: {
+            level: env.LOG_LEVEL,
+            redact: ['req.headers.authorization', 'req.body.password', 'req.body.refreshToken', 'req.body.code'],
+            ...(env.NODE_ENV === 'development' ? { transport: { target: 'pino-pretty' } } : {}),
+        },
+        trustProxy: true,
+    });
 
-const fastify = Fastify({
-    logger: true,
-});
+    await fastify.register(cors, {
+        origin: env.WEB_URL,
+        credentials: true,
+    });
 
-// Declare a route
-fastify.get('/', function (request, reply) {
-    reply.send({ hello: 'world' });
-});
+    registerErrorHandler(fastify);
 
-userRoutes(fastify);
+    fastify.get('/health', async () => ({ status: 'ok' }));
 
-// Register an event
-const eventEmitter = new EventEmitter();
-
-// listen to the event
-eventEmitter.on('createBulkUsers', (user) => {
-    setTimeout(() => {
-        console.log('Bulk users created');
-    }, 3000);
-    console.log('Bulk user created ==> ', user);
-});
-
-fastify.post('/create-bulk-users', async (request, reply) => {
-    const { users } = request.body;
-    // ...
-
-    eventEmitter.emit('createBulkUsers', users);
-    reply.send({ message: 'We have requested to create 10,000 users, it may take some time!!' });
-});
-
-fastify.get('/hello', (request, reply) => {
-    reply.send({ hello: 'world!' });
-});
-
-fastify.listen({ port: 3000, host: '0.0.0.0' }, function (err, address) {
-    if (err) {
-        fastify.log.error(err);
-        process.exit(1);
-    }
-    fastify.log.info(`Server listening on ${address}`);
-});
+    return fastify;
+};
