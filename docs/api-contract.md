@@ -10,8 +10,8 @@
 
 ### Base URL
 - All endpoints are prefixed `/api/v1`.
-- Dev: `http://localhost:3000/api/v1`.
-- CORS: server allows `WEB_URL` only (default `http://localhost:3001`) with credentials.
+- Dev: `http://localhost:3001/api/v1` (backend runs on **3001**; Nuxt frontend on **3000**).
+- CORS: server allows `WEB_URL` only (default `http://localhost:3000`) with credentials.
 
 ### Authentication
 - Send `Authorization: Bearer <accessToken>` on every non-public endpoint.
