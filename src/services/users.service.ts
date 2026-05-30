@@ -10,7 +10,7 @@ export const updateMe = async (
     if (input.username !== undefined) {
         const taken = await usersRepo.findByUsername(input.username);
         if (taken && taken.id !== userId) {
-            throw new ConflictError('USER_USERNAME_TAKEN', 'This username is already taken');
+            throw new ConflictError('AUTH_USERNAME_TAKEN', 'This username is already taken');
         }
     }
 
@@ -25,7 +25,7 @@ export const updateMe = async (
     } catch (err) {
         const code = (err as { code?: string }).code;
         if (code === 'P2025') throw new NotFoundError('USER_NOT_FOUND', 'User not found');
-        if (code === 'P2002') throw new ConflictError('USER_USERNAME_TAKEN', 'This username is already taken');
+        if (code === 'P2002') throw new ConflictError('AUTH_USERNAME_TAKEN', 'This username is already taken');
         throw err;
     }
 };
