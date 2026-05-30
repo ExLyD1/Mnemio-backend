@@ -1,7 +1,8 @@
 import * as srsRepo from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
-import { initialState, review, type Quality } from './sm2.js';
+import { initialState, review } from './sm2.js';
+import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
 
 export type PublicCardProgress = {
     cardId: string;
@@ -14,7 +15,7 @@ export type PublicCardProgress = {
 
 export const rate = async (
     ownerId: string,
-    input: { cardId: string; quality: number },
+    input: { cardId: string; rating: Rating },
 ): Promise<PublicCardProgress> => {
     // Ownership: user must own the deck the card belongs to.
     const card = await cardsRepo.findCardWithOwner(input.cardId);
@@ -35,7 +36,7 @@ export const rate = async (
           }
         : initialState(now);
 
-    const next = review(prev, input.quality as Quality, now);
+    const next = review(prev, RATING_TO_QUALITY[input.rating], now);
     const saved = await srsRepo.upsertProgress({
         userId: ownerId,
         cardId: input.cardId,
@@ -66,6 +67,21 @@ export type DueCardDto = {
     interval: number;
     easeFactor: number;
     repetitions: number;
+};
+
+export const progress = async (
+    ownerId: string,
+    limit = 2000,
+): Promise<PublicCardProgress[]> => {
+    const rows = await srsRepo.findAllProgress(ownerId, limit);
+    return rows.map((r) => ({
+        cardId: r.cardId,
+        repetitions: r.repetitions,
+        interval: r.interval,
+        easeFactor: r.easeFactor,
+        nextReviewAt: r.nextReviewAt.toISOString(),
+        lastReviewedAt: r.lastReviewedAt ? r.lastReviewedAt.toISOString() : null,
+    }));
 };
 
 export const due = async (ownerId: string, limit = 50): Promise<DueCardDto[]> => {

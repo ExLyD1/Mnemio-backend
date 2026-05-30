@@ -6,6 +6,7 @@ const srsRoutes = async (fastify: FastifyInstance) => {
 
     fastify.post('/srs/rate', srsController.rate);
     fastify.get('/srs/due', srsController.due);
+    fastify.get('/srs/progress', srsController.progress);
 };
 
 export default srsRoutes;

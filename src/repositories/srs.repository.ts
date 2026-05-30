@@ -70,6 +70,13 @@ export const findDueCards = async (userId: string, limit: number): Promise<DueCa
     `;
 };
 
+export const findAllProgress = (userId: string, limit: number) =>
+    prisma.cardProgress.findMany({
+        where: { userId },
+        orderBy: { nextReviewAt: 'asc' },
+        take: limit,
+    });
+
 export const countDueCards = async (userId: string): Promise<number> => {
     const result = await prisma.$queryRaw<{ count: bigint }[]>`
         SELECT COUNT(*) AS count
