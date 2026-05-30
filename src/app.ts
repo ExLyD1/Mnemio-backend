@@ -28,6 +28,8 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     await fastify.register(cors, {
         origin: env.WEB_URL,
         credentials: true,
+        methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
     });
 
     await fastify.register(rateLimit, {
