@@ -79,6 +79,27 @@ export const findLatestIncomplete = (userId: string) =>
 export const findActiveSession = (userId: string) =>
     prisma.studySession.findFirst({ where: { userId, status: 'active' } });
 
+export const exitSession = (id: string, userId: string) =>
+    prisma.studySession.updateMany({
+        where: { id, userId, status: 'active' },
+        data: { status: 'incomplete', endedAt: new Date() },
+    });
+
+// Resume: atomically mark any currently-active session as incomplete and
+// flip the target session back to active. Same invariant as start().
+export const resumeSession = (id: string, userId: string) =>
+    prisma.$transaction(async (tx) => {
+        await tx.studySession.updateMany({
+            where: { userId, status: 'active', NOT: { id } },
+            data: { status: 'incomplete', endedAt: new Date() },
+        });
+        const { count } = await tx.studySession.updateMany({
+            where: { id, userId, status: 'incomplete' },
+            data: { status: 'active', endedAt: null },
+        });
+        return count;
+    });
+
 export const incrementUserXp = (userId: string, xp: number) =>
     prisma.user.update({
         where: { id: userId },

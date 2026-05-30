@@ -82,3 +82,26 @@ export const latestIncomplete = async (ownerId: string): Promise<PublicSession |
     const session = await sessionsRepo.findLatestIncomplete(ownerId);
     return session ? toPublicSession(session) : null;
 };
+
+export const active = async (ownerId: string): Promise<PublicSession | null> => {
+    const session = await sessionsRepo.findActiveSession(ownerId);
+    return session ? toPublicSession(session) : null;
+};
+
+export const exit = async (ownerId: string, sessionId: string): Promise<PublicSession> => {
+    const { count } = await sessionsRepo.exitSession(sessionId, ownerId);
+    if (count === 0) {
+        throw new NotFoundError('SESSION_NOT_FOUND', 'Active session not found');
+    }
+    const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
+    return toPublicSession(fresh!);
+};
+
+export const resume = async (ownerId: string, sessionId: string): Promise<PublicSession> => {
+    const count = await sessionsRepo.resumeSession(sessionId, ownerId);
+    if (count === 0) {
+        throw new NotFoundError('SESSION_NOT_FOUND', 'Incomplete session not found');
+    }
+    const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
+    return toPublicSession(fresh!);
+};

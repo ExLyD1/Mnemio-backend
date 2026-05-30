@@ -35,3 +35,24 @@ export const latestIncomplete = async (request: FastifyRequest, reply: FastifyRe
     const session = await sessionsService.latestIncomplete(request.currentUser.sub);
     reply.send({ session });
 };
+
+export const active = async (request: FastifyRequest, reply: FastifyReply) => {
+    const session = await sessionsService.active(request.currentUser.sub);
+    reply.send({ session });
+};
+
+export const exit = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+) => {
+    const session = await sessionsService.exit(request.currentUser.sub, request.params.id);
+    reply.send(session);
+};
+
+export const resume = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+) => {
+    const session = await sessionsService.resume(request.currentUser.sub, request.params.id);
+    reply.send(session);
+};
