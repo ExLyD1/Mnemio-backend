@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import { env } from './config/env.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { registerJwt } from './plugins/jwt.js';
+import { registerCookies } from './plugins/cookies.js';
 import authRoutes from './routes/auth.routes.js';
 import usersRoutes from './routes/users.routes.js';
 import decksRoutes from './routes/decks.routes.js';
@@ -35,6 +36,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         timeWindow: '1 minute',
     });
 
+    await registerCookies(fastify);
     await registerJwt(fastify);
     registerErrorHandler(fastify);
 

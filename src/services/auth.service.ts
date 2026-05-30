@@ -248,10 +248,13 @@ export const login = async (
 
 export const refresh = async (
     fastify: FastifyInstance,
-    input: { refreshToken: string },
+    refreshToken: string | null,
     ctx: RequestContext,
 ): Promise<AuthResult> => {
-    const tokenHash = hashToken(input.refreshToken);
+    if (!refreshToken) {
+        throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Missing refresh token');
+    }
+    const tokenHash = hashToken(refreshToken);
     const record = await authRepo.findRefreshTokenByHash(tokenHash);
     if (!record || record.revokedAt || record.expiresAt < new Date()) {
         // Reuse detection: if a previously-rotated token is presented again,
@@ -284,8 +287,9 @@ export const refresh = async (
 
 // ---------- Logout ----------
 
-export const logout = async (input: { refreshToken: string }): Promise<void> => {
-    const record = await authRepo.findRefreshTokenByHash(hashToken(input.refreshToken));
+export const logout = async (refreshToken: string | null): Promise<void> => {
+    if (!refreshToken) return; // Idempotent — clearing the cookie is enough.
+    const record = await authRepo.findRefreshTokenByHash(hashToken(refreshToken));
     if (record && !record.revokedAt) {
         await authRepo.revokeRefreshToken(record.id);
     }
