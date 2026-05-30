@@ -3,7 +3,7 @@ import type { UserModel as User } from '../../generated/prisma/models/User.js';
 export type PublicUser = {
     id: string;
     email: string;
-    displayName: string | null;
+    fullName: string | null;
     username: string | null;
     birthday: string | null;
     avatarUrl: string | null;
@@ -18,7 +18,7 @@ export type PublicUser = {
 export const toPublicUser = (user: User): PublicUser => ({
     id: user.id,
     email: user.email,
-    displayName: user.displayName,
+    fullName: user.fullName,
     username: user.username,
     birthday: user.birthday ? user.birthday.toISOString().slice(0, 10) : null,
     avatarUrl: user.avatarUrl,
@@ -31,4 +31,4 @@ export const toPublicUser = (user: User): PublicUser => ({
 });
 
 export const needsProfile = (user: User): boolean =>
-    user.username === null || user.displayName === null;
+    user.username === null || user.fullName === null;

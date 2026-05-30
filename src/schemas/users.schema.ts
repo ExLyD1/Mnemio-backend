@@ -14,7 +14,7 @@ export const usernameSchema = z
     .transform((s) => s.toLowerCase())
     .refine((s) => !RESERVED_USERNAMES.has(s), { message: 'This username is reserved' });
 
-export const displayNameSchema = z.string().trim().min(1).max(64);
+export const fullNameSchema = z.string().trim().min(1).max(64);
 
 const MIN_AGE_YEARS = 13;
 const today = () => new Date();
@@ -34,12 +34,12 @@ export const birthdaySchema = z
 
 export const updateMeSchema = z
     .object({
-        displayName: displayNameSchema.optional(),
+        fullName: fullNameSchema.optional(),
         username: usernameSchema.optional(),
         birthday: birthdaySchema.optional(),
     })
     .refine(
-        (v) => v.displayName !== undefined || v.username !== undefined || v.birthday !== undefined,
+        (v) => v.fullName !== undefined || v.username !== undefined || v.birthday !== undefined,
         { message: 'At least one field is required' },
     );
 

@@ -1,7 +1,7 @@
 import { prisma } from '../db/prisma.js';
 
 export type UpdateMePatch = {
-    displayName?: string;
+    fullName?: string;
     username?: string;
     birthday?: Date;
 };

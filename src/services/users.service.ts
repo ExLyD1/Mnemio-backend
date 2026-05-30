@@ -15,7 +15,7 @@ export const updateMe = async (
     }
 
     const patch: usersRepo.UpdateMePatch = {};
-    if (input.displayName !== undefined) patch.displayName = input.displayName;
+    if (input.fullName !== undefined) patch.fullName = input.fullName;
     if (input.username !== undefined) patch.username = input.username;
     if (input.birthday !== undefined) patch.birthday = new Date(input.birthday);
 

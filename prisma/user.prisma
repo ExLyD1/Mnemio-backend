@@ -2,7 +2,7 @@ model User {
   id              String    @id @default(uuid())
   email           String    @unique
   passwordHash    String?
-  displayName     String?
+  fullName        String?
   username        String?   @unique
   birthday        DateTime? @db.Date
   avatarUrl       String?
