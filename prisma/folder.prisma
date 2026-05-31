@@ -1,0 +1,39 @@
+model Folder {
+  id        String   @id @default(uuid())
+  authorId  String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  author        User                 @relation(fields: [authorId], references: [id])
+  collaborators FolderCollaborator[]
+  folderDecks   FolderDeck[]
+
+  @@map("folders")
+}
+
+model FolderCollaborator {
+  id        String   @id @default(uuid())
+  folderId  String
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  folder Folder @relation(fields: [folderId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@map("folder_collaborators")
+}
+
+model FolderDeck {
+  id        String   @id @default(uuid())
+  folderId  String
+  deckId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  folder Folder @relation(fields: [folderId], references: [id])
+  deck   Deck   @relation(fields: [deckId], references: [id])
+
+  @@map("folder_decks")
+}

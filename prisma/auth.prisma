@@ -1,0 +1,47 @@
+model RefreshToken {
+  id            String    @id @default(uuid())
+  userId        String
+  tokenHash     String    @unique
+  userAgent     String?
+  ip            String?
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  replacedById  String?
+  createdAt     DateTime  @default(now())
+
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy  RefreshToken?  @relation("RefreshTokenChain", fields: [replacedById], references: [id])
+  replacements RefreshToken[] @relation("RefreshTokenChain")
+
+  @@index([userId, revokedAt])
+  @@map("refresh_tokens")
+}
+
+model EmailVerification {
+  id          String    @id @default(uuid())
+  userId      String
+  codeHash    String
+  attempts    Int       @default(0)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
+  @@map("email_verifications")
+}
+
+model OAuthIdentity {
+  id              String   @id @default(uuid())
+  userId          String
+  provider        String
+  providerUserId  String
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("oauth_identities")
+}

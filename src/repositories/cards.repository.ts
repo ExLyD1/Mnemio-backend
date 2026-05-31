@@ -1,0 +1,85 @@
+import { Prisma } from '../../generated/prisma/client.js';
+import { prisma } from '../db/prisma.js';
+
+export const findCardById = (id: string) => prisma.card.findUnique({ where: { id } });
+
+export const findCardWithOwner = (id: string) =>
+    prisma.card.findUnique({
+        where: { id },
+        include: { deck: { select: { authorId: true } } },
+    });
+
+export type ListCardsParams = {
+    deckId: string;
+    limit: number;
+    cursor: { ts: string; id: string } | null;
+};
+
+// Cards paginate by (position ASC, id ASC). ts in cursor is position-as-string.
+export const listCardsByPosition = ({ deckId, limit, cursor }: ListCardsParams) => {
+    const where: Prisma.CardWhereInput = { deckId };
+
+    if (cursor) {
+        const pos = Number.parseInt(cursor.ts, 10);
+        where.AND = [
+            {
+                OR: [
+                    { position: { gt: pos } },
+                    { position: pos, id: { gt: cursor.id } },
+                ],
+            },
+        ];
+    }
+
+    return prisma.card.findMany({
+        where,
+        orderBy: [{ position: 'asc' }, { id: 'asc' }],
+        take: limit + 1,
+    });
+};
+
+export const nextPositionForDeck = async (deckId: string): Promise<number> => {
+    const last = await prisma.card.findFirst({
+        where: { deckId },
+        orderBy: { position: 'desc' },
+        select: { position: true },
+    });
+    return last ? last.position + 1 : 0;
+};
+
+export const createCard = (data: {
+    userId: string;
+    deckId: string;
+    word: string;
+    definition: string;
+    phonetic: string | null;
+    position: number;
+}) =>
+    prisma.card.create({
+        data: {
+            userId: data.userId,
+            deckId: data.deckId,
+            word: data.word,
+            definition: data.definition,
+            phonetic: data.phonetic,
+            position: data.position,
+        },
+    });
+
+export const createCardsBulk = (
+    rows: {
+        userId: string;
+        deckId: string;
+        word: string;
+        definition: string;
+        phonetic: string | null;
+        position: number;
+    }[],
+) => prisma.card.createMany({ data: rows });
+
+export const updateCard = (
+    id: string,
+    patch: Partial<{ word: string; definition: string; phonetic: string | null; position: number }>,
+) => prisma.card.update({ where: { id }, data: patch });
+
+export const deleteCard = (id: string) => prisma.card.delete({ where: { id } });
