@@ -4,42 +4,50 @@
 > `localStorage`-backed mocks in `app/api/*.ts` with real HTTP calls.
 > Read [`backend-plan.md`](./backend-plan.md) for the *why*; this file is the *what*.
 
-## 0. What's new since the last sync
+## 0. Status
 
-**P2 is shipped.** Discover (public catalog + clone), AI (mock provider for now)
-and Media uploads (local FS for now) are all live. P0+P1 are unchanged.
+**Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped
+(42 endpoints under `/api/v1` + `GET /health` + static `/media/*`). Nothing in
+this document is "coming later" unless it says so explicitly. The FE can
+integrate every endpoint below today.
 
-### P2 deltas
-| Area | Change |
+### Endpoint inventory (42 under `/api/v1`)
+
+| Domain | Endpoints |
 |---|---|
-| **Deck** | New fields on every `Deck` response: `coverColor`, `glyph`, `subject` (all nullable), `featured: boolean`, `copyCount: number`, `sourceDeckId: string \| null`. `POST /decks` and `PATCH /decks/:id` accept the cosmetic fields + `isPublic`. |
-| **Discover** ✨ | New endpoints: `GET /discover/decks`, `GET /discover/featured`, `GET /discover/categories`. |
-| **Clone** ✨ | `POST /decks/:id/copy` — clones a public deck (cards + cosmetics) into the viewer's account, sets `sourceDeckId`, atomically bumps the source's `copyCount`. |
-| **AI** ✨ | `POST /ai/generate-deck` (returns a deck draft, FE persists if user accepts) and `POST /ai/suggest` (Mimi suggestions). Backed by a `mock` provider for MVP; provider swap is env-driven and contract-stable. |
-| **Media** ✨ | `POST /media/uploads?kind=avatar\|card_image\|card_audio` (multipart). Avatar uploads also set `user.avatarUrl`. Files served from `/media/<userId>/<file>`. |
-| **User.avatarUrl** | No longer always `null` — populated after a successful `kind=avatar` upload. |
+| Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` |
+| Users | `PATCH /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
+| Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` |
+| Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
+| Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
+| SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
+| Dashboard | `GET /dashboard` |
+| Achievements | `GET /achievements` |
+| Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` |
+| Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
+| AI | `POST /ai/generate-deck` · `POST /ai/suggest` |
+| Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
+| Ops | `GET /health` (no `/api/v1` prefix) |
 
-### Recap of earlier deltas (all still in §3)
-- **P1**: embedded per-deck `stats`, server-backed session summary
-  (`counts`/`revisitCardIds`/`durationMs`), rich `Card` fields, Preferences,
-  Achievements, Statistics + DailyActivity.
-- **P0**: `total` on `GET /decks`, inline `cards: Card[]` on `GET /decks/:id`,
-  cookie refresh, error envelope, etc.
+### Invariants the FE must respect
 
-Shipped contract invariants (mentioned here so you can spot anything your
-client still expects in the old form):
-- Refresh token is an **HttpOnly cookie** `mnemio_refresh` on path
-  `/api/v1/auth`; never in any body.
-- `POST /srs/rate` body is `{ cardId, rating: 'again'|'hard'|'good'|'easy' }`
-  (server derives `deckId` from the card).
-- Session XP is **server-computed** `correct*10 + 25`; don't send `xp`.
-- `User.displayName` was renamed to `User.fullName`.
-- Username-taken error code is `AUTH_USERNAME_TAKEN` (not `USER_*`).
+| # | Rule |
+|---|---|
+| 1 | Refresh token is an **HttpOnly cookie** `mnemio_refresh` on path `/api/v1/auth`. **Never in any body.** Send `credentials: 'include'` on every call. |
+| 2 | Access token in `localStorage`, sent as `Authorization: Bearer …`. |
+| 3 | On `{ code: 'AUTH_INVALID_TOKEN' }` → `POST /auth/refresh` (no body), retry once; on `{ code: 'AUTH_INVALID_REFRESH' }` → hard logout, never retry. |
+| 4 | `POST /srs/rate` body is `{ cardId, rating }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
+| 5 | Session XP is **server-computed** `correct*10 + 25`. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
+| 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
+| 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
+| 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
+| 9 | Ownership is checked at the repo layer — listing/getting/modifying someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. |
+| 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
 
 ### Demo data
-The backend ships a seed: `npm run seed` creates `demo@mnemio.local` /
-`demo-password-123` (pre-verified, profile complete, 2 decks of 8–10 cards).
-Use it to skip the OTP scrape during FE integration testing.
+`npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
+profile complete, 2 decks of 8–10 cards). Skips the OTP scrape during FE
+integration testing.
 
 ---
 
@@ -158,9 +166,7 @@ type User = {
   emailVerified: boolean;
   role: 'user' | 'admin';
   xp: number;                  // updated atomically on session complete
-  streak: number;              // EXPOSED, ALWAYS 0 — `/stats/overview.streak`
-                               // is the authoritative streak value (live, from
-                               // the DailyActivity rollup)
+  streak: number;              // ALWAYS 0 — use /stats/overview.streak instead
   createdAt: string;
   updatedAt: string;
 };
@@ -1028,19 +1034,26 @@ curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
 
 ## 6. What's NOT in this contract
 
-### Coming later
+### Operational gaps (contract stays the same when these land)
 - **Admin surface for `featured`**: today, the `featured` flag is set directly
   in the DB. A `POST /admin/decks/:id/feature` (gated on `user.role='admin'`)
   is a small post-MVP addition when curation moves out of SQL.
-- **Real LLM provider for `/ai/*`**: the contract is stable; swap the `mock`
-  provider for an Anthropic/OpenAI adapter via `AI_PROVIDER` env.
-- **S3-backed media**: the `/media/uploads` shape stays; the storage backend
-  swaps from local FS to S3 presigned PUTs (see `src/services/media.service.ts`
+- **Real LLM provider for `/ai/*`**: swap the `mock` provider for an
+  Anthropic/OpenAI adapter via `AI_PROVIDER` env. Response shapes don't change.
+- **S3-backed media**: `/media/uploads` shape stays; storage backend swaps
+  from local FS to S3 presigned PUTs (see `src/services/media.service.ts`
   comment header for the migration steps).
+
+### Optional sub-stats deferred from P1
+Tagged "Optional P2" in `backend-plan.md §7`; not built but can be added later
+without breaking existing `/stats/*` shapes:
+- `/stats/forecast` (14-day due projection)
+- `/stats/study-patterns` (hour × day-of-week heatmap)
+- `/stats/xp` and league/leaderboard
 
 ### Out of MVP entirely (no plans to ship)
 - Password reset / forgot-password (manual support intervention at MVP).
-- Folders, leagues.
+- Folders, leagues (leaderboard).
 - Account deletion endpoint.
 - WebSockets / push notifications.
 
