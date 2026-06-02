@@ -93,7 +93,9 @@ type ApiError = {
 ### Pagination contract
 - Cursor-based. Send `?cursor=<opaque>&limit=<n>`; receive `{ items, nextCursor }`.
 - `nextCursor === null` → no more pages.
-- Hard cap on `limit`: 100 (cards in deck-detail allow up to 200).
+- Hard cap on `limit`: **100** for general lists.
+- A few endpoints expose `total` alongside the page (currently `GET /decks`) for
+  list-header counters; most omit it because counting on every page is expensive.
 - The cursor is **opaque** — never parse or construct it; pass it through verbatim.
 
 ```ts
@@ -101,6 +103,7 @@ type Page<T> = {
   items: T[];
   nextCursor: string | null;
 };
+type PageWithTotal<T> = Page<T> & { total: number };
 ```
 
 ---
@@ -284,11 +287,13 @@ Profile completion. All fields optional; at least one required.
 
 #### `GET /decks`  *(auth)*
 ```ts
-// Query: ?cursor?=string&limit?=number(<=100)&q?=string
-// 200 Response: Page<Deck>
+// Query: ?cursor?=string&limit?=number(<=100)&q?=string  default limit 20
+// 200 Response: PageWithTotal<Deck>
+//   = { items: Deck[]; nextCursor: string | null; total: number }
 ```
 `q` does case-insensitive `contains` over `title` + `description`. Sort:
-`updatedAt DESC, id DESC` (stable keyset).
+`updatedAt DESC, id DESC` (stable keyset). `total` is the full match count for
+the filter, independent of the current page.
 
 #### `POST /decks`  *(auth)*
 ```ts
@@ -303,13 +308,16 @@ Profile completion. All fields optional; at least one required.
 ```
 
 #### `GET /decks/:id`  *(auth)*
+The FE's Deck Detail page, study queue, and Add Card flow all assume the entire
+card list is present, so the deck detail returns cards **inline** rather than
+paged. Hard cap is 1000 (matches the FE per-deck limit).
 ```ts
-// Query: ?cardsCursor?=string&cardsLimit?=number(<=200)  default 50
+// Query: ?cardsLimit?=number(<=1000)  default 1000
 
 // 200 Response
 {
   deck: Deck;
-  cards: Page<Card>;          // sorted by (position ASC, id ASC)
+  cards: Card[];              // sorted by (position ASC, id ASC), up to cap
 }
 // Errors: 404 DECK_NOT_FOUND
 ```
