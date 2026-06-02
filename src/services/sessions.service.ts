@@ -1,5 +1,6 @@
 import * as sessionsRepo from '../repositories/sessions.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
+import * as achievementsService from './achievements.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import { toPublicSession, type PublicSession } from '../shared/mappers.session.js';
 import type { CreateSessionInput, UpdateSessionInput } from '../schemas/session.schema.js';
@@ -81,6 +82,12 @@ export const complete = async (
         throw new BadRequestError('SESSION_NOT_ACTIVE', 'Session was no longer active');
     }
     await sessionsRepo.incrementUserXp(ownerId, xp);
+
+    // Fire-and-don't-fail achievement evaluation. The session response shape is
+    // unchanged — newly-earned keys surface on the next GET /achievements.
+    achievementsService.evaluate(ownerId, 'session_complete').catch(() => {
+        // Swallow: achievement-system errors must not break session completion.
+    });
 
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
     return toPublicSession(fresh!);

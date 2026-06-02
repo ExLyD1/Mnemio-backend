@@ -1,5 +1,6 @@
 import * as srsRepo from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
+import * as achievementsService from './achievements.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
 import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
@@ -46,6 +47,8 @@ export const rate = async (
         lastReviewedAt: next.lastReviewedAt,
         nextReviewAt: next.nextReviewAt,
     });
+
+    achievementsService.evaluate(ownerId, 'rate').catch(() => {});
 
     return {
         cardId: saved.cardId,

@@ -1,5 +1,6 @@
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
+import * as achievementsService from './achievements.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { toPublicCard, type PublicCard } from '../shared/mappers.deck.js';
 import type {
@@ -54,6 +55,7 @@ export const create = async (
         ...buildCardCreateFields(input),
     });
     await decksRepo.recomputeCardCount(deckId);
+    achievementsService.evaluate(ownerId, 'card_create').catch(() => {});
     return toPublicCard(card);
 };
 
@@ -72,6 +74,7 @@ export const bulkCreate = async (
     }));
     const { count } = await cardsRepo.createCardsBulk(rows);
     await decksRepo.recomputeCardCount(deckId);
+    achievementsService.evaluate(ownerId, 'card_create').catch(() => {});
     return { created: count };
 };
 

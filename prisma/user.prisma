@@ -26,6 +26,7 @@ model User {
   oauthIdentities     OAuthIdentity[]
   auditLogs           AuditLog[]
   preference          Preference?
+  userAchievements    UserAchievement[]
 
   @@map("users")
 }
