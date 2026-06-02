@@ -6,15 +6,24 @@
 
 ## 0. What's new since the last sync
 
-All **P0** reconciliations from `backend-plan.md §Reconciliations` are
-implemented. Concrete deltas you'll see in responses:
+**P1 is shipped.** All five P1 themes from `backend-plan.md §Build phasing` are
+live; the previous P0 reconciliations stay as-is.
 
-| Endpoint | Old shape | New shape |
-|---|---|---|
-| `GET /decks` | `{ items, nextCursor }` | **`{ items, nextCursor, total }`** |
-| `GET /decks/:id` | `{ deck, cards: Page<Card> }` | **`{ deck, cards: Card[] }`** (inline, cap 1000) |
+### P1 deltas
+| Area | Change |
+|---|---|
+| **Decks** | Every `Deck` response now has a nested `stats { total, mastered, learning, new, due, masteredPct }`. Computed against the user's SRS progress, no extra round-trip needed. |
+| **Sessions** | `StudySession` gains server-backed summary fields: `counts { again, hard, good, easy }`, `revisitCardIds: string[]`, `durationMs: number`. FE PATCHes them incrementally; `/complete` returns the final tally. |
+| **Cards** | Rich fields added to `Card` (+ to create/update bodies): `partOfSpeech`, `example`, `exampleTranslation`, `reading`, `tags: string[]`, `difficulty: 'easy'\|'medium'\|'hard'` (default `medium`), `type: 'basic'\|'cloze'\|'image'` (default `basic`), `audioUrl`. |
+| **Preferences** ✨ | New: `GET /users/me/preferences`, `PATCH /users/me/preferences` (`interests`, `goal`, `nativeLanguage`, `learningLanguages`, `avatarHue`, `mimiPlacement`, `favorites: deckId[]`). |
+| **Achievements** ✨ | New: `GET /achievements` returns the full catalog with per-user `earned`/`earnedAt`/`progress`. Auto-evaluated on `/sessions/:id/complete`, `/srs/rate`, and card create. |
+| **Statistics** ✨ | New: `GET /stats/overview`, `/stats/series`, `/stats/activity`, `/stats/decks` (each described in §3). Powered by a backend `DailyActivity` rollup updated on every `/srs/rate`. |
 
-These are now reflected in §3 below. Nothing else moved.
+### Recap of P0 reconciliations (already in §3)
+| Endpoint | Shape |
+|---|---|
+| `GET /decks` | `{ items, nextCursor, total }` |
+| `GET /decks/:id` | `{ deck, cards: Card[] }` (inline, cap 1000) |
 
 Other shipped contract decisions (already in this doc, mentioned here as a
 checklist so you can spot anything your client still expects in the old form):
@@ -156,9 +165,20 @@ type User = {
   emailVerified: boolean;
   role: 'user' | 'admin';
   xp: number;                  // updated atomically on session complete
-  streak: number;              // EXPOSED BUT ALWAYS 0 — daily rollup lands in P1
+  streak: number;              // EXPOSED, ALWAYS 0 — `/stats/overview.streak`
+                               // is the authoritative streak value (live, from
+                               // the DailyActivity rollup)
   createdAt: string;
   updatedAt: string;
+};
+
+type DeckStats = {
+  total: number;          // = cardCount
+  mastered: number;       // cards with interval ≥ 21 days
+  learning: number;       // has progress but interval < 21
+  new: number;            // cards without a CardProgress row
+  due: number;            // cards due now (nextReviewAt ≤ now)
+  masteredPct: number;    // 0..100, rounded
 };
 
 type Deck = {
@@ -170,6 +190,7 @@ type Deck = {
   targetLanguage: string;
   isPublic: boolean;           // always false at MVP
   cardCount: number;
+  stats: DeckStats;            // P1: embedded per-deck stats
   createdAt: string;
   updatedAt: string;
 };
@@ -180,6 +201,14 @@ type Card = {
   word: string;
   definition: string;
   phonetic: string | null;
+  reading: string | null;                // P1
+  partOfSpeech: string | null;           // P1
+  example: string | null;                // P1
+  exampleTranslation: string | null;     // P1
+  tags: string[];                        // P1
+  difficulty: 'easy' | 'medium' | 'hard'; // P1; default 'medium'
+  type: 'basic' | 'cloze' | 'image';     // P1; default 'basic'
+  audioUrl: string | null;               // P1
   imageUrl: string | null;
   position: number;            // 0-indexed, server-assigned on create
   createdAt: string;
@@ -195,6 +224,13 @@ type CardProgress = {
   lastReviewedAt: string | null;
 };
 
+type SessionCounts = {
+  again: number;
+  hard: number;
+  good: number;
+  easy: number;
+};
+
 type StudySession = {
   id: string;
   userId: string;
@@ -207,12 +243,37 @@ type StudySession = {
   xpAwarded: number;
   cardsStudied: number;
   correctAnswers: number;
+  counts: SessionCounts;       // P1: per-grade tally
+  revisitCardIds: string[];    // P1: cards the user flagged to revisit
+  durationMs: number;          // P1: ms spent in this session
   startedAt: string;
   endedAt: string | null;
   completedAt: string;
 };
 
 type Rating = 'again' | 'hard' | 'good' | 'easy';
+
+type Achievement = {
+  id: string;                  // = key
+  key: string;
+  name: string;
+  description: string;
+  iconKey: string;             // FE maps to the actual asset
+  earned: boolean;
+  earnedAt: string | null;
+  progress: number;            // 0..100
+};
+
+type Preference = {
+  interests: string[];
+  goal: string | null;
+  nativeLanguage: string | null;
+  learningLanguages: string[];
+  avatarHue: number | null;    // 0..360
+  mimiPlacement: 'left' | 'right' | null;
+  favorites: string[];         // deckIds
+  updatedAt: string;
+};
 ```
 
 ### `needsProfile` flag
@@ -394,24 +455,33 @@ Example:
 
 #### `POST /decks/:id/cards`  *(auth)*
 ```ts
-// Request
+// Request — all fields beyond word/definition optional (P1 rich fields)
 {
-  word: string;             // 1–120 chars
-  definition: string;       // 1–1000 chars
-  phonetic?: string;        // ≤ 120 chars
+  word: string;                          // 1–120 chars
+  definition: string;                    // 1–1000 chars
+  phonetic?: string;                     // ≤ 120 chars
+  reading?: string;                      // ≤ 120 chars
+  partOfSpeech?: string;                 // ≤ 40 chars
+  example?: string;                      // ≤ 500 chars
+  exampleTranslation?: string;           // ≤ 500 chars
+  tags?: string[];                       // ≤ 20 tags, each ≤ 40 chars
+  difficulty?: 'easy' | 'medium' | 'hard';  // default 'medium'
+  type?: 'basic' | 'cloze' | 'image';    // default 'basic'
+  audioUrl?: string;                     // URL
+  imageUrl?: string;                     // URL
 }
 // 201 Response: Card  (position is server-assigned: last + 1)
 ```
 
 #### `POST /decks/:id/cards/bulk`  *(auth)*
 ```ts
-// Request: { cards: { word, definition, phonetic? }[] }   // 1–100 items
+// Request: { cards: <same field set as POST /decks/:id/cards>[] }   // 1–100 items
 // 201 Response: { created: number }
 ```
 
 #### `PATCH /cards/:id`  *(auth)*
 ```ts
-// Request: any subset of { word, definition, phonetic, position }
+// Request: any subset of the create body + { position? }
 // 200 Response: Card
 // Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN
 ```
@@ -437,9 +507,17 @@ session is flipped to `incomplete` before the new one becomes `active`.
 ```
 
 #### `PATCH /sessions/:id`  *(auth)*
-Append progress mid-session.
+Append progress and Session Summary state mid-session. **At least one** field
+required; FE patches incrementally.
 ```ts
-// Request: at least one of { cardIndex: number, correct: number }
+// Request
+{
+  cardIndex?: number;
+  correct?: number;
+  counts?: { again, hard, good, easy };     // P1: per-grade tally
+  revisitCardIds?: string[];                // P1: ≤ 1000 ids
+  durationMs?: number;                      // P1: ms spent so far
+}
 // 200 Response: StudySession
 // Errors: 404 SESSION_NOT_FOUND  (also if no longer 'active')
 ```
@@ -550,6 +628,118 @@ One round-trip for the dashboard page.
   continueStudying: StudySession | null;
 }
 ```
+
+### Preferences  *(P1)*
+
+User preferences live on a separate endpoint from `/users/me` so the FE can
+PATCH them independently (avatar hue picker, favorite toggle, onboarding goals,
+etc.).
+
+#### `GET /users/me/preferences`  *(auth)*
+Lazy-creates an empty row on first access; never returns 404.
+```ts
+// 200 Response: Preference
+```
+
+#### `PATCH /users/me/preferences`  *(auth)*
+All fields optional; **at least one** required. `null` clears the field; arrays
+replace.
+```ts
+// Request
+{
+  interests?: string[];            // ≤ 40 items, each ≤ 40 chars
+  goal?: string | null;            // 1–120 chars, or null to clear
+  nativeLanguage?: string | null;  // 2–10 chars (ISO 639-1)
+  learningLanguages?: string[];    // ≤ 10 entries
+  avatarHue?: number | null;       // 0..360
+  mimiPlacement?: 'left' | 'right' | null;
+  favorites?: string[];            // deckIds, ≤ 500
+}
+// 200 Response: Preference
+// Errors: 400 VALIDATION_ERROR
+```
+
+### Achievements  *(P1)*
+
+Catalog is server-defined (currently 7 entries: `first_steps`, `quick_learner`,
+`marathoner`, `accuracy_ace`, `reviewer_100`, `builder_50`, `polyglot`).
+Evaluated automatically on `/sessions/:id/complete`, `/srs/rate`, and card
+create.
+
+#### `GET /achievements`  *(auth)*
+```ts
+// 200 Response: { items: Achievement[] }
+```
+Each entry includes `earned: boolean`, `earnedAt: string|null`, and
+`progress: 0..100` so the FE can show progress bars even before unlock.
+
+### Statistics  *(P1)*
+
+Backed by a `DailyActivity` rollup table that updates on every `/srs/rate`.
+All endpoints scoped to the authenticated user.
+
+#### `GET /stats/overview?range=7|30|90|all`  *(auth)*  — default `30`
+```ts
+// 200 Response
+{
+  range: '7' | '30' | '90' | 'all';
+  reviewed: number;        // total reviews in the range
+  correct: number;         // total correct (rating 'good' | 'easy') in the range
+  retention: number;       // 0..100, rounded
+  streak: number;          // consecutive-day streak ending today (UTC)
+  dueCount: number;        // cards due now (same as /srs counter)
+  trends: {
+    reviewed:  { current: number; previous: number; deltaPct: number };
+    retention: { current: number; previous: number; deltaPct: number };
+  };
+}
+```
+`trends.*.previous` is the same-length window immediately before the current
+one (e.g. `range=30` compares last 30 days vs the 30 days before that).
+`deltaPct` is rounded.
+
+#### `GET /stats/series?range=7|30|90|all`  *(auth)*  — default `30`
+Per-day review counts. Always one point per day in the range, including zeros.
+```ts
+// 200 Response
+{
+  range: '7' | '30' | '90' | 'all';
+  points: { label: string; value: number }[];  // label = 'YYYY-MM-DD' UTC
+}
+```
+
+#### `GET /stats/activity`  *(auth)*
+Year heatmap (53 weeks × 7 days, Sun..Sat) and current-month calendar.
+```ts
+// 200 Response
+{
+  yearHeat: number[][];                    // 53 columns × 7 rows; values = reviews
+  monthCalendar: {
+    month: string;                         // 'YYYY-MM' (current UTC month)
+    days: ({ date: string; reviews: number } | null)[];
+    //   ^ leading nulls pad to start of week; each entry is one day of the month
+  };
+}
+```
+
+#### `GET /stats/decks`  *(auth)*
+Per-deck performance for the Statistics screen.
+```ts
+// 200 Response
+{
+  items: {
+    deckId: string;
+    title: string;
+    cardCount: number;
+    masteryPct: number;       // 0..100
+    retention: number;        // 0..100 — proxy from CardProgress repetitions
+    reviewed: number;         // all-time review count over the deck's cards
+  }[];
+}
+```
+> Note: until a per-rating event log lands (post-P1), `retention` and
+> `reviewed` come from `CardProgress.repetitions` as a proxy. Matches the FE's
+> current `useDeckStats` heuristic — same numbers either way.
 
 ### Health (ops)
 
@@ -671,14 +861,11 @@ curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
 ## 6. What's NOT in this contract
 
 ### Coming later (don't call yet — backend will 404)
-- **P1** (`backend-plan.md §7–9, §2 stats, §3 expanded Card`): Preferences
-  (`/users/me/preferences`), Statistics (`/stats/*`), Achievements
-  (`/achievements`), embedded per-deck stats in deck responses, the rich Card
-  fields (`partOfSpeech`, `example`, `tags`, `difficulty`, `type`, `audioUrl`,
-  `imageUrl`).
-- **P2** (`backend-plan.md §10–12`): Discover (`/discover/*`,
-  `POST /decks/:id/copy`), AI (`/ai/generate-deck`, `/ai/suggest`), Media
-  (avatar / card image upload).
+- **P2** (`backend-plan.md §10–12`):
+  - Discover: `GET /discover/decks`, `/discover/featured`,
+    `/discover/categories`; `POST /decks/:id/copy`.
+  - AI: `POST /ai/generate-deck`, `POST /ai/suggest`.
+  - Media: avatar / card-image upload (presigned URLs).
 
 For these, build the FE against the shapes in `backend-plan.md` and stub the
 network layer — flip to real `http()` when each domain ships.
