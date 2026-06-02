@@ -3,3 +3,13 @@ dist
 .env
 
 /generated/prisma
+
+# OS / editor
+.DS_Store
+.claude/
+
+# Prisma config compile artifacts (the source is prisma.config.ts)
+prisma.config.js
+prisma.config.js.map
+prisma.config.d.ts
+prisma.config.d.ts.map

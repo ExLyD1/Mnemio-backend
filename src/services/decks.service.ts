@@ -67,10 +67,7 @@ export const list = async (
     };
 };
 
-export const create = async (
-    ownerId: string,
-    input: CreateDeckInput,
-): Promise<PublicDeck> => {
+export const create = async (ownerId: string, input: CreateDeckInput): Promise<PublicDeck> => {
     const deck = await decksRepo.createDeck(ownerId, {
         title: input.title,
         description: input.description ?? '',
