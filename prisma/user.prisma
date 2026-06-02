@@ -25,6 +25,7 @@ model User {
   emailVerifications  EmailVerification[]
   oauthIdentities     OAuthIdentity[]
   auditLogs           AuditLog[]
+  preference          Preference?
 
   @@map("users")
 }
