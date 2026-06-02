@@ -1,0 +1,15 @@
+// Daily rollup of review activity per user. Updated on every /srs/rate call.
+// Powers /stats/* (heatmap, streak, series, retention).
+model DailyActivity {
+  userId   String
+  date     DateTime @db.Date     // UTC midnight; one row per (user, calendar day)
+  reviews  Int      @default(0)
+  correct  Int      @default(0)
+  durationMs Int    @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, date])
+  @@index([userId, date])
+  @@map("daily_activity")
+}

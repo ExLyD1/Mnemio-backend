@@ -27,6 +27,7 @@ model User {
   auditLogs           AuditLog[]
   preference          Preference?
   userAchievements    UserAchievement[]
+  dailyActivity       DailyActivity[]
 
   @@map("users")
 }
