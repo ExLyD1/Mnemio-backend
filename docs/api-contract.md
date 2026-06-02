@@ -6,27 +6,28 @@
 
 ## 0. What's new since the last sync
 
-**P1 is shipped.** All five P1 themes from `backend-plan.md §Build phasing` are
-live; the previous P0 reconciliations stay as-is.
+**P2 is shipped.** Discover (public catalog + clone), AI (mock provider for now)
+and Media uploads (local FS for now) are all live. P0+P1 are unchanged.
 
-### P1 deltas
+### P2 deltas
 | Area | Change |
 |---|---|
-| **Decks** | Every `Deck` response now has a nested `stats { total, mastered, learning, new, due, masteredPct }`. Computed against the user's SRS progress, no extra round-trip needed. |
-| **Sessions** | `StudySession` gains server-backed summary fields: `counts { again, hard, good, easy }`, `revisitCardIds: string[]`, `durationMs: number`. FE PATCHes them incrementally; `/complete` returns the final tally. |
-| **Cards** | Rich fields added to `Card` (+ to create/update bodies): `partOfSpeech`, `example`, `exampleTranslation`, `reading`, `tags: string[]`, `difficulty: 'easy'\|'medium'\|'hard'` (default `medium`), `type: 'basic'\|'cloze'\|'image'` (default `basic`), `audioUrl`. |
-| **Preferences** ✨ | New: `GET /users/me/preferences`, `PATCH /users/me/preferences` (`interests`, `goal`, `nativeLanguage`, `learningLanguages`, `avatarHue`, `mimiPlacement`, `favorites: deckId[]`). |
-| **Achievements** ✨ | New: `GET /achievements` returns the full catalog with per-user `earned`/`earnedAt`/`progress`. Auto-evaluated on `/sessions/:id/complete`, `/srs/rate`, and card create. |
-| **Statistics** ✨ | New: `GET /stats/overview`, `/stats/series`, `/stats/activity`, `/stats/decks` (each described in §3). Powered by a backend `DailyActivity` rollup updated on every `/srs/rate`. |
+| **Deck** | New fields on every `Deck` response: `coverColor`, `glyph`, `subject` (all nullable), `featured: boolean`, `copyCount: number`, `sourceDeckId: string \| null`. `POST /decks` and `PATCH /decks/:id` accept the cosmetic fields + `isPublic`. |
+| **Discover** ✨ | New endpoints: `GET /discover/decks`, `GET /discover/featured`, `GET /discover/categories`. |
+| **Clone** ✨ | `POST /decks/:id/copy` — clones a public deck (cards + cosmetics) into the viewer's account, sets `sourceDeckId`, atomically bumps the source's `copyCount`. |
+| **AI** ✨ | `POST /ai/generate-deck` (returns a deck draft, FE persists if user accepts) and `POST /ai/suggest` (Mimi suggestions). Backed by a `mock` provider for MVP; provider swap is env-driven and contract-stable. |
+| **Media** ✨ | `POST /media/uploads?kind=avatar\|card_image\|card_audio` (multipart). Avatar uploads also set `user.avatarUrl`. Files served from `/media/<userId>/<file>`. |
+| **User.avatarUrl** | No longer always `null` — populated after a successful `kind=avatar` upload. |
 
-### Recap of P0 reconciliations (already in §3)
-| Endpoint | Shape |
-|---|---|
-| `GET /decks` | `{ items, nextCursor, total }` |
-| `GET /decks/:id` | `{ deck, cards: Card[] }` (inline, cap 1000) |
+### Recap of earlier deltas (all still in §3)
+- **P1**: embedded per-deck `stats`, server-backed session summary
+  (`counts`/`revisitCardIds`/`durationMs`), rich `Card` fields, Preferences,
+  Achievements, Statistics + DailyActivity.
+- **P0**: `total` on `GET /decks`, inline `cards: Card[]` on `GET /decks/:id`,
+  cookie refresh, error envelope, etc.
 
-Other shipped contract decisions (already in this doc, mentioned here as a
-checklist so you can spot anything your client still expects in the old form):
+Shipped contract invariants (mentioned here so you can spot anything your
+client still expects in the old form):
 - Refresh token is an **HttpOnly cookie** `mnemio_refresh` on path
   `/api/v1/auth`; never in any body.
 - `POST /srs/rate` body is `{ cardId, rating: 'again'|'hard'|'good'|'easy' }`
@@ -39,14 +40,6 @@ checklist so you can spot anything your client still expects in the old form):
 The backend ships a seed: `npm run seed` creates `demo@mnemio.local` /
 `demo-password-123` (pre-verified, profile complete, 2 decks of 8–10 cards).
 Use it to skip the OTP scrape during FE integration testing.
-
-### Not in this contract (yet)
-The next backend phase (P1) will add **Preferences**, **per-deck stats embedded
-in deck responses**, **Statistics** (`/stats/*`), **Achievements**, and the
-**expanded Card model** (`partOfSpeech`, `example`, `tags`, `difficulty`,
-`type`, `audioUrl`, …). Specs live in `backend-plan.md §Domain specs`. P2 covers
-**Discover**, **AI**, **Media**. **Don't call those endpoints yet** — they will
-404 — but you can wire UI stubs against the shapes in the plan.
 
 ---
 
@@ -161,7 +154,7 @@ type User = {
   fullName: string | null;     // null until profile completion
   username: string | null;     // null until profile completion
   birthday: string | null;     // 'YYYY-MM-DD' or null
-  avatarUrl: string | null;    // always null at MVP (avatar upload = P2)
+  avatarUrl: string | null;    // populated by POST /media/uploads?kind=avatar
   emailVerified: boolean;
   role: 'user' | 'admin';
   xp: number;                  // updated atomically on session complete
@@ -188,11 +181,27 @@ type Deck = {
   description: string;
   sourceLanguage: string;      // ISO 639-1, e.g. 'en'
   targetLanguage: string;
-  isPublic: boolean;           // always false at MVP
+  isPublic: boolean;
   cardCount: number;
+  coverColor: string | null;   // P2: '#RRGGBB' hex
+  glyph: string | null;        // P2: short symbol/emoji, ≤ 8 chars
+  subject: string | null;      // P2: e.g. 'languages', 'science'
+  featured: boolean;           // P2: curator-flagged for Discover home
+  copyCount: number;           // P2: # of times this deck has been cloned
+  sourceDeckId: string | null; // P2: id of the public deck this was copied from
   stats: DeckStats;            // P1: embedded per-deck stats
   createdAt: string;
   updatedAt: string;
+};
+
+// Discover responses use a variant that bundles an author summary so the FE
+// doesn't need a second roundtrip to render a username.
+type DeckWithAuthor = Deck & {
+  author: {
+    id: string;
+    username: string | null;
+    fullName: string | null;
+  };
 };
 
 type Card = {
@@ -411,6 +420,10 @@ Example (after `npm run seed`):
   description?: string;       // ≤ 500 chars, default ''
   sourceLanguage: string;     // 2–10 chars
   targetLanguage: string;
+  isPublic?: boolean;         // P2; default false
+  coverColor?: string | null; // P2: '#RRGGBB' hex
+  glyph?: string | null;      // P2: 1–8 chars (emoji ok)
+  subject?: string | null;    // P2: 1–40 chars
 }
 // 201 Response: Deck
 ```
@@ -442,7 +455,8 @@ Example:
 
 #### `PATCH /decks/:id`  *(auth)*
 ```ts
-// Request: any subset of { title, description, sourceLanguage, targetLanguage }
+// Request: any subset of the POST /decks body, including isPublic /
+//          coverColor / glyph / subject. null clears the optional fields.
 // 200 Response: Deck
 ```
 
@@ -741,6 +755,160 @@ Per-deck performance for the Statistics screen.
 > `reviewed` come from `CardProgress.repetitions` as a proxy. Matches the FE's
 > current `useDeckStats` heuristic — same numbers either way.
 
+### Discover  *(P2)*
+
+Browse, search, and clone public decks.
+
+#### `GET /discover/decks`  *(auth)*
+Paginated public-deck catalog. Same opaque cursor model as `GET /decks`.
+```ts
+// Query
+?cursor?=string
+&limit?=number(<=50)             // default 20
+&q?=string                       // case-insensitive search on title/description
+&lang?=string                    // ISO 639-1; matches sourceLanguage OR targetLanguage
+&subject?=string                 // e.g. 'languages', 'science'
+&sort?='popular' | 'recent'      // default 'recent'
+
+// 200 Response: PageWithTotal<DeckWithAuthor>
+//   = { items: DeckWithAuthor[]; nextCursor: string | null; total: number }
+```
+Sort keys:
+- `recent` → `updatedAt DESC, id DESC`
+- `popular` → `copyCount DESC, id DESC`
+
+#### `GET /discover/featured`  *(auth)*
+Curator-flagged decks (`featured = true`), max 12. Sorted by `updatedAt DESC`.
+```ts
+// 200 Response: { items: DeckWithAuthor[] }
+```
+
+#### `GET /discover/categories`  *(auth)*
+Distinct `subject` values across the public catalog, with deck counts. Top 50
+by count.
+```ts
+// 200 Response: { items: { subject: string; count: number }[] }
+```
+
+#### `POST /decks/:id/copy`  *(auth)*
+Clone a public deck (cards + cosmetics) into the viewer's account. Atomic:
+the source's `copyCount` is incremented in the same transaction. The clone
+starts **private** (`isPublic: false`) and carries `sourceDeckId = <original>`.
+```ts
+// Request: (empty body)
+// 201 Response: Deck                          // the freshly-created copy
+// Errors:
+// 404 DECK_NOT_FOUND  (no such public deck)
+```
+
+### AI  *(P2)*
+
+Mimi-powered helpers. The MVP backend ships a **mock provider** so the FE can
+wire these surfaces without a real LLM key — response shapes are stable across
+the provider swap (set via `AI_PROVIDER` env var).
+
+#### `POST /ai/generate-deck`  *(auth)*
+Generates a deck draft based on a topic. **Server does not persist** — the FE
+shows the draft to the user, then calls `POST /decks` + bulk card create if
+the user accepts.
+```ts
+// Request
+{
+  topic: string;                 // 2–160 chars
+  sourceLanguage?: string;       // default 'en'
+  targetLanguage: string;        // ISO 639-1
+  count?: number;                // 1–20, default 8
+}
+
+// 200 Response
+{
+  provider: string;              // 'mock' for MVP
+  draft: {
+    title: string;
+    description: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    subject?: string;
+    glyph?: string;
+    cards: {
+      word: string;
+      definition: string;
+      phonetic?: string;
+      partOfSpeech?: string;
+      example?: string;
+      exampleTranslation?: string;
+      tags?: string[];
+      difficulty?: 'easy' | 'medium' | 'hard';
+    }[];
+  };
+}
+```
+
+#### `POST /ai/suggest`  *(auth)*
+Contextual Mimi nudge for the dashboard / deck detail / review screens.
+```ts
+// Request
+{
+  context: 'dashboard' | 'deck_detail' | 'review';  // default 'dashboard'
+  deckId?: string;                                   // for context='deck_detail'
+}
+
+// 200 Response
+{
+  suggestion: string;
+  kind: 'tip' | 'deck' | 'review';
+  actions: { label: string; href: string }[];
+}
+```
+
+Both endpoints are rate-limited to 30 req/min per user.
+
+### Media  *(P2)*
+
+Single multipart upload endpoint for avatars / card images / card audio. The
+MVP backend stores files on local disk and serves them via static handler;
+production swaps in S3 presigned PUT URLs without changing the contract shape.
+
+#### `POST /media/uploads?kind=avatar|card_image|card_audio`  *(auth)*
+Multipart form: one field named `file`.
+
+| Kind | MIME allowlist | Max size |
+|---|---|---|
+| `avatar` | `image/png\|jpeg\|webp` | 2 MB |
+| `card_image` | `image/png\|jpeg\|webp\|gif` | 5 MB |
+| `card_audio` | `audio/mpeg\|mp3\|wav\|ogg\|webm` | 10 MB |
+
+```ts
+// Request: multipart/form-data with `file` field
+// Query:   ?kind=avatar | card_image | card_audio
+
+// 201 Response (card_image / card_audio)
+{
+  url: string;          // public URL — store this in card.imageUrl/audioUrl
+  kind: 'card_image' | 'card_audio';
+  size: number;
+  mimeType: string;
+}
+
+// 201 Response (avatar) — side-effect: also sets user.avatarUrl
+{
+  url: string;
+  kind: 'avatar';
+  size: number;
+  mimeType: string;
+  user: User;           // the updated user row
+}
+
+// Errors:
+// 400 MEDIA_NO_FILE      (no `file` field in the multipart)
+// 400 MEDIA_BAD_MIME     (MIME outside the allowlist for the kind)
+// 422 MEDIA_TOO_LARGE    (exceeds the per-kind size cap)
+```
+
+After upload, the URL is served at `GET <url>` (no auth needed; treat as a
+public link). For card uploads, `PATCH /cards/:id { audioUrl | imageUrl }` to
+attach. For avatars, the response already updated the user row.
+
 ### Health (ops)
 
 #### `GET /health`  *(public, **no** `/api/v1` prefix)*
@@ -860,15 +1028,15 @@ curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
 
 ## 6. What's NOT in this contract
 
-### Coming later (don't call yet — backend will 404)
-- **P2** (`backend-plan.md §10–12`):
-  - Discover: `GET /discover/decks`, `/discover/featured`,
-    `/discover/categories`; `POST /decks/:id/copy`.
-  - AI: `POST /ai/generate-deck`, `POST /ai/suggest`.
-  - Media: avatar / card-image upload (presigned URLs).
-
-For these, build the FE against the shapes in `backend-plan.md` and stub the
-network layer — flip to real `http()` when each domain ships.
+### Coming later
+- **Admin surface for `featured`**: today, the `featured` flag is set directly
+  in the DB. A `POST /admin/decks/:id/feature` (gated on `user.role='admin'`)
+  is a small post-MVP addition when curation moves out of SQL.
+- **Real LLM provider for `/ai/*`**: the contract is stable; swap the `mock`
+  provider for an Anthropic/OpenAI adapter via `AI_PROVIDER` env.
+- **S3-backed media**: the `/media/uploads` shape stays; the storage backend
+  swaps from local FS to S3 presigned PUTs (see `src/services/media.service.ts`
+  comment header for the migration steps).
 
 ### Out of MVP entirely (no plans to ship)
 - Password reset / forgot-password (manual support intervention at MVP).
