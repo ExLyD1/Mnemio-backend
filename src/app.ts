@@ -14,6 +14,7 @@ import sessionsRoutes from './routes/sessions.routes.js';
 import dashboardRoutes from './routes/dashboard.routes.js';
 import achievementsRoutes from './routes/achievements.routes.js';
 import statsRoutes from './routes/stats.routes.js';
+import discoverRoutes from './routes/discover.routes.js';
 
 export const API_PREFIX = '/api/v1';
 
@@ -57,6 +58,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(dashboardRoutes);
             await api.register(achievementsRoutes);
             await api.register(statsRoutes);
+            await api.register(discoverRoutes);
         },
         { prefix: API_PREFIX },
     );
