@@ -1,6 +1,9 @@
+import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import multipart from '@fastify/multipart';
+import fastifyStatic from '@fastify/static';
 import { env } from './config/env.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { registerJwt } from './plugins/jwt.js';
@@ -16,6 +19,7 @@ import achievementsRoutes from './routes/achievements.routes.js';
 import statsRoutes from './routes/stats.routes.js';
 import discoverRoutes from './routes/discover.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import mediaRoutes from './routes/media.routes.js';
 
 export const API_PREFIX = '/api/v1';
 
@@ -42,6 +46,21 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         timeWindow: '1 minute',
     });
 
+    await fastify.register(multipart, {
+        // Hard ceiling for any upload; per-kind enforcement is in media.service.ts.
+        limits: { fileSize: Math.max(env.MEDIA_MAX_AVATAR_BYTES, env.MEDIA_MAX_IMAGE_BYTES, env.MEDIA_MAX_AUDIO_BYTES) },
+    });
+
+    // Serve uploaded files from MEDIA_DIR under MEDIA_PUBLIC_BASE. Production
+    // moves this to S3 via presigned URLs (see media.service.ts comment).
+    if (env.MEDIA_STORAGE === 'local') {
+        await fastify.register(fastifyStatic, {
+            root: path.resolve(env.MEDIA_DIR),
+            prefix: `${env.MEDIA_PUBLIC_BASE}/`,
+            decorateReply: false,
+        });
+    }
+
     await registerCookies(fastify);
     await registerJwt(fastify);
     registerErrorHandler(fastify);
@@ -61,6 +80,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(statsRoutes);
             await api.register(discoverRoutes);
             await api.register(aiRoutes);
+            await api.register(mediaRoutes);
         },
         { prefix: API_PREFIX },
     );

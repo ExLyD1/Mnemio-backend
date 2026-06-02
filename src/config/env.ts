@@ -24,6 +24,16 @@ const envSchema = z.object({
     // realistic-shaped placeholders so the FE can wire without a real key.
     AI_PROVIDER: z.enum(['mock']).default('mock'),
 
+    // Media storage. 'local' writes to MEDIA_DIR and serves under MEDIA_PUBLIC_BASE
+    // via @fastify/static. For prod, swap to S3-compatible presigned PUTs (see
+    // src/services/media.service.ts comment).
+    MEDIA_STORAGE: z.enum(['local']).default('local'),
+    MEDIA_DIR: z.string().default('./uploads'),
+    MEDIA_PUBLIC_BASE: z.string().default('/media'),
+    MEDIA_MAX_AVATAR_BYTES: z.coerce.number().int().positive().default(2_000_000),
+    MEDIA_MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(5_000_000),
+    MEDIA_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(10_000_000),
+
     OAUTH_GOOGLE_CLIENT_ID: z.string().optional(),
     OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
     OAUTH_FACEBOOK_CLIENT_ID: z.string().optional(),

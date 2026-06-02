@@ -4,6 +4,7 @@ export type UpdateMePatch = {
     fullName?: string;
     username?: string;
     birthday?: Date;
+    avatarUrl?: string | null;
 };
 
 export const findUserById = (id: string) => prisma.user.findUnique({ where: { id } });
