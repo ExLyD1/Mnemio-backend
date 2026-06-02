@@ -4,11 +4,13 @@
     "description": "Mnemio backend API (Fastify + Prisma + PostgreSQL)",
     "main": "dist/server.js",
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1",
+        "test": "vitest run",
+        "test:watch": "vitest",
         "dev": "tsx watch src/server.ts",
         "build": "prisma generate && tsc",
         "start": "node dist/src/server.js",
         "typecheck": "tsc --noEmit",
+        "seed": "tsx scripts/seed.ts",
         "prisma:generate": "prisma generate",
         "prisma:migrate": "prisma migrate dev",
         "prisma:deploy": "prisma migrate deploy"
@@ -43,6 +45,7 @@
         "eslint-plugin-prettier": "^5.5.5",
         "prettier": "^3.8.1",
         "tsx": "^4.19.2",
-        "typescript": "^6.0.2"
+        "typescript": "^6.0.2",
+        "vitest": "^3.0.0"
     }
 }

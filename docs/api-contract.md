@@ -435,13 +435,15 @@ Rate a card. Server runs SM-2 and upserts the user's `CardProgress`.
 // 200 Response: CardProgress
 // Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN
 ```
-Rating → SM-2 quality mapping (matches the frontend composable):
+Rating → SM-2 quality mapping (matches the frontend composable). EF delta uses
+the standard SuperMemo-2 formula `ΔEF = 0.1 − (5−q)(0.08 + (5−q)·0.02)`, with EF
+floored at 1.3.
 | Rating | Quality | Effect |
 |---|---|---|
-| `again` | 0 | Full reset: repetitions = 0, interval = 1 day, easeFactor -= 0.2 (min 1.3) |
-| `hard`  | 2 | Treated as recall failure → same reset path (interval = 1 day) |
-| `good`  | 3 | Advance: repetitions++, interval = 1 / 6 / round(prev × EF), EF unchanged |
-| `easy`  | 5 | Advance with EF boost (~+0.1) |
+| `again` | 0 | Failure path: repetitions=0, interval=1d, **EF −0.2** |
+| `hard`  | 2 | Treated as failure (q<3): same reset path, **EF −0.32** |
+| `good`  | 3 | Advance: repetitions++, interval = 1 / 6 / round(prev × prevEF), **EF −0.14** |
+| `easy`  | 5 | Advance same way, **EF +0.10** |
 
 #### `GET /srs/due`  *(auth)*
 ```ts
