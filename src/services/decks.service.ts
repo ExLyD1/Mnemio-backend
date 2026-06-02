@@ -4,7 +4,7 @@ import {
     decodeCursor,
     encodeCursor,
     parseLimit,
-    type Page,
+    type PageWithTotal,
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
 import { toPublicDeck, toPublicCard, type PublicDeck, type PublicCard } from '../shared/mappers.deck.js';
@@ -18,10 +18,13 @@ import type {
 export const list = async (
     ownerId: string,
     query: DeckListQuery,
-): Promise<Page<PublicDeck>> => {
+): Promise<PageWithTotal<PublicDeck>> => {
     const limit = parseLimit(query.limit, 20);
     const cursor = decodeCursor(query.cursor);
-    const rows = await decksRepo.listDecks({ ownerId, limit, cursor, q: query.q });
+    const [rows, total] = await Promise.all([
+        decksRepo.listDecks({ ownerId, limit, cursor, q: query.q }),
+        decksRepo.countDecks({ ownerId, q: query.q }),
+    ]);
 
     let nextCursor: string | null = null;
     if (rows.length > limit) {
@@ -31,6 +34,7 @@ export const list = async (
     return {
         items: rows.slice(0, limit).map(toPublicDeck),
         nextCursor,
+        total,
     };
 };
 
@@ -47,34 +51,26 @@ export const create = async (
     return toPublicDeck(deck);
 };
 
+// Reconciliation per backend-plan.md §Reconciliations #2: FE expects the full
+// cards array inline (Deck Detail list, study queue, Add Card "card N"). Cap
+// at 1000 — matches the FE per-deck limit. A paged GET /decks/:id/cards can be
+// added later for content beyond the cap.
+const MAX_INLINE_CARDS = 1000;
+
 export const getOne = async (
     ownerId: string,
     deckId: string,
     query: DeckDetailQuery,
-): Promise<{ deck: PublicDeck; cards: Page<PublicCard> }> => {
+): Promise<{ deck: PublicDeck; cards: PublicCard[] }> => {
     const deck = await decksRepo.findDeckById(deckId, ownerId);
     if (!deck) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
 
-    const cardsLimit = parseLimit(query.cardsLimit, 50);
-    const cardsCursor = decodeCursor(query.cardsCursor);
-    const rows = await cardsRepo.listCardsByPosition({
-        deckId,
-        limit: cardsLimit,
-        cursor: cardsCursor,
-    });
-
-    let nextCursor: string | null = null;
-    if (rows.length > cardsLimit) {
-        const last = rows[cardsLimit - 1]!;
-        nextCursor = encodeCursor({ ts: String(last.position), id: last.id });
-    }
+    const cap = query.cardsLimit ?? MAX_INLINE_CARDS;
+    const rows = await cardsRepo.listAllCardsForDeck(deckId, cap);
 
     return {
         deck: toPublicDeck(deck),
-        cards: {
-            items: rows.slice(0, cardsLimit).map(toPublicCard),
-            nextCursor,
-        },
+        cards: rows.map(toPublicCard),
     };
 };
 

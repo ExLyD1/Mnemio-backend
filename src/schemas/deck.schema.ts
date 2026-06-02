@@ -28,8 +28,8 @@ export const deckListQuerySchema = z.object({
 });
 
 export const deckDetailQuerySchema = z.object({
-    cardsCursor: z.string().optional(),
-    cardsLimit: z.coerce.number().int().positive().max(200).optional(),
+    // Hard upper bound matches the FE per-deck cap of 1000.
+    cardsLimit: z.coerce.number().int().positive().max(1000).optional(),
 });
 
 export type CreateDeckInput = z.infer<typeof createDeckSchema>;

@@ -38,6 +38,15 @@ export const listCardsByPosition = ({ deckId, limit, cursor }: ListCardsParams) 
     });
 };
 
+// FE Deck Detail / study queue / Add Card need every card up front (≤1000/deck
+// per the FE perf budget). Listed inline by GET /decks/:id.
+export const listAllCardsForDeck = (deckId: string, max = 1000) =>
+    prisma.card.findMany({
+        where: { deckId },
+        orderBy: [{ position: 'asc' }, { id: 'asc' }],
+        take: max,
+    });
+
 export const nextPositionForDeck = async (deckId: string): Promise<number> => {
     const last = await prisma.card.findFirst({
         where: { deckId },
