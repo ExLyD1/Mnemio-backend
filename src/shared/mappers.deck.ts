@@ -19,9 +19,21 @@ export type PublicDeck = {
     targetLanguage: string;
     isPublic: boolean;
     cardCount: number;
+    coverColor: string | null;
+    glyph: string | null;
+    subject: string | null;
+    featured: boolean;
+    copyCount: number;
+    sourceDeckId: string | null;
     stats: DeckStats;
     createdAt: string;
     updatedAt: string;
+};
+
+// `Deck + author summary` for Discover listings — keeps the FE from doing a
+// second roundtrip just to render a username.
+export type PublicDeckWithAuthor = PublicDeck & {
+    author: { id: string; username: string | null; fullName: string | null };
 };
 
 export type CardDifficulty = 'easy' | 'medium' | 'hard';
@@ -77,9 +89,23 @@ export const toPublicDeck = (deck: DeckModel, stats?: DeckStats): PublicDeck => 
     targetLanguage: deck.targetLanguage,
     isPublic: deck.isPublic,
     cardCount: deck.cardCount,
+    coverColor: deck.coverColor,
+    glyph: deck.glyph,
+    subject: deck.subject,
+    featured: deck.featured,
+    copyCount: deck.copyCount,
+    sourceDeckId: deck.sourceDeckId,
     stats: stats ?? zeroStats(deck.cardCount),
     createdAt: deck.createdAt.toISOString(),
     updatedAt: deck.updatedAt.toISOString(),
+});
+
+export const toPublicDeckWithAuthor = (
+    deck: DeckModel & { author: { id: string; username: string | null; fullName: string | null } },
+    stats?: DeckStats,
+): PublicDeckWithAuthor => ({
+    ...toPublicDeck(deck, stats),
+    author: deck.author,
 });
 
 export const toPublicCard = (card: CardModel): PublicCard => ({

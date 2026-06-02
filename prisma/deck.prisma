@@ -7,6 +7,15 @@ model Deck {
   targetLanguage String
   isPublic       Boolean  @default(false)
   cardCount      Int      @default(0)
+  // Cosmetic / discovery fields (P2)
+  coverColor     String?
+  glyph          String?
+  subject        String?
+  // Featured by curators for the Discover landing — toggle by an admin in DB
+  // for MVP; eventual surface: POST /admin/decks/:id/feature.
+  featured       Boolean  @default(false)
+  copyCount      Int      @default(0)
+  sourceDeckId   String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -15,8 +24,13 @@ model Deck {
   studySessions StudySession[]
   collaborators DeckCollaborator[]
   folderDecks   FolderDeck[]
+  copies        Deck[]             @relation("DeckCopies")
+  source        Deck?              @relation("DeckCopies", fields: [sourceDeckId], references: [id], onDelete: SetNull)
 
   @@index([authorId, updatedAt])
+  @@index([isPublic, updatedAt])
+  @@index([isPublic, subject])
+  @@index([isPublic, featured])
   @@map("decks")
 }
 

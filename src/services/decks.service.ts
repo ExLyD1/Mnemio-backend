@@ -73,6 +73,10 @@ export const create = async (ownerId: string, input: CreateDeckInput): Promise<P
         description: input.description ?? '',
         sourceLanguage: input.sourceLanguage,
         targetLanguage: input.targetLanguage,
+        isPublic: input.isPublic ?? false,
+        coverColor: input.coverColor ?? null,
+        glyph: input.glyph ?? null,
+        subject: input.subject ?? null,
     });
     return toPublicDeck(deck);
 };
@@ -109,16 +113,15 @@ export const update = async (
     deckId: string,
     input: UpdateDeckInput,
 ): Promise<PublicDeck> => {
-    const patch: Partial<{
-        title: string;
-        description: string;
-        sourceLanguage: string;
-        targetLanguage: string;
-    }> = {};
+    const patch: decksRepo.DeckUpdateData = {};
     if (input.title !== undefined) patch.title = input.title;
     if (input.description !== undefined) patch.description = input.description;
     if (input.sourceLanguage !== undefined) patch.sourceLanguage = input.sourceLanguage;
     if (input.targetLanguage !== undefined) patch.targetLanguage = input.targetLanguage;
+    if (input.isPublic !== undefined) patch.isPublic = input.isPublic;
+    if (input.coverColor !== undefined) patch.coverColor = input.coverColor;
+    if (input.glyph !== undefined) patch.glyph = input.glyph;
+    if (input.subject !== undefined) patch.subject = input.subject;
 
     const { count } = await decksRepo.updateDeck(deckId, ownerId, patch);
     if (count === 0) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');

@@ -50,15 +50,30 @@ export const countDecks = ({ ownerId, q }: Pick<ListDecksParams, 'ownerId' | 'q'
 export const findDeckById = (id: string, ownerId: string) =>
     prisma.deck.findFirst({ where: { id, authorId: ownerId } });
 
-export const createDeck = (
-    ownerId: string,
-    data: {
-        title: string;
-        description: string;
-        sourceLanguage: string;
-        targetLanguage: string;
-    },
-) =>
+export type DeckCreateData = {
+    title: string;
+    description: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    isPublic?: boolean;
+    coverColor?: string | null;
+    glyph?: string | null;
+    subject?: string | null;
+    sourceDeckId?: string | null;
+};
+
+export type DeckUpdateData = Partial<{
+    title: string;
+    description: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    isPublic: boolean;
+    coverColor: string | null;
+    glyph: string | null;
+    subject: string | null;
+}>;
+
+export const createDeck = (ownerId: string, data: DeckCreateData) =>
     prisma.deck.create({
         data: {
             authorId: ownerId,
@@ -66,19 +81,15 @@ export const createDeck = (
             description: data.description,
             sourceLanguage: data.sourceLanguage,
             targetLanguage: data.targetLanguage,
+            isPublic: data.isPublic ?? false,
+            coverColor: data.coverColor ?? null,
+            glyph: data.glyph ?? null,
+            subject: data.subject ?? null,
+            sourceDeckId: data.sourceDeckId ?? null,
         },
     });
 
-export const updateDeck = (
-    id: string,
-    ownerId: string,
-    patch: Partial<{
-        title: string;
-        description: string;
-        sourceLanguage: string;
-        targetLanguage: string;
-    }>,
-) =>
+export const updateDeck = (id: string, ownerId: string, patch: DeckUpdateData) =>
     prisma.deck.updateMany({
         where: { id, authorId: ownerId },
         data: patch,
