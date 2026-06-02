@@ -1,5 +1,6 @@
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
+import * as deckStatsRepo from '../repositories/deck-stats.repository.js';
 import {
     decodeCursor,
     encodeCursor,
@@ -7,13 +8,35 @@ import {
     type PageWithTotal,
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
-import { toPublicDeck, toPublicCard, type PublicDeck, type PublicCard } from '../shared/mappers.deck.js';
+import {
+    toPublicDeck,
+    toPublicCard,
+    buildStats,
+    type PublicDeck,
+    type PublicCard,
+    type DeckStats,
+} from '../shared/mappers.deck.js';
 import type {
     CreateDeckInput,
     UpdateDeckInput,
     DeckListQuery,
     DeckDetailQuery,
 } from '../schemas/deck.schema.js';
+
+const statsByDeckId = async (
+    ownerId: string,
+    deckIds: string[],
+    cardCountById: Map<string, number>,
+): Promise<Map<string, DeckStats>> => {
+    const out = new Map<string, DeckStats>();
+    if (deckIds.length === 0) return out;
+    const rows = await deckStatsRepo.aggregateDeckStats(ownerId, deckIds);
+    const aggById = new Map(rows.map((r) => [r.deckId, r]));
+    for (const deckId of deckIds) {
+        out.set(deckId, buildStats(cardCountById.get(deckId) ?? 0, aggById.get(deckId)));
+    }
+    return out;
+};
 
 export const list = async (
     ownerId: string,
@@ -31,8 +54,14 @@ export const list = async (
         const last = rows[limit - 1]!;
         nextCursor = encodeCursor({ ts: last.updatedAt.toISOString(), id: last.id });
     }
+    const pageRows = rows.slice(0, limit);
+    const stats = await statsByDeckId(
+        ownerId,
+        pageRows.map((d) => d.id),
+        new Map(pageRows.map((d) => [d.id, d.cardCount])),
+    );
     return {
-        items: rows.slice(0, limit).map(toPublicDeck),
+        items: pageRows.map((d) => toPublicDeck(d, stats.get(d.id))),
         nextCursor,
         total,
     };
@@ -66,10 +95,14 @@ export const getOne = async (
     if (!deck) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
 
     const cap = query.cardsLimit ?? MAX_INLINE_CARDS;
-    const rows = await cardsRepo.listAllCardsForDeck(deckId, cap);
+    const [rows, statsRows] = await Promise.all([
+        cardsRepo.listAllCardsForDeck(deckId, cap),
+        deckStatsRepo.aggregateDeckStats(ownerId, [deckId]),
+    ]);
+    const stats = buildStats(deck.cardCount, statsRows[0]);
 
     return {
-        deck: toPublicDeck(deck),
+        deck: toPublicDeck(deck, stats),
         cards: rows.map(toPublicCard),
     };
 };
