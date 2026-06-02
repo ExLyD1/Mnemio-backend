@@ -20,6 +20,10 @@ const envSchema = z.object({
     MAIL_PROVIDER: z.enum(['console', 'resend']).default('console'),
     MAIL_PROVIDER_API_KEY: z.string().optional(),
 
+    // AI provider for Mimi suggestions and deck generation. 'mock' returns
+    // realistic-shaped placeholders so the FE can wire without a real key.
+    AI_PROVIDER: z.enum(['mock']).default('mock'),
+
     OAUTH_GOOGLE_CLIENT_ID: z.string().optional(),
     OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
     OAUTH_FACEBOOK_CLIENT_ID: z.string().optional(),
