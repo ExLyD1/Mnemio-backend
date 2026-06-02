@@ -24,12 +24,23 @@ export type PublicDeck = {
     updatedAt: string;
 };
 
+export type CardDifficulty = 'easy' | 'medium' | 'hard';
+export type CardType = 'basic' | 'cloze' | 'image';
+
 export type PublicCard = {
     id: string;
     deckId: string;
     word: string;
     definition: string;
     phonetic: string | null;
+    reading: string | null;
+    partOfSpeech: string | null;
+    example: string | null;
+    exampleTranslation: string | null;
+    tags: string[];
+    difficulty: CardDifficulty;
+    type: CardType;
+    audioUrl: string | null;
     imageUrl: string | null;
     position: number;
     createdAt: string;
@@ -77,6 +88,14 @@ export const toPublicCard = (card: CardModel): PublicCard => ({
     word: card.word,
     definition: card.definition,
     phonetic: card.phonetic,
+    reading: card.reading,
+    partOfSpeech: card.partOfSpeech,
+    example: card.example,
+    exampleTranslation: card.exampleTranslation,
+    tags: card.tags,
+    difficulty: card.difficulty as CardDifficulty,
+    type: card.type as CardType,
+    audioUrl: card.audioUrl,
     imageUrl: card.imageUrl,
     position: card.position,
     createdAt: card.createdAt.toISOString(),
