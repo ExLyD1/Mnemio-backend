@@ -35,11 +35,18 @@ export const startSession = (data: {
 export const findSessionOwned = (id: string, userId: string) =>
     prisma.studySession.findFirst({ where: { id, userId } });
 
-export const updateProgress = (
-    id: string,
-    userId: string,
-    patch: { cardIndex?: number; correct?: number },
-) =>
+export type SessionProgressPatch = {
+    cardIndex?: number;
+    correct?: number;
+    countsAgain?: number;
+    countsHard?: number;
+    countsGood?: number;
+    countsEasy?: number;
+    revisitCardIds?: string[];
+    durationMs?: number;
+};
+
+export const updateProgress = (id: string, userId: string, patch: SessionProgressPatch) =>
     prisma.studySession.updateMany({
         where: { id, userId, status: 'active' },
         data: patch,

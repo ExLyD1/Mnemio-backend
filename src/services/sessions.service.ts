@@ -35,9 +35,17 @@ export const updateProgress = async (
     sessionId: string,
     input: UpdateSessionInput,
 ): Promise<PublicSession> => {
-    const patch: { cardIndex?: number; correct?: number } = {};
+    const patch: sessionsRepo.SessionProgressPatch = {};
     if (input.cardIndex !== undefined) patch.cardIndex = input.cardIndex;
     if (input.correct !== undefined) patch.correct = input.correct;
+    if (input.counts !== undefined) {
+        patch.countsAgain = input.counts.again;
+        patch.countsHard = input.counts.hard;
+        patch.countsGood = input.counts.good;
+        patch.countsEasy = input.counts.easy;
+    }
+    if (input.revisitCardIds !== undefined) patch.revisitCardIds = input.revisitCardIds;
+    if (input.durationMs !== undefined) patch.durationMs = input.durationMs;
 
     const { count } = await sessionsRepo.updateProgress(sessionId, ownerId, patch);
     if (count === 0) {
