@@ -4,6 +4,41 @@
 > `localStorage`-backed mocks in `app/api/*.ts` with real HTTP calls.
 > Read [`backend-plan.md`](./backend-plan.md) for the *why*; this file is the *what*.
 
+## 0. What's new since the last sync
+
+All **P0** reconciliations from `backend-plan.md §Reconciliations` are
+implemented. Concrete deltas you'll see in responses:
+
+| Endpoint | Old shape | New shape |
+|---|---|---|
+| `GET /decks` | `{ items, nextCursor }` | **`{ items, nextCursor, total }`** |
+| `GET /decks/:id` | `{ deck, cards: Page<Card> }` | **`{ deck, cards: Card[] }`** (inline, cap 1000) |
+
+These are now reflected in §3 below. Nothing else moved.
+
+Other shipped contract decisions (already in this doc, mentioned here as a
+checklist so you can spot anything your client still expects in the old form):
+- Refresh token is an **HttpOnly cookie** `mnemio_refresh` on path
+  `/api/v1/auth`; never in any body.
+- `POST /srs/rate` body is `{ cardId, rating: 'again'|'hard'|'good'|'easy' }`
+  (server derives `deckId` from the card).
+- Session XP is **server-computed** `correct*10 + 25`; don't send `xp`.
+- `User.displayName` was renamed to `User.fullName`.
+- Username-taken error code is `AUTH_USERNAME_TAKEN` (not `USER_*`).
+
+### Demo data
+The backend ships a seed: `npm run seed` creates `demo@mnemio.local` /
+`demo-password-123` (pre-verified, profile complete, 2 decks of 8–10 cards).
+Use it to skip the OTP scrape during FE integration testing.
+
+### Not in this contract (yet)
+The next backend phase (P1) will add **Preferences**, **per-deck stats embedded
+in deck responses**, **Statistics** (`/stats/*`), **Achievements**, and the
+**expanded Card model** (`partOfSpeech`, `example`, `tags`, `difficulty`,
+`type`, `audioUrl`, …). Specs live in `backend-plan.md §Domain specs`. P2 covers
+**Discover**, **AI**, **Media**. **Don't call those endpoints yet** — they will
+404 — but you can wire UI stubs against the shapes in the plan.
+
 ---
 
 ## 1. Conventions
@@ -117,11 +152,11 @@ type User = {
   fullName: string | null;     // null until profile completion
   username: string | null;     // null until profile completion
   birthday: string | null;     // 'YYYY-MM-DD' or null
-  avatarUrl: string | null;
+  avatarUrl: string | null;    // always null at MVP (avatar upload = P2)
   emailVerified: boolean;
   role: 'user' | 'admin';
-  xp: number;
-  streak: number;
+  xp: number;                  // updated atomically on session complete
+  streak: number;              // EXPOSED BUT ALWAYS 0 — daily rollup lands in P1
   createdAt: string;
   updatedAt: string;
 };
@@ -295,6 +330,18 @@ Profile completion. All fields optional; at least one required.
 `updatedAt DESC, id DESC` (stable keyset). `total` is the full match count for
 the filter, independent of the current page.
 
+Example (after `npm run seed`):
+```json
+{
+  "items": [
+    { "id": "…", "title": "Japanese: Hiragana Starter", "cardCount": 10, "…": "…" },
+    { "id": "…", "title": "Spanish: Greetings & Basics", "cardCount": 8,  "…": "…" }
+  ],
+  "nextCursor": null,
+  "total": 2
+}
+```
+
 #### `POST /decks`  *(auth)*
 ```ts
 // Request
@@ -320,6 +367,16 @@ paged. Hard cap is 1000 (matches the FE per-deck limit).
   cards: Card[];              // sorted by (position ASC, id ASC), up to cap
 }
 // Errors: 404 DECK_NOT_FOUND
+```
+Example:
+```json
+{
+  "deck": { "id": "…", "title": "Japanese: Hiragana Starter", "cardCount": 10, "…": "…" },
+  "cards": [
+    { "id": "…", "deckId": "…", "word": "あ", "definition": "a (vowel)", "phonetic": "/a/", "position": 0, "…": "…" },
+    { "id": "…", "deckId": "…", "word": "い", "definition": "i (vowel)", "phonetic": "/i/", "position": 1, "…": "…" }
+  ]
+}
 ```
 
 #### `PATCH /decks/:id`  *(auth)*
@@ -395,6 +452,9 @@ incremented atomically.
 // 200 Response: StudySession  (status: 'complete', xpAwarded set)
 // Errors: 400 SESSION_NOT_ACTIVE · 404 SESSION_NOT_FOUND
 ```
+> **Side effect:** `user.xp` increases by `xpAwarded`. The response contains the
+> session, not the user — refresh user state via `GET /auth/me` (or
+> `GET /dashboard.stats.xp`) if the UI shows it.
 
 #### `POST /sessions/:id/exit`  *(auth)*
 Explicit user-triggered exit. Marks an active session as `incomplete` (no XP
@@ -539,7 +599,8 @@ login(email, password)
 
 ### Pagination wiring
 Stash `nextCursor` per list view. "Load more" passes `?cursor=<nextCursor>`.
-`null` means "no more pages". No total counts available.
+`null` means "no more pages". Only `GET /decks` exposes `total` (for the
+Library header counter); other lists don't, by design.
 
 ---
 
@@ -551,53 +612,82 @@ docker compose up -d db
 
 # 2. Apply migrations
 npx prisma migrate deploy
-# (If it complains about a prior failed migration, run:
+# (If it complains about a prior failed migration:
 #   PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION="yes" npx prisma migrate reset --force )
 
-# 3. Run the backend
+# 3. Seed demo data (skip the OTP scrape during FE integration)
+npm run seed
+#   → demo@mnemio.local / demo-password-123  (verified, profile complete,
+#                                              2 decks of 8–10 cards)
+
+# 4. Run the backend
 npm run dev                   # http://localhost:3001
 ```
 
-In dev, `MAIL_PROVIDER=console` prints OTPs to the backend's stdout — grep the
-dev console after `POST /auth/register` for the 6-digit code.
+For brand-new users in dev, `MAIL_PROVIDER=console` prints OTPs to the backend's
+stdout — grep the dev console after `POST /auth/register` for the 6-digit code.
 
-### Quick smoke (curl)
+### Quick smoke against the seed (curl)
 ```bash
 BASE=http://localhost:3001/api/v1
 
+# 1. Login (sets mnemio_refresh cookie in cookies.txt)
+curl -sX POST "$BASE/auth/login" -c cookies.txt \
+     -H 'content-type: application/json' \
+     -d '{"email":"demo@mnemio.local","password":"demo-password-123"}'
+# → { "accessToken": "...", "user": { ... }, "needsProfile": false }
+
+ACCESS=...      # paste the accessToken from above
+
+# 2. List decks
+curl -s "$BASE/decks" -H "Authorization: Bearer $ACCESS"
+# → { items: Deck[2], nextCursor: null, total: 2 }
+
+# 3. Deck detail (note: cards is inline, not paginated)
+curl -s "$BASE/decks/<deckId>" -H "Authorization: Bearer $ACCESS"
+# → { deck: Deck, cards: Card[] }
+
+# 4. Refresh (no body; cookie travels via -b)
+curl -sX POST "$BASE/auth/refresh" -b cookies.txt -c cookies.txt
+# → { accessToken (new), user, needsProfile }
+```
+
+### Full sign-up flow (manual OTP)
+```bash
 # 1. Register
 curl -sX POST "$BASE/auth/register" -H 'content-type: application/json' \
      -d '{"email":"alice@example.com","password":"hunter22!"}'
-# → { "userId": "...", "email": "alice@example.com" }
+# → { "userId": "...", "email": "..." }
 
-# (grab the OTP from the backend's console)
-
-# 2. Verify OTP — note -c saves cookies to ./cookies.txt
+# 2. Grab the OTP from the backend stdout, then verify
 curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
      -H 'content-type: application/json' \
      -d '{"userId":"<id>","code":"123456"}'
-# → { accessToken, user, needsProfile: true }
-# (cookies.txt now has mnemio_refresh)
-
-# 3. Refresh (no body, cookie travels via -b)
-curl -sX POST "$BASE/auth/refresh" -b cookies.txt -c cookies.txt
-# → { accessToken (new), user, needsProfile }
-
-# 4. Authenticated call
-curl -s "$BASE/auth/me" -H "Authorization: Bearer <accessToken>"
+# → { accessToken, user, needsProfile: true } + cookie set
 ```
 
 ---
 
-## 6. Out of MVP
+## 6. What's NOT in this contract
 
-The frontend should not call (backend will 404) any of these:
-- Password reset / forgot-password
-- File uploads (avatar)
-- Public deck browsing / explore / clone
-- Folders, achievements, leagues
-- Account deletion
-- WebSockets / push notifications
+### Coming later (don't call yet — backend will 404)
+- **P1** (`backend-plan.md §7–9, §2 stats, §3 expanded Card`): Preferences
+  (`/users/me/preferences`), Statistics (`/stats/*`), Achievements
+  (`/achievements`), embedded per-deck stats in deck responses, the rich Card
+  fields (`partOfSpeech`, `example`, `tags`, `difficulty`, `type`, `audioUrl`,
+  `imageUrl`).
+- **P2** (`backend-plan.md §10–12`): Discover (`/discover/*`,
+  `POST /decks/:id/copy`), AI (`/ai/generate-deck`, `/ai/suggest`), Media
+  (avatar / card image upload).
 
-If anything here becomes urgent, add it to `backend-plan.md` §10 before wiring
-the frontend.
+For these, build the FE against the shapes in `backend-plan.md` and stub the
+network layer — flip to real `http()` when each domain ships.
+
+### Out of MVP entirely (no plans to ship)
+- Password reset / forgot-password (manual support intervention at MVP).
+- Folders, leagues.
+- Account deletion endpoint.
+- WebSockets / push notifications.
+
+If anything in this list becomes urgent, raise it in `backend-plan.md §Open
+questions` before wiring the FE.
