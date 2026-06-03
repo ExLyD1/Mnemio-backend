@@ -4,6 +4,51 @@
 > `localStorage`-backed mocks in `app/api/*.ts` with real HTTP calls.
 > Read [`backend-plan.md`](./backend-plan.md) for the *why*; this file is the *what*.
 
+## 0. Status
+
+**Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped
+(42 endpoints under `/api/v1` + `GET /health` + static `/media/*`). Nothing in
+this document is "coming later" unless it says so explicitly. The FE can
+integrate every endpoint below today.
+
+### Endpoint inventory (42 under `/api/v1`)
+
+| Domain | Endpoints |
+|---|---|
+| Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` |
+| Users | `PATCH /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
+| Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` |
+| Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
+| Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
+| SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
+| Dashboard | `GET /dashboard` |
+| Achievements | `GET /achievements` |
+| Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` |
+| Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
+| AI | `POST /ai/generate-deck` · `POST /ai/suggest` |
+| Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
+| Ops | `GET /health` (no `/api/v1` prefix) |
+
+### Invariants the FE must respect
+
+| # | Rule |
+|---|---|
+| 1 | Refresh token is an **HttpOnly cookie** `mnemio_refresh` on path `/api/v1/auth`. **Never in any body.** Send `credentials: 'include'` on every call. |
+| 2 | Access token in `localStorage`, sent as `Authorization: Bearer …`. |
+| 3 | On `{ code: 'AUTH_INVALID_TOKEN' }` → `POST /auth/refresh` (no body), retry once; on `{ code: 'AUTH_INVALID_REFRESH' }` → hard logout, never retry. |
+| 4 | `POST /srs/rate` body is `{ cardId, rating }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
+| 5 | Session XP is **server-computed** `correct*10 + 25`. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
+| 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
+| 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
+| 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
+| 9 | Ownership is checked at the repo layer — listing/getting/modifying someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. |
+| 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
+
+### Demo data
+`npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
+profile complete, 2 decks of 8–10 cards). Skips the OTP scrape during FE
+integration testing.
+
 ---
 
 ## 1. Conventions
@@ -93,7 +138,9 @@ type ApiError = {
 ### Pagination contract
 - Cursor-based. Send `?cursor=<opaque>&limit=<n>`; receive `{ items, nextCursor }`.
 - `nextCursor === null` → no more pages.
-- Hard cap on `limit`: 100 (cards in deck-detail allow up to 200).
+- Hard cap on `limit`: **100** for general lists.
+- A few endpoints expose `total` alongside the page (currently `GET /decks`) for
+  list-header counters; most omit it because counting on every page is expensive.
 - The cursor is **opaque** — never parse or construct it; pass it through verbatim.
 
 ```ts
@@ -101,6 +148,7 @@ type Page<T> = {
   items: T[];
   nextCursor: string | null;
 };
+type PageWithTotal<T> = Page<T> & { total: number };
 ```
 
 ---
@@ -114,13 +162,22 @@ type User = {
   fullName: string | null;     // null until profile completion
   username: string | null;     // null until profile completion
   birthday: string | null;     // 'YYYY-MM-DD' or null
-  avatarUrl: string | null;
+  avatarUrl: string | null;    // populated by POST /media/uploads?kind=avatar
   emailVerified: boolean;
   role: 'user' | 'admin';
-  xp: number;
-  streak: number;
+  xp: number;                  // updated atomically on session complete
+  streak: number;              // ALWAYS 0 — use /stats/overview.streak instead
   createdAt: string;
   updatedAt: string;
+};
+
+type DeckStats = {
+  total: number;          // = cardCount
+  mastered: number;       // cards with interval ≥ 21 days
+  learning: number;       // has progress but interval < 21
+  new: number;            // cards without a CardProgress row
+  due: number;            // cards due now (nextReviewAt ≤ now)
+  masteredPct: number;    // 0..100, rounded
 };
 
 type Deck = {
@@ -130,10 +187,27 @@ type Deck = {
   description: string;
   sourceLanguage: string;      // ISO 639-1, e.g. 'en'
   targetLanguage: string;
-  isPublic: boolean;           // always false at MVP
+  isPublic: boolean;
   cardCount: number;
+  coverColor: string | null;   // P2: '#RRGGBB' hex
+  glyph: string | null;        // P2: short symbol/emoji, ≤ 8 chars
+  subject: string | null;      // P2: e.g. 'languages', 'science'
+  featured: boolean;           // P2: curator-flagged for Discover home
+  copyCount: number;           // P2: # of times this deck has been cloned
+  sourceDeckId: string | null; // P2: id of the public deck this was copied from
+  stats: DeckStats;            // P1: embedded per-deck stats
   createdAt: string;
   updatedAt: string;
+};
+
+// Discover responses use a variant that bundles an author summary so the FE
+// doesn't need a second roundtrip to render a username.
+type DeckWithAuthor = Deck & {
+  author: {
+    id: string;
+    username: string | null;
+    fullName: string | null;
+  };
 };
 
 type Card = {
@@ -142,6 +216,14 @@ type Card = {
   word: string;
   definition: string;
   phonetic: string | null;
+  reading: string | null;                // P1
+  partOfSpeech: string | null;           // P1
+  example: string | null;                // P1
+  exampleTranslation: string | null;     // P1
+  tags: string[];                        // P1
+  difficulty: 'easy' | 'medium' | 'hard'; // P1; default 'medium'
+  type: 'basic' | 'cloze' | 'image';     // P1; default 'basic'
+  audioUrl: string | null;               // P1
   imageUrl: string | null;
   position: number;            // 0-indexed, server-assigned on create
   createdAt: string;
@@ -157,6 +239,13 @@ type CardProgress = {
   lastReviewedAt: string | null;
 };
 
+type SessionCounts = {
+  again: number;
+  hard: number;
+  good: number;
+  easy: number;
+};
+
 type StudySession = {
   id: string;
   userId: string;
@@ -169,12 +258,37 @@ type StudySession = {
   xpAwarded: number;
   cardsStudied: number;
   correctAnswers: number;
+  counts: SessionCounts;       // P1: per-grade tally
+  revisitCardIds: string[];    // P1: cards the user flagged to revisit
+  durationMs: number;          // P1: ms spent in this session
   startedAt: string;
   endedAt: string | null;
   completedAt: string;
 };
 
 type Rating = 'again' | 'hard' | 'good' | 'easy';
+
+type Achievement = {
+  id: string;                  // = key
+  key: string;
+  name: string;
+  description: string;
+  iconKey: string;             // FE maps to the actual asset
+  earned: boolean;
+  earnedAt: string | null;
+  progress: number;            // 0..100
+};
+
+type Preference = {
+  interests: string[];
+  goal: string | null;
+  nativeLanguage: string | null;
+  learningLanguages: string[];
+  avatarHue: number | null;    // 0..360
+  mimiPlacement: 'left' | 'right' | null;
+  favorites: string[];         // deckIds
+  updatedAt: string;
+};
 ```
 
 ### `needsProfile` flag
@@ -284,11 +398,25 @@ Profile completion. All fields optional; at least one required.
 
 #### `GET /decks`  *(auth)*
 ```ts
-// Query: ?cursor?=string&limit?=number(<=100)&q?=string
-// 200 Response: Page<Deck>
+// Query: ?cursor?=string&limit?=number(<=100)&q?=string  default limit 20
+// 200 Response: PageWithTotal<Deck>
+//   = { items: Deck[]; nextCursor: string | null; total: number }
 ```
 `q` does case-insensitive `contains` over `title` + `description`. Sort:
-`updatedAt DESC, id DESC` (stable keyset).
+`updatedAt DESC, id DESC` (stable keyset). `total` is the full match count for
+the filter, independent of the current page.
+
+Example (after `npm run seed`):
+```json
+{
+  "items": [
+    { "id": "…", "title": "Japanese: Hiragana Starter", "cardCount": 10, "…": "…" },
+    { "id": "…", "title": "Spanish: Greetings & Basics", "cardCount": 8,  "…": "…" }
+  ],
+  "nextCursor": null,
+  "total": 2
+}
+```
 
 #### `POST /decks`  *(auth)*
 ```ts
@@ -298,25 +426,43 @@ Profile completion. All fields optional; at least one required.
   description?: string;       // ≤ 500 chars, default ''
   sourceLanguage: string;     // 2–10 chars
   targetLanguage: string;
+  isPublic?: boolean;         // P2; default false
+  coverColor?: string | null; // P2: '#RRGGBB' hex
+  glyph?: string | null;      // P2: 1–8 chars (emoji ok)
+  subject?: string | null;    // P2: 1–40 chars
 }
 // 201 Response: Deck
 ```
 
 #### `GET /decks/:id`  *(auth)*
+The FE's Deck Detail page, study queue, and Add Card flow all assume the entire
+card list is present, so the deck detail returns cards **inline** rather than
+paged. Hard cap is 1000 (matches the FE per-deck limit).
 ```ts
-// Query: ?cardsCursor?=string&cardsLimit?=number(<=200)  default 50
+// Query: ?cardsLimit?=number(<=1000)  default 1000
 
 // 200 Response
 {
   deck: Deck;
-  cards: Page<Card>;          // sorted by (position ASC, id ASC)
+  cards: Card[];              // sorted by (position ASC, id ASC), up to cap
 }
 // Errors: 404 DECK_NOT_FOUND
+```
+Example:
+```json
+{
+  "deck": { "id": "…", "title": "Japanese: Hiragana Starter", "cardCount": 10, "…": "…" },
+  "cards": [
+    { "id": "…", "deckId": "…", "word": "あ", "definition": "a (vowel)", "phonetic": "/a/", "position": 0, "…": "…" },
+    { "id": "…", "deckId": "…", "word": "い", "definition": "i (vowel)", "phonetic": "/i/", "position": 1, "…": "…" }
+  ]
+}
 ```
 
 #### `PATCH /decks/:id`  *(auth)*
 ```ts
-// Request: any subset of { title, description, sourceLanguage, targetLanguage }
+// Request: any subset of the POST /decks body, including isPublic /
+//          coverColor / glyph / subject. null clears the optional fields.
 // 200 Response: Deck
 ```
 
@@ -329,24 +475,33 @@ Profile completion. All fields optional; at least one required.
 
 #### `POST /decks/:id/cards`  *(auth)*
 ```ts
-// Request
+// Request — all fields beyond word/definition optional (P1 rich fields)
 {
-  word: string;             // 1–120 chars
-  definition: string;       // 1–1000 chars
-  phonetic?: string;        // ≤ 120 chars
+  word: string;                          // 1–120 chars
+  definition: string;                    // 1–1000 chars
+  phonetic?: string;                     // ≤ 120 chars
+  reading?: string;                      // ≤ 120 chars
+  partOfSpeech?: string;                 // ≤ 40 chars
+  example?: string;                      // ≤ 500 chars
+  exampleTranslation?: string;           // ≤ 500 chars
+  tags?: string[];                       // ≤ 20 tags, each ≤ 40 chars
+  difficulty?: 'easy' | 'medium' | 'hard';  // default 'medium'
+  type?: 'basic' | 'cloze' | 'image';    // default 'basic'
+  audioUrl?: string;                     // URL
+  imageUrl?: string;                     // URL
 }
 // 201 Response: Card  (position is server-assigned: last + 1)
 ```
 
 #### `POST /decks/:id/cards/bulk`  *(auth)*
 ```ts
-// Request: { cards: { word, definition, phonetic? }[] }   // 1–100 items
+// Request: { cards: <same field set as POST /decks/:id/cards>[] }   // 1–100 items
 // 201 Response: { created: number }
 ```
 
 #### `PATCH /cards/:id`  *(auth)*
 ```ts
-// Request: any subset of { word, definition, phonetic, position }
+// Request: any subset of the create body + { position? }
 // 200 Response: Card
 // Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN
 ```
@@ -372,9 +527,17 @@ session is flipped to `incomplete` before the new one becomes `active`.
 ```
 
 #### `PATCH /sessions/:id`  *(auth)*
-Append progress mid-session.
+Append progress and Session Summary state mid-session. **At least one** field
+required; FE patches incrementally.
 ```ts
-// Request: at least one of { cardIndex: number, correct: number }
+// Request
+{
+  cardIndex?: number;
+  correct?: number;
+  counts?: { again, hard, good, easy };     // P1: per-grade tally
+  revisitCardIds?: string[];                // P1: ≤ 1000 ids
+  durationMs?: number;                      // P1: ms spent so far
+}
 // 200 Response: StudySession
 // Errors: 404 SESSION_NOT_FOUND  (also if no longer 'active')
 ```
@@ -387,6 +550,9 @@ incremented atomically.
 // 200 Response: StudySession  (status: 'complete', xpAwarded set)
 // Errors: 400 SESSION_NOT_ACTIVE · 404 SESSION_NOT_FOUND
 ```
+> **Side effect:** `user.xp` increases by `xpAwarded`. The response contains the
+> session, not the user — refresh user state via `GET /auth/me` (or
+> `GET /dashboard.stats.xp`) if the UI shows it.
 
 #### `POST /sessions/:id/exit`  *(auth)*
 Explicit user-triggered exit. Marks an active session as `incomplete` (no XP
@@ -427,13 +593,15 @@ Rate a card. Server runs SM-2 and upserts the user's `CardProgress`.
 // 200 Response: CardProgress
 // Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN
 ```
-Rating → SM-2 quality mapping (matches the frontend composable):
+Rating → SM-2 quality mapping (matches the frontend composable). EF delta uses
+the standard SuperMemo-2 formula `ΔEF = 0.1 − (5−q)(0.08 + (5−q)·0.02)`, with EF
+floored at 1.3.
 | Rating | Quality | Effect |
 |---|---|---|
-| `again` | 0 | Full reset: repetitions = 0, interval = 1 day, easeFactor -= 0.2 (min 1.3) |
-| `hard`  | 2 | Treated as recall failure → same reset path (interval = 1 day) |
-| `good`  | 3 | Advance: repetitions++, interval = 1 / 6 / round(prev × EF), EF unchanged |
-| `easy`  | 5 | Advance with EF boost (~+0.1) |
+| `again` | 0 | Failure path: repetitions=0, interval=1d, **EF −0.2** |
+| `hard`  | 2 | Treated as failure (q<3): same reset path, **EF −0.32** |
+| `good`  | 3 | Advance: repetitions++, interval = 1 / 6 / round(prev × prevEF), **EF −0.14** |
+| `easy`  | 5 | Advance same way, **EF +0.10** |
 
 #### `GET /srs/due`  *(auth)*
 ```ts
@@ -480,6 +648,272 @@ One round-trip for the dashboard page.
   continueStudying: StudySession | null;
 }
 ```
+
+### Preferences  *(P1)*
+
+User preferences live on a separate endpoint from `/users/me` so the FE can
+PATCH them independently (avatar hue picker, favorite toggle, onboarding goals,
+etc.).
+
+#### `GET /users/me/preferences`  *(auth)*
+Lazy-creates an empty row on first access; never returns 404.
+```ts
+// 200 Response: Preference
+```
+
+#### `PATCH /users/me/preferences`  *(auth)*
+All fields optional; **at least one** required. `null` clears the field; arrays
+replace.
+```ts
+// Request
+{
+  interests?: string[];            // ≤ 40 items, each ≤ 40 chars
+  goal?: string | null;            // 1–120 chars, or null to clear
+  nativeLanguage?: string | null;  // 2–10 chars (ISO 639-1)
+  learningLanguages?: string[];    // ≤ 10 entries
+  avatarHue?: number | null;       // 0..360
+  mimiPlacement?: 'left' | 'right' | null;
+  favorites?: string[];            // deckIds, ≤ 500
+}
+// 200 Response: Preference
+// Errors: 400 VALIDATION_ERROR
+```
+
+### Achievements  *(P1)*
+
+Catalog is server-defined (currently 7 entries: `first_steps`, `quick_learner`,
+`marathoner`, `accuracy_ace`, `reviewer_100`, `builder_50`, `polyglot`).
+Evaluated automatically on `/sessions/:id/complete`, `/srs/rate`, and card
+create.
+
+#### `GET /achievements`  *(auth)*
+```ts
+// 200 Response: { items: Achievement[] }
+```
+Each entry includes `earned: boolean`, `earnedAt: string|null`, and
+`progress: 0..100` so the FE can show progress bars even before unlock.
+
+### Statistics  *(P1)*
+
+Backed by a `DailyActivity` rollup table that updates on every `/srs/rate`.
+All endpoints scoped to the authenticated user.
+
+#### `GET /stats/overview?range=7|30|90|all`  *(auth)*  — default `30`
+```ts
+// 200 Response
+{
+  range: '7' | '30' | '90' | 'all';
+  reviewed: number;        // total reviews in the range
+  correct: number;         // total correct (rating 'good' | 'easy') in the range
+  retention: number;       // 0..100, rounded
+  streak: number;          // consecutive-day streak ending today (UTC)
+  dueCount: number;        // cards due now (same as /srs counter)
+  trends: {
+    reviewed:  { current: number; previous: number; deltaPct: number };
+    retention: { current: number; previous: number; deltaPct: number };
+  };
+}
+```
+`trends.*.previous` is the same-length window immediately before the current
+one (e.g. `range=30` compares last 30 days vs the 30 days before that).
+`deltaPct` is rounded.
+
+#### `GET /stats/series?range=7|30|90|all`  *(auth)*  — default `30`
+Per-day review counts. Always one point per day in the range, including zeros.
+```ts
+// 200 Response
+{
+  range: '7' | '30' | '90' | 'all';
+  points: { label: string; value: number }[];  // label = 'YYYY-MM-DD' UTC
+}
+```
+
+#### `GET /stats/activity`  *(auth)*
+Year heatmap (53 weeks × 7 days, Sun..Sat) and current-month calendar.
+```ts
+// 200 Response
+{
+  yearHeat: number[][];                    // 53 columns × 7 rows; values = reviews
+  monthCalendar: {
+    month: string;                         // 'YYYY-MM' (current UTC month)
+    days: ({ date: string; reviews: number } | null)[];
+    //   ^ leading nulls pad to start of week; each entry is one day of the month
+  };
+}
+```
+
+#### `GET /stats/decks`  *(auth)*
+Per-deck performance for the Statistics screen.
+```ts
+// 200 Response
+{
+  items: {
+    deckId: string;
+    title: string;
+    cardCount: number;
+    masteryPct: number;       // 0..100
+    retention: number;        // 0..100 — proxy from CardProgress repetitions
+    reviewed: number;         // all-time review count over the deck's cards
+  }[];
+}
+```
+> Note: until a per-rating event log lands (post-P1), `retention` and
+> `reviewed` come from `CardProgress.repetitions` as a proxy. Matches the FE's
+> current `useDeckStats` heuristic — same numbers either way.
+
+### Discover  *(P2)*
+
+Browse, search, and clone public decks.
+
+#### `GET /discover/decks`  *(auth)*
+Paginated public-deck catalog. Same opaque cursor model as `GET /decks`.
+```ts
+// Query
+?cursor?=string
+&limit?=number(<=50)             // default 20
+&q?=string                       // case-insensitive search on title/description
+&lang?=string                    // ISO 639-1; matches sourceLanguage OR targetLanguage
+&subject?=string                 // e.g. 'languages', 'science'
+&sort?='popular' | 'recent'      // default 'recent'
+
+// 200 Response: PageWithTotal<DeckWithAuthor>
+//   = { items: DeckWithAuthor[]; nextCursor: string | null; total: number }
+```
+Sort keys:
+- `recent` → `updatedAt DESC, id DESC`
+- `popular` → `copyCount DESC, id DESC`
+
+#### `GET /discover/featured`  *(auth)*
+Curator-flagged decks (`featured = true`), max 12. Sorted by `updatedAt DESC`.
+```ts
+// 200 Response: { items: DeckWithAuthor[] }
+```
+
+#### `GET /discover/categories`  *(auth)*
+Distinct `subject` values across the public catalog, with deck counts. Top 50
+by count.
+```ts
+// 200 Response: { items: { subject: string; count: number }[] }
+```
+
+#### `POST /decks/:id/copy`  *(auth)*
+Clone a public deck (cards + cosmetics) into the viewer's account. Atomic:
+the source's `copyCount` is incremented in the same transaction. The clone
+starts **private** (`isPublic: false`) and carries `sourceDeckId = <original>`.
+```ts
+// Request: (empty body)
+// 201 Response: Deck                          // the freshly-created copy
+// Errors:
+// 404 DECK_NOT_FOUND  (no such public deck)
+```
+
+### AI  *(P2)*
+
+Mimi-powered helpers. The MVP backend ships a **mock provider** so the FE can
+wire these surfaces without a real LLM key — response shapes are stable across
+the provider swap (set via `AI_PROVIDER` env var).
+
+#### `POST /ai/generate-deck`  *(auth)*
+Generates a deck draft based on a topic. **Server does not persist** — the FE
+shows the draft to the user, then calls `POST /decks` + bulk card create if
+the user accepts.
+```ts
+// Request
+{
+  topic: string;                 // 2–160 chars
+  sourceLanguage?: string;       // default 'en'
+  targetLanguage: string;        // ISO 639-1
+  count?: number;                // 1–20, default 8
+}
+
+// 200 Response
+{
+  provider: string;              // 'mock' for MVP
+  draft: {
+    title: string;
+    description: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    subject?: string;
+    glyph?: string;
+    cards: {
+      word: string;
+      definition: string;
+      phonetic?: string;
+      partOfSpeech?: string;
+      example?: string;
+      exampleTranslation?: string;
+      tags?: string[];
+      difficulty?: 'easy' | 'medium' | 'hard';
+    }[];
+  };
+}
+```
+
+#### `POST /ai/suggest`  *(auth)*
+Contextual Mimi nudge for the dashboard / deck detail / review screens.
+```ts
+// Request
+{
+  context: 'dashboard' | 'deck_detail' | 'review';  // default 'dashboard'
+  deckId?: string;                                   // for context='deck_detail'
+}
+
+// 200 Response
+{
+  suggestion: string;
+  kind: 'tip' | 'deck' | 'review';
+  actions: { label: string; href: string }[];
+}
+```
+
+Both endpoints are rate-limited to 30 req/min per user.
+
+### Media  *(P2)*
+
+Single multipart upload endpoint for avatars / card images / card audio. The
+MVP backend stores files on local disk and serves them via static handler;
+production swaps in S3 presigned PUT URLs without changing the contract shape.
+
+#### `POST /media/uploads?kind=avatar|card_image|card_audio`  *(auth)*
+Multipart form: one field named `file`.
+
+| Kind | MIME allowlist | Max size |
+|---|---|---|
+| `avatar` | `image/png\|jpeg\|webp` | 2 MB |
+| `card_image` | `image/png\|jpeg\|webp\|gif` | 5 MB |
+| `card_audio` | `audio/mpeg\|mp3\|wav\|ogg\|webm` | 10 MB |
+
+```ts
+// Request: multipart/form-data with `file` field
+// Query:   ?kind=avatar | card_image | card_audio
+
+// 201 Response (card_image / card_audio)
+{
+  url: string;          // public URL — store this in card.imageUrl/audioUrl
+  kind: 'card_image' | 'card_audio';
+  size: number;
+  mimeType: string;
+}
+
+// 201 Response (avatar) — side-effect: also sets user.avatarUrl
+{
+  url: string;
+  kind: 'avatar';
+  size: number;
+  mimeType: string;
+  user: User;           // the updated user row
+}
+
+// Errors:
+// 400 MEDIA_NO_FILE      (no `file` field in the multipart)
+// 400 MEDIA_BAD_MIME     (MIME outside the allowlist for the kind)
+// 422 MEDIA_TOO_LARGE    (exceeds the per-kind size cap)
+```
+
+After upload, the URL is served at `GET <url>` (no auth needed; treat as a
+public link). For card uploads, `PATCH /cards/:id { audioUrl | imageUrl }` to
+attach. For avatars, the response already updated the user row.
 
 ### Health (ops)
 
@@ -529,7 +963,8 @@ login(email, password)
 
 ### Pagination wiring
 Stash `nextCursor` per list view. "Load more" passes `?cursor=<nextCursor>`.
-`null` means "no more pages". No total counts available.
+`null` means "no more pages". Only `GET /decks` exposes `total` (for the
+Library header counter); other lists don't, by design.
 
 ---
 
@@ -541,53 +976,86 @@ docker compose up -d db
 
 # 2. Apply migrations
 npx prisma migrate deploy
-# (If it complains about a prior failed migration, run:
+# (If it complains about a prior failed migration:
 #   PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION="yes" npx prisma migrate reset --force )
 
-# 3. Run the backend
+# 3. Seed demo data (skip the OTP scrape during FE integration)
+npm run seed
+#   → demo@mnemio.local / demo-password-123  (verified, profile complete,
+#                                              2 decks of 8–10 cards)
+
+# 4. Run the backend
 npm run dev                   # http://localhost:3001
 ```
 
-In dev, `MAIL_PROVIDER=console` prints OTPs to the backend's stdout — grep the
-dev console after `POST /auth/register` for the 6-digit code.
+For brand-new users in dev, `MAIL_PROVIDER=console` prints OTPs to the backend's
+stdout — grep the dev console after `POST /auth/register` for the 6-digit code.
 
-### Quick smoke (curl)
+### Quick smoke against the seed (curl)
 ```bash
 BASE=http://localhost:3001/api/v1
 
+# 1. Login (sets mnemio_refresh cookie in cookies.txt)
+curl -sX POST "$BASE/auth/login" -c cookies.txt \
+     -H 'content-type: application/json' \
+     -d '{"email":"demo@mnemio.local","password":"demo-password-123"}'
+# → { "accessToken": "...", "user": { ... }, "needsProfile": false }
+
+ACCESS=...      # paste the accessToken from above
+
+# 2. List decks
+curl -s "$BASE/decks" -H "Authorization: Bearer $ACCESS"
+# → { items: Deck[2], nextCursor: null, total: 2 }
+
+# 3. Deck detail (note: cards is inline, not paginated)
+curl -s "$BASE/decks/<deckId>" -H "Authorization: Bearer $ACCESS"
+# → { deck: Deck, cards: Card[] }
+
+# 4. Refresh (no body; cookie travels via -b)
+curl -sX POST "$BASE/auth/refresh" -b cookies.txt -c cookies.txt
+# → { accessToken (new), user, needsProfile }
+```
+
+### Full sign-up flow (manual OTP)
+```bash
 # 1. Register
 curl -sX POST "$BASE/auth/register" -H 'content-type: application/json' \
      -d '{"email":"alice@example.com","password":"hunter22!"}'
-# → { "userId": "...", "email": "alice@example.com" }
+# → { "userId": "...", "email": "..." }
 
-# (grab the OTP from the backend's console)
-
-# 2. Verify OTP — note -c saves cookies to ./cookies.txt
+# 2. Grab the OTP from the backend stdout, then verify
 curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
      -H 'content-type: application/json' \
      -d '{"userId":"<id>","code":"123456"}'
-# → { accessToken, user, needsProfile: true }
-# (cookies.txt now has mnemio_refresh)
-
-# 3. Refresh (no body, cookie travels via -b)
-curl -sX POST "$BASE/auth/refresh" -b cookies.txt -c cookies.txt
-# → { accessToken (new), user, needsProfile }
-
-# 4. Authenticated call
-curl -s "$BASE/auth/me" -H "Authorization: Bearer <accessToken>"
+# → { accessToken, user, needsProfile: true } + cookie set
 ```
 
 ---
 
-## 6. Out of MVP
+## 6. What's NOT in this contract
 
-The frontend should not call (backend will 404) any of these:
-- Password reset / forgot-password
-- File uploads (avatar)
-- Public deck browsing / explore / clone
-- Folders, achievements, leagues
-- Account deletion
-- WebSockets / push notifications
+### Operational gaps (contract stays the same when these land)
+- **Admin surface for `featured`**: today, the `featured` flag is set directly
+  in the DB. A `POST /admin/decks/:id/feature` (gated on `user.role='admin'`)
+  is a small post-MVP addition when curation moves out of SQL.
+- **Real LLM provider for `/ai/*`**: swap the `mock` provider for an
+  Anthropic/OpenAI adapter via `AI_PROVIDER` env. Response shapes don't change.
+- **S3-backed media**: `/media/uploads` shape stays; storage backend swaps
+  from local FS to S3 presigned PUTs (see `src/services/media.service.ts`
+  comment header for the migration steps).
 
-If anything here becomes urgent, add it to `backend-plan.md` §10 before wiring
-the frontend.
+### Optional sub-stats deferred from P1
+Tagged "Optional P2" in `backend-plan.md §7`; not built but can be added later
+without breaking existing `/stats/*` shapes:
+- `/stats/forecast` (14-day due projection)
+- `/stats/study-patterns` (hour × day-of-week heatmap)
+- `/stats/xp` and league/leaderboard
+
+### Out of MVP entirely (no plans to ship)
+- Password reset / forgot-password (manual support intervention at MVP).
+- Folders, leagues (leaderboard).
+- Account deletion endpoint.
+- WebSockets / push notifications.
+
+If anything in this list becomes urgent, raise it in `backend-plan.md §Open
+questions` before wiring the FE.

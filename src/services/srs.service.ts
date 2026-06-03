@@ -1,5 +1,7 @@
 import * as srsRepo from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
+import * as activityRepo from '../repositories/activity.repository.js';
+import * as achievementsService from './achievements.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
 import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
@@ -46,6 +48,16 @@ export const rate = async (
         lastReviewedAt: next.lastReviewedAt,
         nextReviewAt: next.nextReviewAt,
     });
+
+    // Roll the day's activity counters. 'good' and 'easy' count as correct,
+    // matching the FE's accuracy model (quality ≥ 3).
+    const wasCorrect = input.rating === 'good' || input.rating === 'easy';
+    activityRepo.recordReview(ownerId, { wasCorrect }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[activity] recordReview failed', err);
+    });
+
+    achievementsService.evaluate(ownerId, 'rate').catch(() => {});
 
     return {
         cardId: saved.cardId,

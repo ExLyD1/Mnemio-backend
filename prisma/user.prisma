@@ -25,6 +25,9 @@ model User {
   emailVerifications  EmailVerification[]
   oauthIdentities     OAuthIdentity[]
   auditLogs           AuditLog[]
+  preference          Preference?
+  userAchievements    UserAchievement[]
+  dailyActivity       DailyActivity[]
 
   @@map("users")
 }
@@ -45,23 +48,30 @@ model Achievement {
 }
 
 model StudySession {
-  id             String   @id @default(uuid())
-  userId         String
-  deckId         String
-  mode           String
-  status         String   @default("active")
-  cardIds        String[]
-  cardIndex      Int      @default(0)
-  correct        Int      @default(0)
-  xpAwarded      Int      @default(0)
-  cardsStudied   Int      @default(0)
-  correctAnswers Int      @default(0)
-  duration       Int      @default(0)
-  startedAt      DateTime @default(now())
-  endedAt        DateTime?
-  completedAt    DateTime @default(now())
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String   @id @default(uuid())
+  userId          String
+  deckId          String
+  mode            String
+  status          String   @default("active")
+  cardIds         String[]
+  cardIndex       Int      @default(0)
+  correct         Int      @default(0)
+  xpAwarded       Int      @default(0)
+  cardsStudied    Int      @default(0)
+  correctAnswers  Int      @default(0)
+  duration        Int      @default(0)
+  // Per-grade tally — server-backed Session Summary (replaces FE usePractice).
+  countsAgain     Int      @default(0)
+  countsHard      Int      @default(0)
+  countsGood      Int      @default(0)
+  countsEasy      Int      @default(0)
+  revisitCardIds  String[]
+  durationMs      Int      @default(0)
+  startedAt       DateTime @default(now())
+  endedAt         DateTime?
+  completedAt     DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   deck Deck @relation(fields: [deckId], references: [id], onDelete: Cascade)

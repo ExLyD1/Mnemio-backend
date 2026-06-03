@@ -8,7 +8,7 @@ export type ListDecksParams = {
     q: string | undefined;
 };
 
-export const listDecks = ({ ownerId, limit, cursor, q }: ListDecksParams) => {
+const buildListWhere = ({ ownerId, cursor, q }: Omit<ListDecksParams, 'limit'>) => {
     const where: Prisma.DeckWhereInput = { authorId: ownerId };
 
     if (q && q.length > 0) {
@@ -20,9 +20,6 @@ export const listDecks = ({ ownerId, limit, cursor, q }: ListDecksParams) => {
 
     if (cursor) {
         const ts = new Date(cursor.ts);
-        where.OR = [
-            ...(where.OR ?? []),
-        ];
         // Keyset: rows with updatedAt < cursor.ts OR (updatedAt = ts AND id < cursor.id)
         where.AND = [
             {
@@ -33,26 +30,50 @@ export const listDecks = ({ ownerId, limit, cursor, q }: ListDecksParams) => {
             },
         ];
     }
+    return where;
+};
 
-    return prisma.deck.findMany({
-        where,
+export const listDecks = ({ ownerId, limit, cursor, q }: ListDecksParams) =>
+    prisma.deck.findMany({
+        where: buildListWhere({ ownerId, cursor, q }),
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         take: limit + 1, // +1 to detect "hasMore"
     });
-};
+
+// Total count for the filter (ignores cursor — that's the page boundary, not
+// part of the matching set).
+export const countDecks = ({ ownerId, q }: Pick<ListDecksParams, 'ownerId' | 'q'>) =>
+    prisma.deck.count({
+        where: buildListWhere({ ownerId, cursor: null, q }),
+    });
 
 export const findDeckById = (id: string, ownerId: string) =>
     prisma.deck.findFirst({ where: { id, authorId: ownerId } });
 
-export const createDeck = (
-    ownerId: string,
-    data: {
-        title: string;
-        description: string;
-        sourceLanguage: string;
-        targetLanguage: string;
-    },
-) =>
+export type DeckCreateData = {
+    title: string;
+    description: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    isPublic?: boolean;
+    coverColor?: string | null;
+    glyph?: string | null;
+    subject?: string | null;
+    sourceDeckId?: string | null;
+};
+
+export type DeckUpdateData = Partial<{
+    title: string;
+    description: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    isPublic: boolean;
+    coverColor: string | null;
+    glyph: string | null;
+    subject: string | null;
+}>;
+
+export const createDeck = (ownerId: string, data: DeckCreateData) =>
     prisma.deck.create({
         data: {
             authorId: ownerId,
@@ -60,19 +81,15 @@ export const createDeck = (
             description: data.description,
             sourceLanguage: data.sourceLanguage,
             targetLanguage: data.targetLanguage,
+            isPublic: data.isPublic ?? false,
+            coverColor: data.coverColor ?? null,
+            glyph: data.glyph ?? null,
+            subject: data.subject ?? null,
+            sourceDeckId: data.sourceDeckId ?? null,
         },
     });
 
-export const updateDeck = (
-    id: string,
-    ownerId: string,
-    patch: Partial<{
-        title: string;
-        description: string;
-        sourceLanguage: string;
-        targetLanguage: string;
-    }>,
-) =>
+export const updateDeck = (id: string, ownerId: string, patch: DeckUpdateData) =>
     prisma.deck.updateMany({
         where: { id, authorId: ownerId },
         data: patch,

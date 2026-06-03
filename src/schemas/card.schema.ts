@@ -1,9 +1,23 @@
 import { z } from 'zod';
 
+export const CARD_DIFFICULTIES = ['easy', 'medium', 'hard'] as const;
+export const CARD_TYPES = ['basic', 'cloze', 'image'] as const;
+
+const optionalShortText = (max: number) => z.string().trim().max(max).optional();
+
 export const cardBaseSchema = z.object({
     word: z.string().trim().min(1, 'Word is required').max(120),
     definition: z.string().trim().min(1, 'Definition is required').max(1000),
-    phonetic: z.string().trim().max(120).optional(),
+    phonetic: optionalShortText(120),
+    reading: optionalShortText(120),
+    partOfSpeech: optionalShortText(40),
+    example: optionalShortText(500),
+    exampleTranslation: optionalShortText(500),
+    tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+    difficulty: z.enum(CARD_DIFFICULTIES).optional(),
+    type: z.enum(CARD_TYPES).optional(),
+    audioUrl: z.string().url().max(2048).optional(),
+    imageUrl: z.string().url().max(2048).optional(),
 });
 
 export const createCardSchema = cardBaseSchema;

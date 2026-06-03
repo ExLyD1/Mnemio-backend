@@ -42,3 +42,8 @@ export type Page<T> = {
     items: T[];
     nextCursor: string | null;
 };
+
+// Some endpoints expose a total count alongside the page (e.g. GET /decks,
+// where the FE shows "X decks total" on the library header). Most endpoints
+// omit `total` because counting on every page is expensive — opt in only.
+export type PageWithTotal<T> = Page<T> & { total: number };

@@ -1,5 +1,6 @@
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
+import * as achievementsService from './achievements.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { toPublicCard, type PublicCard } from '../shared/mappers.deck.js';
 import type {
@@ -7,6 +8,23 @@ import type {
     UpdateCardInput,
     BulkCreateCardsInput,
 } from '../schemas/card.schema.js';
+
+const buildCardCreateFields = (
+    input: CreateCardInput,
+): Omit<cardsRepo.CardCreate, 'userId' | 'deckId' | 'position'> => ({
+    word: input.word,
+    definition: input.definition,
+    phonetic: input.phonetic ?? null,
+    reading: input.reading ?? null,
+    partOfSpeech: input.partOfSpeech ?? null,
+    example: input.example ?? null,
+    exampleTranslation: input.exampleTranslation ?? null,
+    tags: input.tags ?? [],
+    difficulty: input.difficulty ?? 'medium',
+    type: input.type ?? 'basic',
+    audioUrl: input.audioUrl ?? null,
+    imageUrl: input.imageUrl ?? null,
+});
 
 const assertOwnsDeck = async (deckId: string, ownerId: string) => {
     const deck = await decksRepo.findDeckById(deckId, ownerId);
@@ -33,12 +51,11 @@ export const create = async (
     const card = await cardsRepo.createCard({
         userId: ownerId,
         deckId,
-        word: input.word,
-        definition: input.definition,
-        phonetic: input.phonetic ?? null,
         position,
+        ...buildCardCreateFields(input),
     });
     await decksRepo.recomputeCardCount(deckId);
+    achievementsService.evaluate(ownerId, 'card_create').catch(() => {});
     return toPublicCard(card);
 };
 
@@ -49,16 +66,15 @@ export const bulkCreate = async (
 ): Promise<{ created: number }> => {
     await assertOwnsDeck(deckId, ownerId);
     const startPos = await cardsRepo.nextPositionForDeck(deckId);
-    const rows = input.cards.map((c, i) => ({
+    const rows: cardsRepo.CardCreate[] = input.cards.map((c, i) => ({
         userId: ownerId,
         deckId,
-        word: c.word,
-        definition: c.definition,
-        phonetic: c.phonetic ?? null,
         position: startPos + i,
+        ...buildCardCreateFields(c),
     }));
     const { count } = await cardsRepo.createCardsBulk(rows);
     await decksRepo.recomputeCardCount(deckId);
+    achievementsService.evaluate(ownerId, 'card_create').catch(() => {});
     return { created: count };
 };
 
@@ -68,10 +84,19 @@ export const update = async (
     input: UpdateCardInput,
 ): Promise<PublicCard> => {
     await assertOwnsCard(cardId, ownerId);
-    const patch: Partial<{ word: string; definition: string; phonetic: string | null; position: number }> = {};
+    const patch: cardsRepo.CardUpdate = {};
     if (input.word !== undefined) patch.word = input.word;
     if (input.definition !== undefined) patch.definition = input.definition;
     if (input.phonetic !== undefined) patch.phonetic = input.phonetic;
+    if (input.reading !== undefined) patch.reading = input.reading;
+    if (input.partOfSpeech !== undefined) patch.partOfSpeech = input.partOfSpeech;
+    if (input.example !== undefined) patch.example = input.example;
+    if (input.exampleTranslation !== undefined) patch.exampleTranslation = input.exampleTranslation;
+    if (input.tags !== undefined) patch.tags = input.tags;
+    if (input.difficulty !== undefined) patch.difficulty = input.difficulty;
+    if (input.type !== undefined) patch.type = input.type;
+    if (input.audioUrl !== undefined) patch.audioUrl = input.audioUrl;
+    if (input.imageUrl !== undefined) patch.imageUrl = input.imageUrl;
     if (input.position !== undefined) patch.position = input.position;
 
     const updated = await cardsRepo.updateCard(cardId, patch);

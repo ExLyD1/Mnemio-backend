@@ -1,0 +1,18 @@
+model Preference {
+  userId             String   @id
+  interests          String[] @default([])
+  goal               String?
+  nativeLanguage     String?
+  learningLanguages  String[] @default([])
+  avatarHue          Int?
+  mimiPlacement      String?
+  // Favorites kept as a deckId array (per backend-plan §Open question #3,
+  // recommended option) — single GET/PATCH endpoint, no extra join table.
+  favorites          String[] @default([])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("preferences")
+}
