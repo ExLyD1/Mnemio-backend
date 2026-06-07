@@ -20,9 +20,20 @@ const envSchema = z.object({
     MAIL_PROVIDER: z.enum(['console', 'resend']).default('console'),
     MAIL_PROVIDER_API_KEY: z.string().optional(),
 
-    // AI provider for Mimi suggestions and deck generation. 'mock' returns
-    // realistic-shaped placeholders so the FE can wire without a real key.
-    AI_PROVIDER: z.enum(['mock']).default('mock'),
+    // AI provider for enrichment, deck generation, and suggestions.
+    //   'mock'      → deterministic placeholders (default, FE-safe)
+    //   'anthropic' → real LLM via @anthropic-ai/sdk (requires ANTHROPIC_API_KEY)
+    AI_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
+    ANTHROPIC_API_KEY: z.string().optional(),
+    ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
+
+    // Per-user daily caps on each AI operation.
+    AI_DAILY_ENRICH_CAP_PER_USER: z.coerce.number().int().positive().default(5),
+    AI_DAILY_GENERATE_CAP_PER_USER: z.coerce.number().int().positive().default(20),
+    AI_DAILY_SUGGEST_CAP_PER_USER: z.coerce.number().int().positive().default(60),
+
+    // Hard ceiling on words per enrich call.
+    AI_MAX_WORDS_PER_ENRICH: z.coerce.number().int().positive().max(200).default(100),
 
     // Media storage. 'local' writes to MEDIA_DIR and serves under MEDIA_PUBLIC_BASE
     // via @fastify/static. For prod, swap to S3-compatible presigned PUTs (see
@@ -42,7 +53,10 @@ const envSchema = z.object({
     OAUTH_APPLE_TEAM_ID: z.string().optional(),
     OAUTH_APPLE_KEY_ID: z.string().optional(),
     OAUTH_APPLE_PRIVATE_KEY: z.string().optional(),
-});
+}).refine(
+    (v) => v.AI_PROVIDER !== 'anthropic' || (v.ANTHROPIC_API_KEY && v.ANTHROPIC_API_KEY.length > 0),
+    { message: 'ANTHROPIC_API_KEY is required when AI_PROVIDER=anthropic', path: ['ANTHROPIC_API_KEY'] },
+);
 
 const parsed = envSchema.safeParse(process.env);
 

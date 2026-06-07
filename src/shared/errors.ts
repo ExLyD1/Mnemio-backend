@@ -65,3 +65,34 @@ export class RateLimitedError extends AppError {
         super(429, code, message, details);
     }
 }
+
+// AI-specific errors (P2 follow-up: real LLM provider wiring).
+export class AiBudgetExceededError extends RateLimitedError {
+    constructor(kind: string, capPerDay: number) {
+        super('AI_BUDGET_EXCEEDED', `Daily AI ${kind} cap of ${capPerDay} reached`, {
+            kind,
+            capPerDay,
+        });
+    }
+}
+
+export class AiProviderError extends AppError {
+    constructor(providerStatus: number | string, message = 'AI provider error') {
+        super(502, 'AI_PROVIDER_ERROR', message, { providerStatus });
+    }
+}
+
+export class AiValidationFailedError extends AppError {
+    constructor(message = 'AI returned an invalid response after retry') {
+        super(502, 'AI_VALIDATION_FAILED', message);
+    }
+}
+
+export class AiTooManyWordsError extends BadRequestError {
+    constructor(max: number, got: number) {
+        super('AI_TOO_MANY_WORDS', `Too many words in batch (max ${max}, got ${got})`, {
+            max,
+            got,
+        });
+    }
+}
