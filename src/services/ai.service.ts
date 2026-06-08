@@ -1,6 +1,7 @@
 import { env } from '../config/env.js';
 import * as srsRepo from '../repositories/srs.repository.js';
 import * as activityRepo from '../repositories/activity.repository.js';
+import * as budget from './ai.budget.service.js';
 import { mockProvider } from './ai.provider.mock.js';
 import type {
     AiProvider,
@@ -44,6 +45,7 @@ const prepareWords = (input: EnrichWordsInput): EnrichWordsInput => {
 };
 
 export const enrichWords = async (
+    userId: string,
     input: EnrichWordsInput,
     opts?: { onCard?: (event: EnrichWordsEvent) => void },
 ): Promise<EnrichWordsResult> => {
@@ -51,10 +53,18 @@ export const enrichWords = async (
     if (prepared.words.length > env.AI_MAX_WORDS_PER_ENRICH) {
         throw new AiTooManyWordsError(env.AI_MAX_WORDS_PER_ENRICH, prepared.words.length);
     }
-    return provider.enrichWords(prepared, opts);
+    await budget.assertWithinBudget(userId, 'enrich');
+    const result = await provider.enrichWords(prepared, opts);
+    await budget.recordUse(userId, 'enrich');
+    return result;
 };
 
-export const generateDeck = (input: GenerateDeckInput) => provider.generateDeck(input);
+export const generateDeck = async (userId: string, input: GenerateDeckInput) => {
+    await budget.assertWithinBudget(userId, 'generate');
+    const draft = await provider.generateDeck(input);
+    await budget.recordUse(userId, 'generate');
+    return draft;
+};
 
 const computeStreak = (rows: { date: Date; reviews: number }[]): number => {
     if (rows.length === 0) return 0;
@@ -72,6 +82,7 @@ const computeStreak = (rows: { date: Date; reviews: number }[]): number => {
 };
 
 export const suggest = async (userId: string, input: SuggestInput) => {
+    await budget.assertWithinBudget(userId, 'suggest');
     const [dueCount, days] = await Promise.all([
         srsRepo.countDueCards(userId),
         activityRepo.allDays(userId),
@@ -89,7 +100,9 @@ export const suggest = async (userId: string, input: SuggestInput) => {
         streak,
     };
     if (input.deckId !== undefined) args.deckId = input.deckId;
-    return provider.suggest(args);
+    const result = await provider.suggest(args);
+    await budget.recordUse(userId, 'suggest');
+    return result;
 };
 
 export const providerName = (): string => provider.name;

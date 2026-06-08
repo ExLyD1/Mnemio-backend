@@ -8,13 +8,13 @@ import * as aiService from '../services/ai.service.js';
 
 export const enrichWords = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = enrichWordsSchema.parse(request.body);
-    const result = await aiService.enrichWords(input);
+    const result = await aiService.enrichWords(request.currentUser.sub, input);
     reply.send({ provider: aiService.providerName(), ...result });
 };
 
 export const generateDeck = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = generateDeckSchema.parse(request.body);
-    const draft = await aiService.generateDeck(input);
+    const draft = await aiService.generateDeck(request.currentUser.sub, input);
     reply.send({ draft, provider: aiService.providerName() });
 };
 
