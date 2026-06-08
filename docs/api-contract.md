@@ -7,11 +7,11 @@
 ## 0. Status
 
 **Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped
-(42 endpoints under `/api/v1` + `GET /health` + static `/media/*`). Nothing in
+(43 endpoints under `/api/v1` + `GET /health` + static `/media/*`). Nothing in
 this document is "coming later" unless it says so explicitly. The FE can
 integrate every endpoint below today.
 
-### Endpoint inventory (42 under `/api/v1`)
+### Endpoint inventory (43 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -25,7 +25,7 @@ integrate every endpoint below today.
 | Achievements | `GET /achievements` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
-| AI | `POST /ai/generate-deck` · `POST /ai/suggest` |
+| AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/suggest` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
 | Ops | `GET /health` (no `/api/v1` prefix) |
 
@@ -124,6 +124,10 @@ type ApiError = {
 | `DECK_NOT_FOUND` / `CARD_NOT_FOUND` / `SESSION_NOT_FOUND` | resource routes | 404 page or toast |
 | `DECK_EMPTY` | `POST /sessions` | Disable "Study" CTA when `cardCount === 0` |
 | `SESSION_NOT_ACTIVE` | `POST /sessions/:id/complete` | Refetch session, sync FE state |
+| `AI_TOO_MANY_WORDS` | `POST /ai/enrich-words` | "Max {max} words per batch — got {got}." `details.{max,got}` |
+| `AI_BUDGET_EXCEEDED` | any `/ai/*` | "Daily AI quota reached." `details.kind`, `details.capPerDay` |
+| `AI_PROVIDER_ERROR` | any `/ai/*` | Generic "AI is having a moment — try again." `details.providerStatus` for logs |
+| `AI_VALIDATION_FAILED` | any `/ai/*` | Same UX as provider error; LLM returned garbage |
 
 > Note: `@fastify/rate-limit` 429 responses currently use the plugin's default
 > shape (`{ statusCode, error, message }`), not our envelope. Treat **HTTP 429**
@@ -809,14 +813,100 @@ starts **private** (`isPublic: false`) and carries `sourceDeckId = <original>`.
 
 ### AI  *(P2)*
 
-Mimi-powered helpers. The MVP backend ships a **mock provider** so the FE can
-wire these surfaces without a real LLM key — response shapes are stable across
-the provider swap (set via `AI_PROVIDER` env var).
+Mnemio's AI surface. The backend supports two providers via `AI_PROVIDER` env:
+- `mock` (default) — deterministic placeholders; FE-safe, no LLM cost.
+- `anthropic` — Claude Haiku 4.5 via `@anthropic-ai/sdk`. Requires
+  `ANTHROPIC_API_KEY`.
+
+**Response shapes are identical across providers.** The FE never branches on
+provider.
+
+#### `POST /ai/enrich-words`  *(auth)* ⭐ key feature
+Takes a user-supplied list of words and returns one `AiCardDraft` per word
+with definition + optional metadata. **Server does not persist** — the FE
+shows the result, lets the user review, then commits via the existing
+`POST /decks/:id/cards/bulk` (works for both "add to open deck" and
+"create new deck then bulk-add" flows).
+
+```ts
+// Request
+{
+  words: string[];               // 1–100 (server-enforced cap), each 1–80 chars
+  sourceLanguage: string;        // language for the definition (e.g. 'en')
+  targetLanguage: string;        // language of the input words (e.g. 'es')
+  context?: string;              // optional disambiguation hint, ≤ 200 chars
+  fields?: ('phonetic' | 'partOfSpeech' | 'example' | 'exampleTranslation'
+            | 'tags' | 'difficulty')[];   // which optional fields to fill;
+                                          // default: all
+}
+
+// 200 Response (non-streaming — no Accept: text/event-stream)
+{
+  provider: 'mock' | 'anthropic';
+  cards: AiCardDraft[];          // SAME order/length as request `words`
+                                 // (after server-side trim + de-dup)
+  meta: {
+    requested: number;           // = words.length after de-dup
+    enriched: number;            // = cards where definition !== ''
+    durationMs: number;
+    tokensInput: number;
+    tokensOutput: number;
+  };
+}
+```
+
+**Invariants:**
+- **Order preserved.** `cards[i].word` matches `words[i]` (post-trim/dedup).
+- **Partial success.** Words the LLM can't define come back with
+  `definition: ''` and `tags: ['ai-unfilled']`. Blocked content returns
+  `tags: ['ai-blocked']`. Never fails the whole batch on a single bad word.
+- **Server-side dedup.** Duplicates in the paste are collapsed before the
+  LLM call (case-insensitive). FE re-expands if it needs the user's paste
+  order verbatim.
+
+**Errors:**
+- `400 AI_TOO_MANY_WORDS` — input exceeds `AI_MAX_WORDS_PER_ENRICH` (default 100).
+- `429 AI_BUDGET_EXCEEDED` — daily per-user cap hit.
+- `502 AI_PROVIDER_ERROR` — upstream LLM failure; retry with backoff.
+- `502 AI_VALIDATION_FAILED` — provider output failed schema validation
+  after one retry.
+
+##### Streaming variant — same endpoint, `Accept: text/event-stream`
+
+For 50-word batches that take 5–8s, the FE can stream cards as they arrive
+instead of staring at a spinner. Send `Accept: text/event-stream` on the same
+POST (or `?stream=1`) and the backend writes Server-Sent Events:
+
+```
+event: start
+data: { "provider": "anthropic" }
+
+event: card
+data: { "type": "card", "position": 0,
+        "card": { "word": "agua", "definition": "water", "..." } }
+
+event: card
+data: { "type": "card", "position": 1,
+        "card": { "word": "pan", "definition": "bread", "..." } }
+
+...
+
+event: done
+data: { "type": "done", "meta": { "requested": 8, "enriched": 8, "..." } }
+```
+
+If a mid-stream error occurs, the backend emits one `event: error` frame with
+the standard envelope (`{ code, message, details? }`) before closing.
+
+FE pattern: read with `fetch().then(r => r.body.getReader())` and parse the
+SSE frames; map each `card` event into the table by `position`.
 
 #### `POST /ai/generate-deck`  *(auth)*
-Generates a deck draft based on a topic. **Server does not persist** — the FE
-shows the draft to the user, then calls `POST /decks` + bulk card create if
-the user accepts.
+Generates a deck draft from a topic (no input word list). Useful when the
+user has no list yet ("just give me 8 Italian café terms"). **Server does
+not persist** — the FE shows the draft and the user accepts via
+`POST /decks` + `POST /decks/:id/cards/bulk`.
+
 ```ts
 // Request
 {
@@ -826,9 +916,9 @@ the user accepts.
   count?: number;                // 1–20, default 8
 }
 
-// 200 Response
+// 200 Response (non-streaming)
 {
-  provider: string;              // 'mock' for MVP
+  provider: 'mock' | 'anthropic';
   draft: {
     title: string;
     description: string;
@@ -836,22 +926,21 @@ the user accepts.
     targetLanguage: string;
     subject?: string;
     glyph?: string;
-    cards: {
-      word: string;
-      definition: string;
-      phonetic?: string;
-      partOfSpeech?: string;
-      example?: string;
-      exampleTranslation?: string;
-      tags?: string[];
-      difficulty?: 'easy' | 'medium' | 'hard';
-    }[];
+    cards: AiCardDraft[];
   };
 }
 ```
 
+##### Streaming variant — `Accept: text/event-stream`
+
+Same SSE protocol as enrich-words, but with one additional event type:
+`header` fires first (with `title/description/subject/glyph/…`) so the FE can
+render the deck shell before any cards arrive. Then `card` events for each
+generated card, then `done`.
+
 #### `POST /ai/suggest`  *(auth)*
 Contextual Mimi nudge for the dashboard / deck detail / review screens.
+Always single-response (small payload, no streaming needed).
 ```ts
 // Request
 {
@@ -867,7 +956,17 @@ Contextual Mimi nudge for the dashboard / deck detail / review screens.
 }
 ```
 
-Both endpoints are rate-limited to 30 req/min per user.
+#### Common — rate limits + budget
+
+| Limit | Value | Throws |
+|---|---|---|
+| Request rate | 30/min/user across all three endpoints | `429` (plugin default body) |
+| Daily `enrich` cap | 5/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `generate` cap | 20/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `suggest` cap | 60/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
+| Max words per `enrich` call | 100 (default) | `400 AI_TOO_MANY_WORDS` |
+
+Caps are configurable via env (`AI_DAILY_*_CAP_PER_USER`, `AI_MAX_WORDS_PER_ENRICH`).
 
 ### Media  *(P2)*
 
