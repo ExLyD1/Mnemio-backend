@@ -6,7 +6,9 @@ const dayUtc = (d: Date = new Date()) => {
     return x;
 };
 
-export type AiUsageKind = 'enrich' | 'generate' | 'suggest';
+// 'import' shares the same per-user-per-day rollup table as the AI kinds
+// (Quizlet / paste-text imports — see imports.service.ts).
+export type AiUsageKind = 'enrich' | 'generate' | 'suggest' | 'import';
 
 export const findTodayCount = async (
     userId: string,

@@ -96,3 +96,37 @@ export class AiTooManyWordsError extends BadRequestError {
         });
     }
 }
+
+// External imports (Quizlet HTML scrape, paste-text, deck CSV/JSON).
+export class ImportBadUrlError extends BadRequestError {
+    constructor(message = "URL must be a quizlet.com set link, e.g. https://quizlet.com/<id>/...") {
+        super('IMPORT_BAD_URL', message);
+    }
+}
+
+export class ImportNotFoundError extends NotFoundError {
+    constructor(message = 'Set is private, removed, or does not exist') {
+        super('IMPORT_NOT_FOUND', message);
+    }
+}
+
+export class ImportParseFailedError extends UnprocessableError {
+    constructor(message = "Couldn't extract cards from the source") {
+        super('IMPORT_PARSE_FAILED', message);
+    }
+}
+
+export class ImportUpstreamError extends AppError {
+    constructor(providerStatus: number, message = 'Upstream returned an error') {
+        super(502, 'IMPORT_UPSTREAM_ERROR', message, { providerStatus });
+    }
+}
+
+export class ImportBudgetExceededError extends RateLimitedError {
+    constructor(capPerDay: number) {
+        super('IMPORT_BUDGET_EXCEEDED', `Daily import cap of ${capPerDay} reached`, {
+            kind: 'import',
+            capPerDay,
+        });
+    }
+}

@@ -26,6 +26,7 @@ integrate every endpoint below today.
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
 | AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/suggest` |
+| Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
 | Ops | `GET /health` (no `/api/v1` prefix) |
 
@@ -993,6 +994,67 @@ Always single-response (small payload, no streaming needed).
 | Max words per `enrich` call | 100 (default) | `400 AI_TOO_MANY_WORDS` |
 
 Caps are configurable via env (`AI_DAILY_*_CAP_PER_USER`, `AI_MAX_WORDS_PER_ENRICH`).
+
+### Imports  *(Quizlet + paste-text)*
+
+Stateless: nothing is persisted by these endpoints. They return
+`AiCardDraft[]` in the same shape as `/ai/enrich-words` so the FE reuses
+the existing review/preview UI, then commits with `POST /decks` and
+`POST /decks/:id/cards/bulk`.
+
+#### `POST /imports/quizlet`  *(auth)*
+Fetches a Quizlet public-set URL, extracts term/definition pairs from the
+embedded `__NEXT_DATA__` JSON, returns the cards.
+```ts
+// Request
+{ url: string }   // https://quizlet.com/<setId>/<slug>/
+
+// 200 Response
+{
+  source: { kind: 'quizlet'; setId: string; title: string };
+  cards: AiCardDraft[];     // same shape as /ai/enrich-words result
+}
+
+// Errors:
+// 400 IMPORT_BAD_URL          — url isn't a quizlet.com set URL
+// 404 IMPORT_NOT_FOUND        — set is private, removed, or 404
+// 422 IMPORT_PARSE_FAILED     — fetched OK but couldn't extract cards
+//                               (Quizlet may have changed their HTML)
+// 429 IMPORT_BUDGET_EXCEEDED  — daily per-user cap reached (details.capPerDay)
+// 502 IMPORT_UPSTREAM_ERROR   — Quizlet returned non-200 or timed out
+```
+
+Counts against a shared `import` daily cap (`IMPORT_DAILY_CAP_PER_USER`,
+default 20) regardless of which import endpoint is used.
+
+> **ToS note for the FE:** add a one-line confirmation in the FE flow —
+> "By importing, you confirm you have the right to use this content."
+> Quizlet's ToS prohibits automated scraping; this is the same pattern
+> Anki-style importers use, but the legal responsibility ultimately
+> belongs to the importing user.
+
+#### `POST /imports/text`  *(auth)*
+Paste-fallback for users who can't or won't share a Quizlet URL. Parses
+TSV (`word<TAB>definition`), CSV (`word,definition`), or newline-paired
+(`word\ndefinition\nword\n…`).
+```ts
+// Request
+{
+  text: string;
+  format?: 'tsv'|'csv'|'newline'|'auto'   // default 'auto' (detect by first-line punctuation)
+}
+
+// 200 Response
+{
+  source: { kind: 'text'; format: 'tsv'|'csv'|'newline' };
+  cards: AiCardDraft[];
+}
+
+// Errors:
+// 400 VALIDATION_ERROR       — empty text or > 100 000 chars
+// 422 IMPORT_PARSE_FAILED    — no card pairs could be extracted
+// 429 IMPORT_BUDGET_EXCEEDED — shared cap with /imports/quizlet
+```
 
 ### Media  *(P2)*
 

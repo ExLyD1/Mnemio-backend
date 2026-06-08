@@ -22,6 +22,7 @@ import achievementsRoutes from './routes/achievements.routes.js';
 import statsRoutes from './routes/stats.routes.js';
 import discoverRoutes from './routes/discover.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import importsRoutes from './routes/imports.routes.js';
 import mediaRoutes from './routes/media.routes.js';
 
 export const API_PREFIX = '/api/v1';
@@ -110,6 +111,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(statsRoutes);
             await api.register(discoverRoutes);
             await api.register(aiRoutes);
+            await api.register(importsRoutes);
             await api.register(mediaRoutes);
         },
         { prefix: API_PREFIX },

@@ -35,6 +35,13 @@ const envSchema = z.object({
     // Hard ceiling on words per enrich call.
     AI_MAX_WORDS_PER_ENRICH: z.coerce.number().int().positive().max(200).default(100),
 
+    // External-import cap (Quizlet scrape + paste-text). Shares the ai_usage
+    // table — same atomic upsert pattern, no extra schema needed.
+    IMPORT_DAILY_CAP_PER_USER: z.coerce.number().int().positive().default(20),
+    // Hard ceiling on response size + request timeout for the Quizlet fetch.
+    IMPORT_FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+    IMPORT_MAX_BYTES: z.coerce.number().int().positive().default(2_000_000),
+
     // Media storage. 'local' writes to MEDIA_DIR and serves under MEDIA_PUBLIC_BASE
     // via @fastify/static. For prod, swap to S3-compatible presigned PUTs (see
     // src/services/media.service.ts comment).

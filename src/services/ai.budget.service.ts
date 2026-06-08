@@ -1,6 +1,6 @@
 import { env } from '../config/env.js';
 import * as aiUsageRepo from '../repositories/ai-usage.repository.js';
-import { AiBudgetExceededError } from '../shared/errors.js';
+import { AiBudgetExceededError, ImportBudgetExceededError } from '../shared/errors.js';
 
 const capFor = (kind: aiUsageRepo.AiUsageKind): number => {
     switch (kind) {
@@ -10,6 +10,8 @@ const capFor = (kind: aiUsageRepo.AiUsageKind): number => {
             return env.AI_DAILY_GENERATE_CAP_PER_USER;
         case 'suggest':
             return env.AI_DAILY_SUGGEST_CAP_PER_USER;
+        case 'import':
+            return env.IMPORT_DAILY_CAP_PER_USER;
     }
 };
 
@@ -25,6 +27,9 @@ export const assertWithinBudget = async (
     const cap = capFor(kind);
     const used = await aiUsageRepo.findTodayCount(userId, kind);
     if (used >= cap) {
+        // 'import' gets its own error code so the FE can distinguish AI vs
+        // import quotas — the user might be capped on one and free on the other.
+        if (kind === 'import') throw new ImportBudgetExceededError(cap);
         throw new AiBudgetExceededError(kind, cap);
     }
 };
