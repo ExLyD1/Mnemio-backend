@@ -638,16 +638,28 @@ at 2000 entries (well above the MVP perf budget of 200 decks × 1000 cards =
 ### Dashboard
 
 #### `GET /dashboard`  *(auth)*
-One round-trip for the dashboard page.
+One round-trip for the dashboard / home page.
 ```ts
 // 200 Response
 {
   stats: { decks: number; cards: number; xp: number };
   dueCount: number;
-  recentDecks: Deck[];          // up to 5, by updatedAt DESC
+  recentDecks: Deck[];            // up to 5, by updatedAt DESC
   continueStudying: StudySession | null;
+  lastPracticedDeck: Deck | null; // deck of the most recent session (any status)
+  mostPracticedDecks: Deck[];     // up to 4, ranked by session count desc
 }
 ```
+**Home "Quick continue" CTA:** resume `continueStudying` via
+`POST /sessions/:id/resume` when it's non-null; otherwise start a fresh session
+on `lastPracticedDeck` via `POST /sessions`. `lastPracticedDeck` is `null` only
+when the user has never started a session.
+
+**Home "Most practiced" quick-start block:** render `mostPracticedDecks` (≤ 4,
+ranked by number of study sessions, ties broken by most recent session). Each
+entry is a full `Deck` with embedded `stats`, so a card can call
+`POST /sessions { deckId, mode }` directly. Empty array until the user has
+practiced at least one deck.
 
 ### Preferences  *(P1)*
 
