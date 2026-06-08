@@ -8,6 +8,7 @@ import { env } from './config/env.js';
 import { prisma } from './db/prisma.js';
 import { registerCleanupJob } from './jobs/cleanup.job.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
+import { initSentry } from './plugins/sentry.js';
 import { registerJwt } from './plugins/jwt.js';
 import { registerCookies } from './plugins/cookies.js';
 import authRoutes from './routes/auth.routes.js';
@@ -26,6 +27,10 @@ import mediaRoutes from './routes/media.routes.js';
 export const API_PREFIX = '/api/v1';
 
 export const buildApp = async (): Promise<FastifyInstance> => {
+    // Initialize Sentry before Fastify so any boot-time uncaught throws still
+    // get captured. No-op when SENTRY_DSN is unset.
+    initSentry();
+
     const fastify = Fastify({
         logger: {
             level: env.LOG_LEVEL,

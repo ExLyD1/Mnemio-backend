@@ -45,6 +45,9 @@ const envSchema = z.object({
     MEDIA_MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(5_000_000),
     MEDIA_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(10_000_000),
 
+    // Sentry — optional; when unset the plugin no-ops (local dev needs nothing).
+    SENTRY_DSN: z.string().url().optional(),
+
     OAUTH_GOOGLE_CLIENT_ID: z.string().optional(),
     OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
     OAUTH_FACEBOOK_CLIENT_ID: z.string().optional(),
