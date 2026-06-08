@@ -181,7 +181,7 @@ const isValidCardArray = (data: { cards?: unknown }): boolean =>
             typeof (c as { definition?: unknown }).definition === 'string',
     );
 
-const alignByInputOrder = (
+export const alignByInputOrder = (
     requested: string[],
     received: AiCardDraft[],
 ): AiCardDraft[] => {
