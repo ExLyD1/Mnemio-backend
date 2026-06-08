@@ -8,11 +8,11 @@
 
 **Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped,
 plus the post-MVP additions (Google OAuth, account deletion, welcome flags,
-Quizlet/text imports, deck import/export, real-time AI chat). **56 endpoints
+Quizlet/text imports, deck import/export, real-time AI chat). **57 endpoints
 under `/api/v1`** + `GET /health` + `GET /ready` + static `/media/*`. Nothing
 in this document is "coming later" unless it says so explicitly.
 
-### Endpoint inventory (56 under `/api/v1`)
+### Endpoint inventory (57 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -1462,6 +1462,78 @@ cookie. After the 204:
 2. Hard-redirect to the marketing page (don't try to refresh — the cookie is
    gone and the user no longer exists).
 
+### Chat / SSE consumption
+The send-message endpoint is the only place in the API where a single
+response can fail *after* it has already started writing data. The FE
+must treat the stream as authoritative for the live message rendering,
+but fall back to refetching `GET /chat/conversations/:id` for the final
+persisted state.
+
+Outline of a Nuxt-side consumer:
+```ts
+// 1. Open the stream
+const res = await fetch(`${API}/chat/conversations/${id}/messages`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+        'authorization': `Bearer ${accessToken}`,
+        'content-type': 'application/json',
+        'accept': 'text/event-stream',
+    },
+    body: JSON.stringify({ content }),
+});
+
+// 2. Parse SSE frames (one event: line + one data: line per frame, blank line terminator).
+const reader = res.body!.getReader();
+const decoder = new TextDecoder();
+let buf = '';
+let assistantId: string | null = null;
+let assistantContent = '';
+
+for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // Frames are separated by a blank line ("\n\n").
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const event = /^event:\s*(.+)$/m.exec(frame)?.[1] ?? 'message';
+        const data = JSON.parse(/^data:\s*(.+)$/m.exec(frame)?.[1] ?? '{}');
+        switch (event) {
+            case 'start':
+                assistantId = data.assistantMessageId;
+                // optimistic-insert userMessage into the FE store
+                break;
+            case 'token':
+                assistantContent += data.delta;
+                // append delta to the placeholder in the FE store
+                break;
+            case 'done':
+                // replace the placeholder with data.assistantMessage; update title.
+                break;
+            case 'error':
+                // surface a toast; the partial reply is preserved server-side
+                // so a refetch of GET /chat/conversations/:id will show it.
+                break;
+        }
+    }
+}
+```
+
+Important edge cases:
+- **User navigates away mid-stream:** the FE just stops reading. The
+  server keeps the partial assistant row (`status: 'partial'`); the next
+  `GET /chat/conversations/:id` returns it with whatever content the
+  server saw. No charge against the daily cap.
+- **Multiple tabs:** each opens its own stream. The server doesn't
+  multiplex — two concurrent sends to the same conversation produce two
+  independent assistant rows, both of which the next fetch returns.
+- **JSON fallback:** if SSE is awkward (proxy, library, test rig), omit
+  the `Accept: text/event-stream` header and the endpoint returns the
+  same final payload as a single JSON body.
+
 ### Session flow
 - Starting a new session implicitly ends the active one. Don't fight it from FE.
 - Exit button → `POST /sessions/:id/exit`.
@@ -1523,6 +1595,36 @@ curl -sX POST "$BASE/auth/refresh" -b cookies.txt -c cookies.txt
 # → { accessToken (new), user, needsProfile, welcome }
 ```
 
+### Chat smoke (mock provider — no Anthropic credits burned)
+```bash
+# Make sure AI_PROVIDER=mock in .env to avoid hitting Claude.
+
+# 1. Create a new conversation
+CONV=$(curl -sX POST "$BASE/chat/conversations" \
+     -H "authorization: Bearer $ACCESS" \
+     -H 'content-type: application/json' \
+     -d '{}' | jq -r .id)
+
+# 2. Stream a reply via SSE (-N disables buffering)
+curl -N -X POST "$BASE/chat/conversations/$CONV/messages" \
+     -H "authorization: Bearer $ACCESS" \
+     -H 'accept: text/event-stream' \
+     -H 'content-type: application/json' \
+     -d '{"content":"Teach me three Spanish words for fruit."}'
+# Expect:  event: start   event: token (xN)   event: done
+
+# 3. Or get the whole reply at once (JSON, no streaming)
+curl -sX POST "$BASE/chat/conversations/$CONV/messages" \
+     -H "authorization: Bearer $ACCESS" \
+     -H 'content-type: application/json' \
+     -d '{"content":"Another question"}' | jq
+# → { userMessage, assistantMessage, conversationTitle, tokensInput, tokensOutput }
+
+# 4. Read the conversation back
+curl -s "$BASE/chat/conversations/$CONV" \
+     -H "authorization: Bearer $ACCESS" | jq '.messages | map({role, content, status})'
+```
+
 ### Full sign-up flow (manual OTP)
 ```bash
 # 1. Register
@@ -1541,15 +1643,28 @@ curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
 
 ## 6. What's NOT in this contract
 
+Full deferral list with rationale is in [`backlog.md`](./backlog.md); this
+section captures only the items that interact with this contract directly.
+
 ### Operational gaps (contract stays the same when these land)
 - **Admin surface for `featured`**: today, the `featured` flag is set directly
   in the DB. A `POST /admin/decks/:id/feature` (gated on `user.role='admin'`)
   is a small post-MVP addition when curation moves out of SQL.
-- **Real LLM provider for `/ai/*`**: swap the `mock` provider for an
-  Anthropic/OpenAI adapter via `AI_PROVIDER` env. Response shapes don't change.
 - **S3-backed media**: `/media/uploads` shape stays; storage backend swaps
   from local FS to S3 presigned PUTs (see `src/services/media.service.ts`
   comment header for the migration steps).
+
+### Chat — designed-around but deferred
+The `/chat/*` endpoints intentionally ship without:
+- **Grounding** (auto-injecting the user's recent decks, due count, last
+  mistakes into the system prompt). Hook lives at
+  `src/services/chat.prompt.ts`.
+- **Tool use** (`createDeck`, `addCardsToDeck`, etc.). The Anthropic SDK
+  supports `tools` blocks; the provider interface accepts them when we add
+  them.
+- **Image / audio attachments**. `ChatMessage.content` is text-only at MVP.
+- **AI-generated titles**. First-user-message truncation is the auto-title
+  rule for now.
 
 ### Optional sub-stats deferred from P1
 Tagged "Optional P2" in `backend-plan.md §7`; not built but can be added later
@@ -1558,11 +1673,8 @@ without breaking existing `/stats/*` shapes:
 - `/stats/study-patterns` (hour × day-of-week heatmap)
 - `/stats/xp` and league/leaderboard
 
-### Out of MVP entirely (no plans to ship)
+### Out of MVP entirely (see [`backlog.md`](./backlog.md) for full reasoning)
 - Password reset / forgot-password (manual support intervention at MVP).
 - Folders, leagues (leaderboard).
-- Account deletion endpoint.
 - WebSockets / push notifications.
-
-If anything in this list becomes urgent, raise it in `backend-plan.md §Open
-questions` before wiring the FE.
+- Apple / Facebook / Microsoft OAuth (only Google ships at MVP).
