@@ -6,6 +6,7 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { env } from './config/env.js';
 import { prisma } from './db/prisma.js';
+import { registerCleanupJob } from './jobs/cleanup.job.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { registerJwt } from './plugins/jwt.js';
 import { registerCookies } from './plugins/cookies.js';
@@ -108,6 +109,13 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         },
         { prefix: API_PREFIX },
     );
+
+    const stopCleanup = registerCleanupJob(fastify.log);
+    if (stopCleanup) {
+        fastify.addHook('onClose', async () => {
+            stopCleanup();
+        });
+    }
 
     return fastify;
 };
