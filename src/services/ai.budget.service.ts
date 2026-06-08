@@ -12,6 +12,8 @@ const capFor = (kind: aiUsageRepo.AiUsageKind): number => {
             return env.AI_DAILY_SUGGEST_CAP_PER_USER;
         case 'import':
             return env.IMPORT_DAILY_CAP_PER_USER;
+        case 'chat':
+            return env.AI_DAILY_CHAT_CAP_PER_USER;
     }
 };
 

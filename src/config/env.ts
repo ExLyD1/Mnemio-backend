@@ -35,6 +35,12 @@ const envSchema = z.object({
     // Hard ceiling on words per enrich call.
     AI_MAX_WORDS_PER_ENRICH: z.coerce.number().int().positive().max(200).default(100),
 
+    // Real-time chat — daily per-user cap on user-message turns, context
+    // window size (turns sent to the model), and per-reply output ceiling.
+    AI_DAILY_CHAT_CAP_PER_USER: z.coerce.number().int().positive().default(50),
+    AI_CHAT_CONTEXT_TURNS: z.coerce.number().int().positive().max(100).default(20),
+    AI_CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().max(8000).default(1024),
+
     // External-import cap (Quizlet scrape + paste-text). Shares the ai_usage
     // table — same atomic upsert pattern, no extra schema needed.
     IMPORT_DAILY_CAP_PER_USER: z.coerce.number().int().positive().default(20),
