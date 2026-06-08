@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { env } from './config/env.js';
+import { prisma } from './db/prisma.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { registerJwt } from './plugins/jwt.js';
 import { registerCookies } from './plugins/cookies.js';
@@ -44,6 +45,13 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         global: false,
         max: 120,
         timeWindow: '1 minute',
+        // Match our standard { code, message, details } envelope so the FE
+        // doesn't need to special-case 429s from @fastify/rate-limit.
+        errorResponseBuilder: (_req, context) => ({
+            code: 'RATE_LIMITED',
+            message: `Rate limit exceeded, retry in ${context.after}.`,
+            details: { retryAfter: context.after, max: context.max },
+        }),
     });
 
     await fastify.register(multipart, {
@@ -65,7 +73,23 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     await registerJwt(fastify);
     registerErrorHandler(fastify);
 
+    // Liveness — cheap, no I/O. Uptime monitors target this.
     fastify.get('/health', async () => ({ status: 'ok' }));
+
+    // Readiness — touches the DB. Container orchestrators (Railway, k8s)
+    // target this; a 503 here means "don't route traffic yet."
+    fastify.get('/ready', async (_req, reply) => {
+        try {
+            await prisma.$queryRaw`SELECT 1`;
+            return { status: 'ready' };
+        } catch (err) {
+            fastify.log.warn({ err }, 'readiness probe failed');
+            return reply.code(503).send({
+                code: 'NOT_READY',
+                message: 'Database is not reachable.',
+            });
+        }
+    });
 
     await fastify.register(
         async (api) => {
