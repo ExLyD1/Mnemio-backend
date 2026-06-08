@@ -12,7 +12,9 @@ import type {
     AiDeckDraft,
     AiProvider,
     AiSuggestion,
+    EnrichWordsEvent,
     EnrichWordsResult,
+    GenerateDeckEvent,
     SuggestContext,
 } from './ai.provider.js';
 import type {
@@ -196,36 +198,114 @@ const alignByInputOrder = (
     });
 };
 
-const enrichWords = async (input: EnrichWordsInput): Promise<EnrichWordsResult> => {
+/**
+ * The Anthropic SDK's `inputJson` event already provides the cumulative
+ * parsed object snapshot of the tool's input as it streams in. This helper
+ * pulls a partially-populated array property out of it.
+ */
+const arrayFromSnapshot = <T>(snapshot: unknown, arrayKey: string): T[] | null => {
+    if (!snapshot || typeof snapshot !== 'object') return null;
+    const arr = (snapshot as Record<string, unknown>)[arrayKey];
+    return Array.isArray(arr) ? (arr as T[]) : null;
+};
+
+const enrichWords = async (
+    input: EnrichWordsInput,
+    opts?: { onCard?: (event: EnrichWordsEvent) => void },
+): Promise<EnrichWordsResult> => {
     const start = Date.now();
     const { system, user } = buildEnrichWordsPrompt(input);
+    const maxTokens = Math.min(8000, Math.max(1000, input.words.length * 200));
 
-    const { data, tokensInput, tokensOutput } = await callWithRetry<{
-        cards: AiCardDraft[];
-    }>(
-        {
+    // Non-streaming fast path: caller doesn't want incremental events.
+    if (!opts?.onCard) {
+        const { data, tokensInput, tokensOutput } = await callWithRetry<{
+            cards: AiCardDraft[];
+        }>(
+            {
+                system,
+                user,
+                toolName: ENRICH_TOOL.name,
+                tool: ENRICH_TOOL,
+                maxTokens,
+            },
+            isValidCardArray,
+        );
+        const cards = alignByInputOrder(input.words, data.cards);
+        const enriched = cards.filter((c) => c.definition !== '').length;
+        return {
+            cards,
+            meta: {
+                requested: input.words.length,
+                enriched,
+                durationMs: Date.now() - start,
+                tokensInput,
+                tokensOutput,
+            },
+        };
+    }
+
+    // Streaming path.
+    let received: AiCardDraft[] = [];
+    let emittedCount = 0;
+    let tokensInput = 0;
+    let tokensOutput = 0;
+
+    try {
+        const stream = client().messages.stream({
+            model: env.ANTHROPIC_MODEL,
+            max_tokens: maxTokens,
             system,
-            user,
-            toolName: ENRICH_TOOL.name,
-            tool: ENRICH_TOOL,
-            // Generous: ~200 tokens per card output + headroom.
-            maxTokens: Math.min(8000, Math.max(1000, input.words.length * 200)),
-        },
-        isValidCardArray,
-    );
+            messages: [{ role: 'user', content: user }],
+            tools: [ENRICH_TOOL],
+            tool_choice: { type: 'tool', name: ENRICH_TOOL.name },
+        });
 
-    const cards = alignByInputOrder(input.words, data.cards);
+        stream.on('inputJson', (_delta, snapshot) => {
+            const arr = arrayFromSnapshot<AiCardDraft>(snapshot, 'cards');
+            if (!arr) return;
+            // Only emit cards we haven't yet AND whose definition has fully
+            // arrived. The last item in the snapshot may be partial.
+            const completeUpToExclusive = arr.length - 1;
+            for (let i = emittedCount; i < completeUpToExclusive; i++) {
+                const card = arr[i]!;
+                if (typeof card.word === 'string' && typeof card.definition === 'string') {
+                    opts.onCard!({ type: 'card', position: i, card });
+                    emittedCount = i + 1;
+                }
+            }
+        });
+
+        const finalMessage = await stream.finalMessage();
+        tokensInput = finalMessage.usage.input_tokens;
+        tokensOutput = finalMessage.usage.output_tokens;
+
+        const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
+        if (toolBlock?.type === 'tool_use') {
+            received = (toolBlock.input as { cards?: AiCardDraft[] }).cards ?? [];
+        }
+    } catch (err) {
+        const status =
+            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
+        throw new AiProviderError(status, (err as Error).message);
+    }
+
+    // Emit any trailing card the snapshot parser hadn't confirmed.
+    for (let i = emittedCount; i < received.length; i++) {
+        opts.onCard({ type: 'card', position: i, card: received[i]! });
+    }
+
+    const cards = alignByInputOrder(input.words, received);
     const enriched = cards.filter((c) => c.definition !== '').length;
-    return {
-        cards,
-        meta: {
-            requested: input.words.length,
-            enriched,
-            durationMs: Date.now() - start,
-            tokensInput,
-            tokensOutput,
-        },
+    const meta = {
+        requested: input.words.length,
+        enriched,
+        durationMs: Date.now() - start,
+        tokensInput,
+        tokensOutput,
     };
+    opts.onCard({ type: 'done', meta });
+    return { cards, meta };
 };
 
 // ---------- generateDeck ----------
@@ -238,19 +318,96 @@ const isValidDeckDraft = (data: Partial<AiDeckDraft>): boolean =>
     Array.isArray(data.cards) &&
     data.cards.length > 0;
 
-const generateDeck = async (input: GenerateDeckInput): Promise<AiDeckDraft> => {
+const generateDeck = async (
+    input: GenerateDeckInput,
+    opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+): Promise<AiDeckDraft> => {
+    const start = Date.now();
     const { system, user } = buildGenerateDeckPrompt(input);
-    const { data } = await callWithRetry<AiDeckDraft>(
-        {
+    const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
+
+    if (!opts?.onEvent) {
+        const { data } = await callWithRetry<AiDeckDraft>(
+            {
+                system,
+                user,
+                toolName: DECK_TOOL.name,
+                tool: DECK_TOOL,
+                maxTokens,
+            },
+            isValidDeckDraft,
+        );
+        return data;
+    }
+
+    let emittedHeader = false;
+    let emittedCardCount = 0;
+    let finalData: AiDeckDraft | null = null;
+    let tokensInput = 0;
+    let tokensOutput = 0;
+
+    try {
+        const stream = client().messages.stream({
+            model: env.ANTHROPIC_MODEL,
+            max_tokens: maxTokens,
             system,
-            user,
-            toolName: DECK_TOOL.name,
-            tool: DECK_TOOL,
-            maxTokens: Math.min(8000, 1500 + (input.count ?? 8) * 250),
-        },
-        isValidDeckDraft,
-    );
-    return data;
+            messages: [{ role: 'user', content: user }],
+            tools: [DECK_TOOL],
+            tool_choice: { type: 'tool', name: DECK_TOOL.name },
+        });
+
+        stream.on('inputJson', (_delta, snapshot) => {
+            if (!snapshot || typeof snapshot !== 'object') return;
+            const parsed = snapshot as Partial<AiDeckDraft>;
+            if (
+                !emittedHeader &&
+                typeof parsed.title === 'string' &&
+                typeof parsed.description === 'string' &&
+                typeof parsed.sourceLanguage === 'string' &&
+                typeof parsed.targetLanguage === 'string'
+            ) {
+                const { cards: _ignored, ...header } = parsed as AiDeckDraft;
+                void _ignored;
+                opts.onEvent!({ type: 'header', deck: header });
+                emittedHeader = true;
+            }
+            if (Array.isArray(parsed.cards)) {
+                const complete = parsed.cards.length - 1;
+                for (let i = emittedCardCount; i < complete; i++) {
+                    const c = parsed.cards[i]!;
+                    if (typeof c.word === 'string' && typeof c.definition === 'string') {
+                        opts.onEvent!({ type: 'card', position: i, card: c });
+                        emittedCardCount = i + 1;
+                    }
+                }
+            }
+        });
+
+        const finalMessage = await stream.finalMessage();
+        tokensInput = finalMessage.usage.input_tokens;
+        tokensOutput = finalMessage.usage.output_tokens;
+        const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
+        if (toolBlock?.type === 'tool_use') {
+            finalData = toolBlock.input as AiDeckDraft;
+        }
+    } catch (err) {
+        const status =
+            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
+        throw new AiProviderError(status, (err as Error).message);
+    }
+
+    if (!finalData || !isValidDeckDraft(finalData)) {
+        throw new AiValidationFailedError();
+    }
+    // Drain any trailing cards.
+    for (let i = emittedCardCount; i < finalData.cards.length; i++) {
+        opts.onEvent({ type: 'card', position: i, card: finalData.cards[i]! });
+    }
+    opts.onEvent({
+        type: 'done',
+        meta: { durationMs: Date.now() - start, tokensInput, tokensOutput },
+    });
+    return finalData;
 };
 
 // ---------- suggest ----------

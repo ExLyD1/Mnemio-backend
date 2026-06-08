@@ -8,7 +8,9 @@ import type {
     AiProvider,
     EnrichWordsEvent,
     EnrichWordsResult,
+    GenerateDeckEvent,
 } from './ai.provider.js';
+import type { AiDeckDraft } from './ai.provider.js';
 import type {
     EnrichWordsInput,
     GenerateDeckInput,
@@ -58,9 +60,13 @@ export const enrichWords = async (
     return result;
 };
 
-export const generateDeck = async (userId: string, input: GenerateDeckInput) => {
+export const generateDeck = async (
+    userId: string,
+    input: GenerateDeckInput,
+    opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+): Promise<AiDeckDraft> => {
     await budget.assertWithinBudget(userId, 'generate');
-    const draft = await provider.generateDeck(input);
+    const draft = await provider.generateDeck(input, opts);
     await budget.recordUse(userId, 'generate');
     return draft;
 };

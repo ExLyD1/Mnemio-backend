@@ -37,6 +37,22 @@ export type EnrichWordsEvent =
     | { type: 'card'; position: number; card: AiCardDraft }
     | { type: 'done'; meta: EnrichWordsMeta };
 
+export type GenerateDeckMeta = {
+    durationMs: number;
+    tokensInput: number;
+    tokensOutput: number;
+};
+
+// Streaming event for generate-deck. `header` arrives first (title etc.),
+// then one `card` event per generated card, then `done`.
+export type GenerateDeckEvent =
+    | {
+          type: 'header';
+          deck: Omit<AiDeckDraft, 'cards'>;
+      }
+    | { type: 'card'; position: number; card: AiCardDraft }
+    | { type: 'done'; meta: GenerateDeckMeta };
+
 export type AiDeckDraft = {
     title: string;
     description: string;
@@ -77,7 +93,10 @@ export type AiProvider = {
         opts?: { onCard?: (event: EnrichWordsEvent) => void },
     ) => Promise<EnrichWordsResult>;
 
-    generateDeck: (input: GenerateDeckInput) => Promise<AiDeckDraft>;
+    generateDeck: (
+        input: GenerateDeckInput,
+        opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+    ) => Promise<AiDeckDraft>;
     suggest: (
         input: { context: SuggestContext; deckId?: string; dueCount: number; streak: number },
     ) => Promise<AiSuggestion>;

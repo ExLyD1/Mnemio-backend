@@ -4,6 +4,7 @@ import type {
     AiSuggestion,
     EnrichWordsEvent,
     EnrichWordsResult,
+    GenerateDeckEvent,
     SuggestContext,
 } from './ai.provider.js';
 
@@ -61,7 +62,8 @@ export const mockProvider: AiProvider = {
         return { cards, meta };
     },
 
-    async generateDeck(input) {
+    async generateDeck(input, opts) {
+        const start = Date.now();
         const count = input.count ?? 8;
         const cards = Array.from({ length: count }, (_, i) => {
             const word = `${titleCase(input.targetLanguage)} term ${i + 1}`;
@@ -78,16 +80,25 @@ export const mockProvider: AiProvider = {
             };
         });
 
-        const draft: AiDeckDraft = {
+        const header = {
             title: titleCase(input.topic),
             description: `AI-drafted vocabulary deck on "${input.topic}". Edit before saving.`,
             sourceLanguage: input.sourceLanguage,
             targetLanguage: input.targetLanguage,
             subject: 'languages',
             glyph: '✨',
-            cards,
         };
-        return draft;
+        if (opts?.onEvent) {
+            opts.onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
+            cards.forEach((card, position) =>
+                opts.onEvent!({ type: 'card', position, card } satisfies GenerateDeckEvent),
+            );
+            opts.onEvent({
+                type: 'done',
+                meta: { durationMs: Date.now() - start, tokensInput: 0, tokensOutput: 0 },
+            } satisfies GenerateDeckEvent);
+        }
+        return { ...header, cards } satisfies AiDeckDraft;
     },
 
     async suggest(input) {
