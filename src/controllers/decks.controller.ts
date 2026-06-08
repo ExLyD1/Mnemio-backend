@@ -5,7 +5,10 @@ import {
     deckListQuerySchema,
     deckDetailQuerySchema,
 } from '../schemas/deck.schema.js';
+import { deckExportQuerySchema, deckImportSchema } from '../schemas/imports.schema.js';
 import * as decksService from '../services/decks.service.js';
+import * as deckExportService from '../services/deck-export.service.js';
+import * as deckImportService from '../services/deck-import.service.js';
 
 type IdParams = { id: string };
 
@@ -45,4 +48,34 @@ export const remove = async (
 ) => {
     await decksService.remove(request.currentUser.sub, request.params.id);
     reply.code(204).send();
+};
+
+export const exportDeck = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+) => {
+    const { format } = deckExportQuerySchema.parse(request.query);
+    const result = await deckExportService.exportDeck(
+        request.currentUser.sub,
+        request.params.id,
+        format,
+    );
+    reply
+        .header('Content-Type', result.contentType)
+        .header('Content-Disposition', `attachment; filename="${result.filename}"`)
+        .send(result.body);
+};
+
+export const importCards = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+) => {
+    const input = deckImportSchema.parse(request.body);
+    const result = await deckImportService.importIntoDeck(
+        request.currentUser.sub,
+        request.params.id,
+        input.format,
+        input.text,
+    );
+    reply.code(201).send(result);
 };

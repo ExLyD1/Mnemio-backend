@@ -14,3 +14,16 @@ export const importTextSchema = z.object({
 
 export type ImportQuizletInput = z.infer<typeof importQuizletSchema>;
 export type ImportTextInput = z.infer<typeof importTextSchema>;
+
+// Deck import (JSON body variant — multipart can be added later if needed).
+export const deckImportSchema = z.object({
+    format: z.enum(['csv', 'json']),
+    text: z.string().min(1, 'text must not be empty').max(1_000_000),
+});
+
+export const deckExportQuerySchema = z.object({
+    format: z.enum(['csv', 'json']).default('csv'),
+});
+
+export type DeckImportInput = z.infer<typeof deckImportSchema>;
+export type DeckExportQuery = z.infer<typeof deckExportQuerySchema>;

@@ -17,7 +17,7 @@ integrate every endpoint below today.
 |---|---|
 | Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` |
 | Users | `PATCH /users/me` · `DELETE /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
-| Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` |
+| Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` · `GET /decks/:id/export` · `POST /decks/:id/cards/import` |
 | Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
 | Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
 | SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
@@ -501,6 +501,48 @@ Example:
 ```ts
 // 204 No Content   (cascades to cards, progress, sessions)
 ```
+
+#### `GET /decks/:id/export?format=csv|json`  *(auth)*
+File download of every card in the deck (in `position` order).
+- `csv` (default): columns `word,definition,phonetic,reading,partOfSpeech,
+  example,exampleTranslation,tags,difficulty,type`. `tags` are joined with
+  `;`. Quoting follows RFC 4180 for embedded commas, quotes, and newlines.
+- `json`: `{ deck: { title, description, sourceLanguage, targetLanguage },
+  cards: Card[] }` — drop IDs, timestamps, and media URLs (those don't
+  re-import).
+
+```ts
+// 200 Response:
+//   Content-Type: text/csv | application/json
+//   Content-Disposition: attachment; filename="<deck-slug>.<ext>"
+//   Body: file payload
+// Errors: 404 DECK_NOT_FOUND
+```
+
+#### `POST /decks/:id/cards/import`  *(auth)*
+Bulk-add cards to an existing deck from a CSV or JSON payload (typically
+produced by `GET /decks/:id/export` from this app or another). Pasted text
+is fine — multipart isn't required.
+```ts
+// Request
+{
+  format: 'csv' | 'json';
+  text: string;       // ≤ 1 000 000 chars
+}
+
+// 201 Response: { created: number }
+
+// Errors:
+// 400 VALIDATION_ERROR        — empty body or unknown format
+// 404 DECK_NOT_FOUND          — caller doesn't own the deck
+// 422 IMPORT_PARSE_FAILED     — couldn't extract any cards from the input
+```
+
+CSV must include a header row with at least `word` and `definition`.
+Unknown columns are ignored. Invalid `difficulty`/`type` values are
+dropped (the import doesn't fail). JSON accepts either a bare card array
+or `{ deck?, cards: [...] }` — `deck` metadata is ignored, only `cards`
+are imported.
 
 ### Cards
 
