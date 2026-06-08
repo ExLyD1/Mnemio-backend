@@ -29,6 +29,7 @@ model User {
   userAchievements    UserAchievement[]
   dailyActivity       DailyActivity[]
   aiUsage             AiUsage[]
+  conversations       Conversation[]
 
   @@map("users")
 }
