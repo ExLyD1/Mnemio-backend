@@ -130,3 +130,11 @@ export class ImportBudgetExceededError extends RateLimitedError {
         });
     }
 }
+
+// Real-time chat — the only chat-specific error class. Budget exhaustion
+// reuses AiBudgetExceededError with kind='chat'.
+export class ChatNotFoundError extends NotFoundError {
+    constructor() {
+        super('CHAT_NOT_FOUND', 'Conversation not found');
+    }
+}
