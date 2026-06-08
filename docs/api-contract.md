@@ -8,11 +8,11 @@
 
 **Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped,
 plus the post-MVP additions (Google OAuth, account deletion, welcome flags,
-Quizlet/text imports, deck import/export). **50 endpoints under `/api/v1`**
-+ `GET /health` + `GET /ready` + static `/media/*`. Nothing in this document
-is "coming later" unless it says so explicitly.
+Quizlet/text imports, deck import/export, real-time AI chat). **56 endpoints
+under `/api/v1`** + `GET /health` + `GET /ready` + static `/media/*`. Nothing
+in this document is "coming later" unless it says so explicitly.
 
-### Endpoint inventory (50 under `/api/v1`)
+### Endpoint inventory (56 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -28,6 +28,7 @@ is "coming later" unless it says so explicitly.
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
 | AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
+| Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
 | Ops | `GET /health` · `GET /ready` (both un-prefixed) |
 
@@ -47,6 +48,7 @@ is "coming later" unless it says so explicitly.
 | 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
 | 11 | Every auth response (`login`, `verify-email`, `refresh`, `me`) now carries `welcome: { hasDeck, hasSession, hasReviewed }` — use it for dashboard variant selection instead of fanning out three count probes from the FE. |
 | 12 | `/imports/*` and `/ai/*` share a per-user daily-cap rollup in `ai_usage`. A user can hit the import cap without affecting AI calls and vice versa — distinct error codes (`IMPORT_BUDGET_EXCEEDED` vs `AI_BUDGET_EXCEEDED`). |
+| 13 | `/chat/conversations/:id/messages` is the only endpoint where partial-success matters: a streamed assistant reply that gets cut mid-flight is persisted with `status: 'partial'` and the user is NOT charged a daily-cap unit. The FE can render the half-reply and offer "retry." |
 
 ### Demo data
 `npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
@@ -143,6 +145,7 @@ type ApiError = {
 | `OAUTH_EMAIL_UNVERIFIED` | `/auth/oauth/google/callback` | Surface via the `/auth/oauth/error?reason=` redirect. |
 | `AUTH_EMAIL_UNVERIFIED_LINK` | `/auth/oauth/google/callback` | The user already has an unverified password account with that email; tell them to verify it first or use a different Google account. |
 | `NOT_READY` | `GET /ready` | 503 — DB ping failed. Ops-only; FE doesn't call `/ready`. |
+| `CHAT_NOT_FOUND` | any `/chat/conversations/:id*` | 404 — conversation missing or owned by someone else. |
 
 **429 envelope:** `@fastify/rate-limit` is now configured with our standard
 envelope, so a rate-limited request returns
@@ -328,6 +331,31 @@ type AiCardDraft = {
   exampleTranslation?: string;
   tags?: string[];
   difficulty?: 'easy' | 'medium' | 'hard';
+};
+
+// Real-time chat (POST /chat/*). Conversations are server-persisted so the
+// user can resume across devices. Messages are append-only — re-sending the
+// same prompt creates a new ChatMessage row, never edits an existing one.
+type Conversation = {
+  id: string;
+  title: string;           // auto-set from the first user message; user can rename
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt: string;   // drives sidebar order
+};
+
+type ChatMessageRole = 'user' | 'assistant' | 'system';
+type ChatMessageStatus = 'complete' | 'partial';   // 'partial' when a stream got cut
+
+type ChatMessage = {
+  id: string;
+  conversationId: string;
+  role: ChatMessageRole;
+  content: string;                 // plain text or markdown — no HTML
+  status: ChatMessageStatus;
+  tokensInput: number | null;      // assistant rows only
+  tokensOutput: number | null;     // assistant rows only
+  createdAt: string;
 };
 ```
 
@@ -1171,6 +1199,120 @@ TSV (`word<TAB>definition`), CSV (`word,definition`), or newline-paired
 // 422 IMPORT_PARSE_FAILED    — no card pairs could be extracted
 // 429 IMPORT_BUDGET_EXCEEDED — shared cap with /imports/quizlet
 ```
+
+### Chat  *(real-time AI)*
+
+Server-persisted multi-turn chat against Claude Haiku 4.5. Conversations
+live in their own tables so users can resume on any device; the sidebar
+orders by `lastMessageAt DESC`. Each user-message turn counts against the
+`chat` daily cap (`AI_DAILY_CHAT_CAP_PER_USER`, default 50).
+
+The send-message endpoint streams tokens via SSE; all other endpoints are
+plain JSON. SSE-or-JSON negotiation is the same `Accept: text/event-stream`
++ `?stream=1` switch the other AI endpoints use.
+
+#### `GET /chat/conversations`  *(auth)*
+Sidebar list. Cursor-paginated by `lastMessageAt DESC, id DESC`.
+```ts
+// Query: ?cursor?=string&limit?=number(<=100)   default limit 20
+// 200 Response: Page<Conversation>
+```
+
+#### `POST /chat/conversations`  *(auth)*
+Create a new conversation. Empty body is fine — the FE typically creates
+first and sends the user's first message in a follow-up call.
+```ts
+// Request
+{ title?: string }                  // 1..120 chars; defaults to 'New chat'
+
+// 201 Response: Conversation
+```
+
+#### `GET /chat/conversations/:id`  *(auth)*
+Fetch the conversation header plus its most recent 50 messages
+(`createdAt ASC, id ASC`).
+```ts
+// 200 Response: { conversation: Conversation; messages: ChatMessage[] }
+// Errors: 404 CHAT_NOT_FOUND
+```
+
+#### `PATCH /chat/conversations/:id`  *(auth)*
+Rename. Replaces the auto-generated title.
+```ts
+// Request: { title: string }       // 1..120 chars
+// 200 Response: Conversation
+// Errors: 404 CHAT_NOT_FOUND
+```
+
+#### `DELETE /chat/conversations/:id`  *(auth)*
+Hard delete. Cascades to all messages.
+```ts
+// 204 No Content
+// Errors: 404 CHAT_NOT_FOUND
+```
+
+#### `POST /chat/conversations/:id/messages`  *(auth)*
+Append a user message and stream the assistant reply.
+```ts
+// Request
+{ content: string }                 // 1..4000 chars (trimmed)
+```
+
+**SSE response** (when `Accept: text/event-stream` or `?stream=1`):
+```
+event: start
+data: {
+  userMessage: ChatMessage,
+  assistantMessageId: string        // the still-empty placeholder we'll fill via tokens
+}
+
+event: token
+data: { delta: string }             // one event per provider chunk
+
+event: done
+data: {
+  assistantMessage: ChatMessage,    // status: 'complete', tokens populated
+  conversationTitle: string,        // may have been auto-set on the first turn
+  tokensInput: number,
+  tokensOutput: number
+}
+
+event: error                         // mid-stream failure
+data: { code: string, message: string, details?: object }
+```
+
+After an `event: error` the assistant message stays in the database with
+`status: 'partial'` and whatever text we got before the failure. The user
+is NOT charged a daily-cap unit. The FE should render the partial reply
+and offer the user a "retry" affordance.
+
+**Non-SSE response** (default JSON):
+```ts
+// 200 Response
+{
+  userMessage: ChatMessage,
+  assistantMessage: ChatMessage,
+  conversationTitle: string,
+  tokensInput: number,
+  tokensOutput: number
+}
+
+// Errors:
+// 404 CHAT_NOT_FOUND        — caller doesn't own this conversation
+// 429 AI_BUDGET_EXCEEDED    — details.kind === 'chat', details.capPerDay
+// 429 RATE_LIMITED          — per-route 30 req/min/user throttle
+// 502 AI_PROVIDER_ERROR     — Anthropic returned non-200
+// 502 AI_VALIDATION_FAILED  — provider returned nothing usable
+```
+
+**Context window:** the backend sends only the most recent
+`AI_CHAT_CONTEXT_TURNS` (default 20) `user`+`assistant` messages to the
+LLM, oldest first. Older messages remain in the DB and are returned by
+`GET /chat/conversations/:id` for display but don't ride along to Claude.
+
+**Auto-title rule:** on the user's first message in a conversation, the
+title flips from `"New chat"` to the trimmed message (up to 60 chars, ellipsis
+suffix when truncated). Subsequent turns leave the title alone.
 
 ### Media  *(P2)*
 
