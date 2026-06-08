@@ -6,12 +6,13 @@
 
 ## 0. Status
 
-**Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped
-(43 endpoints under `/api/v1` + `GET /health` + static `/media/*`). Nothing in
-this document is "coming later" unless it says so explicitly. The FE can
-integrate every endpoint below today.
+**Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped,
+plus the post-MVP additions (Google OAuth, account deletion, welcome flags,
+Quizlet/text imports, deck import/export). **50 endpoints under `/api/v1`**
++ `GET /health` + `GET /ready` + static `/media/*`. Nothing in this document
+is "coming later" unless it says so explicitly.
 
-### Endpoint inventory (43 under `/api/v1`)
+### Endpoint inventory (50 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -28,7 +29,7 @@ integrate every endpoint below today.
 | AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
-| Ops | `GET /health` (no `/api/v1` prefix) |
+| Ops | `GET /health` · `GET /ready` (both un-prefixed) |
 
 ### Invariants the FE must respect
 
@@ -44,6 +45,8 @@ integrate every endpoint below today.
 | 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
 | 9 | Ownership is checked at the repo layer — listing/getting/modifying someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. |
 | 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
+| 11 | Every auth response (`login`, `verify-email`, `refresh`, `me`) now carries `welcome: { hasDeck, hasSession, hasReviewed }` — use it for dashboard variant selection instead of fanning out three count probes from the FE. |
+| 12 | `/imports/*` and `/ai/*` share a per-user daily-cap rollup in `ai_usage`. A user can hit the import cap without affecting AI calls and vice versa — distinct error codes (`IMPORT_BUDGET_EXCEEDED` vs `AI_BUDGET_EXCEEDED`). |
 
 ### Demo data
 `npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
@@ -129,10 +132,21 @@ type ApiError = {
 | `AI_BUDGET_EXCEEDED` | any `/ai/*` | "Daily AI quota reached." `details.kind`, `details.capPerDay` |
 | `AI_PROVIDER_ERROR` | any `/ai/*` | Generic "AI is having a moment — try again." `details.providerStatus` for logs |
 | `AI_VALIDATION_FAILED` | any `/ai/*` | Same UX as provider error; LLM returned garbage |
+| `IMPORT_BAD_URL` | `POST /imports/quizlet` | "URL must be a `quizlet.com` set link." |
+| `IMPORT_NOT_FOUND` | `POST /imports/quizlet` | "Set is private, removed, or doesn't exist." |
+| `IMPORT_PARSE_FAILED` | `POST /imports/*` · `POST /decks/:id/cards/import` | "Couldn't parse this content." Suggest pasting text instead for Quizlet. |
+| `IMPORT_UPSTREAM_ERROR` | `POST /imports/quizlet` | "Quizlet didn't respond — try again." `details.providerStatus` |
+| `IMPORT_BUDGET_EXCEEDED` | `POST /imports/*` | "Daily import quota reached." `details.capPerDay` |
+| `OAUTH_NOT_CONFIGURED` | `/auth/oauth/*` | "Google sign-in isn't enabled on this deployment." Hide the button. |
+| `OAUTH_BAD_EXCHANGE_CODE` | `POST /auth/oauth/exchange` | "Sign-in code missing — start over." |
+| `OAUTH_EXCHANGE_EXPIRED` | `POST /auth/oauth/exchange` | "Sign-in took too long — start over." |
+| `OAUTH_EMAIL_UNVERIFIED` | `/auth/oauth/google/callback` | Surface via the `/auth/oauth/error?reason=` redirect. |
+| `AUTH_EMAIL_UNVERIFIED_LINK` | `/auth/oauth/google/callback` | The user already has an unverified password account with that email; tell them to verify it first or use a different Google account. |
+| `NOT_READY` | `GET /ready` | 503 — DB ping failed. Ops-only; FE doesn't call `/ready`. |
 
-> Note: `@fastify/rate-limit` 429 responses currently use the plugin's default
-> shape (`{ statusCode, error, message }`), not our envelope. Treat **HTTP 429**
-> itself as the signal. Can be normalized on request.
+**429 envelope:** `@fastify/rate-limit` is now configured with our standard
+envelope, so a rate-limited request returns
+`{ code: 'RATE_LIMITED', message, details: { retryAfter, max } }`.
 
 ### Rate limiting
 - Global default: 120 req/min/IP.
@@ -293,6 +307,27 @@ type Preference = {
   mimiPlacement: 'left' | 'right' | null;
   favorites: string[];         // deckIds
   updatedAt: string;
+};
+
+// Returned on every token-issuing auth response + GET /auth/me.
+type WelcomeState = {
+  hasDeck: boolean;
+  hasSession: boolean;
+  hasReviewed: boolean;
+};
+
+// Ephemeral card draft — used as both the AI-enrichment / generate-deck
+// output and the /imports/* output, so the FE renders one review/preview
+// UI for all three sources.
+type AiCardDraft = {
+  word: string;
+  definition: string;
+  phonetic?: string;
+  partOfSpeech?: string;
+  example?: string;
+  exampleTranslation?: string;
+  tags?: string[];
+  difficulty?: 'easy' | 'medium' | 'hard';
 };
 ```
 
@@ -1068,7 +1103,7 @@ Always single-response (small payload, no streaming needed).
 
 | Limit | Value | Throws |
 |---|---|---|
-| Request rate | 30/min/user across all three endpoints | `429` (plugin default body) |
+| Request rate | 30/min/user across all three endpoints | `429 RATE_LIMITED` |
 | Daily `enrich` cap | 5/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
 | Daily `generate` cap | 20/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
 | Daily `suggest` cap | 60/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
@@ -1185,9 +1220,22 @@ attach. For avatars, the response already updated the user row.
 
 ### Health (ops)
 
+Both endpoints are unauthenticated and live **outside** the `/api/v1`
+prefix. Hit them at the server root.
+
 #### `GET /health`  *(public, **no** `/api/v1` prefix)*
+Cheap liveness — no I/O. Point uptime monitors (BetterUptime, etc.) here.
 ```ts
 // 200 Response: { status: 'ok' }
+```
+
+#### `GET /ready`  *(public, **no** `/api/v1` prefix)*
+Readiness — runs `SELECT 1` against Postgres. Use this as the container
+orchestrator's healthcheck path (Railway, k8s, Docker `HEALTHCHECK`).
+A 503 here means "don't route traffic yet."
+```ts
+// 200 Response: { status: 'ready' }
+// 503 Response: { code: 'NOT_READY', message: 'Database is not reachable.' }
 ```
 
 ---
@@ -1212,7 +1260,7 @@ Single client in `app/api/_client.ts`:
 register(email, password)
   → 201 { userId, email }                  → OTP step (carry userId)
 verifyEmail(userId, code)
-  → 200 { accessToken, user, needsProfile } + cookie set
+  → 200 { accessToken, user, needsProfile, welcome } + cookie set
        needsProfile === true → account-details step (PATCH /users/me)
        needsProfile === false → /dashboard
 ```
@@ -1222,6 +1270,55 @@ login(email, password)
   → 200 → if needsProfile: account-details step; else /dashboard
   → 401 EMAIL_NOT_VERIFIED → OTP step with details.userId
 ```
+For Google sign-in (when `OAUTH_GOOGLE_CLIENT_ID` is set on the server):
+```
+click "Continue with Google"
+  → window.location = `${API}/auth/oauth/google`     // backend redirects to Google
+                                                     // → user picks an account
+                                                     // → Google → /auth/oauth/google/callback
+                                                     // → backend sets refresh cookie
+                                                     // → 302 to ${WEB_URL}/auth/oauth/callback?code=<short>
+on FE /auth/oauth/callback?code=<short>:
+  POST /auth/oauth/exchange { code }
+  → 200 { accessToken, user, needsProfile, welcome }
+  → route by needsProfile, same as login
+on FE /auth/oauth/error?reason=<...>:
+  show a friendly error; common reasons: missing_state, bad_state,
+  exchange_failed, AUTH_EMAIL_UNVERIFIED_LINK, OAUTH_EMAIL_UNVERIFIED.
+```
+
+### Welcome-state wiring
+Every token-issuing auth response carries `welcome: { hasDeck, hasSession,
+hasReviewed }`. Use those to pick the dashboard variant:
+- `hasDeck === false` → empty-state CTA "Create your first deck"
+- `hasDeck && !hasReviewed` → "Pick a card to start reviewing"
+- `hasReviewed && hasSession` → "Continue studying" card
+
+These flip naturally on the next `/auth/refresh`, so the dashboard stays in
+sync without extra count calls.
+
+### Import + commit pattern
+Both `/imports/quizlet` and `/imports/text` are **stateless** — they return
+`AiCardDraft[]` without writing anything. The FE reuses the AI-enrichment
+preview UI, then commits with the existing endpoints:
+```
+POST /imports/quizlet { url } | /imports/text { text }
+  → { source, cards: AiCardDraft[] }
+   → preview UI (same as /ai/enrich-words)
+       → "Create new deck":  POST /decks → POST /decks/:id/cards/bulk
+       → "Add to <deck>":    POST /decks/:id/cards/bulk
+```
+
+For deck round-trips between users, `GET /decks/:id/export?format=csv|json`
+produces a file the recipient can re-import via
+`POST /decks/:id/cards/import { format, text }`.
+
+### Account deletion
+`DELETE /users/me` cascades everything the user owns and clears the refresh
+cookie. After the 204:
+1. Delete `accessToken` from `localStorage`.
+2. Hard-redirect to the marketing page (don't try to refresh — the cookie is
+   gone and the user no longer exists).
 
 ### Session flow
 - Starting a new session implicitly ends the active one. Don't fight it from FE.
@@ -1267,7 +1364,7 @@ BASE=http://localhost:3001/api/v1
 curl -sX POST "$BASE/auth/login" -c cookies.txt \
      -H 'content-type: application/json' \
      -d '{"email":"demo@mnemio.local","password":"demo-password-123"}'
-# → { "accessToken": "...", "user": { ... }, "needsProfile": false }
+# → { "accessToken": "...", "user": { ... }, "needsProfile": false, "welcome": { ... } }
 
 ACCESS=...      # paste the accessToken from above
 
@@ -1281,7 +1378,7 @@ curl -s "$BASE/decks/<deckId>" -H "Authorization: Bearer $ACCESS"
 
 # 4. Refresh (no body; cookie travels via -b)
 curl -sX POST "$BASE/auth/refresh" -b cookies.txt -c cookies.txt
-# → { accessToken (new), user, needsProfile }
+# → { accessToken (new), user, needsProfile, welcome }
 ```
 
 ### Full sign-up flow (manual OTP)
@@ -1295,7 +1392,7 @@ curl -sX POST "$BASE/auth/register" -H 'content-type: application/json' \
 curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
      -H 'content-type: application/json' \
      -d '{"userId":"<id>","code":"123456"}'
-# → { accessToken, user, needsProfile: true } + cookie set
+# → { accessToken, user, needsProfile: true, welcome } + cookie set
 ```
 
 ---
