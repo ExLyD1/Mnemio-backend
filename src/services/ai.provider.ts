@@ -5,7 +5,7 @@
  *
  * Selection logic lives in ai.service.ts.
  */
-import type { GenerateDeckInput, SuggestInput } from '../schemas/ai.schema.js';
+import type { EnrichWordsInput, GenerateDeckInput, SuggestInput } from '../schemas/ai.schema.js';
 
 export type AiCardDraft = {
     word: string;
@@ -17,6 +17,25 @@ export type AiCardDraft = {
     tags?: string[];
     difficulty?: 'easy' | 'medium' | 'hard';
 };
+
+export type EnrichWordsMeta = {
+    requested: number;
+    enriched: number;
+    durationMs: number;
+    tokensInput: number;
+    tokensOutput: number;
+};
+
+export type EnrichWordsResult = {
+    cards: AiCardDraft[];
+    meta: EnrichWordsMeta;
+};
+
+// Per-card event the streaming variant emits as the LLM produces output.
+// `position` matches the index in the request's `words[]` array.
+export type EnrichWordsEvent =
+    | { type: 'card'; position: number; card: AiCardDraft }
+    | { type: 'done'; meta: EnrichWordsMeta };
 
 export type AiDeckDraft = {
     title: string;
@@ -43,6 +62,21 @@ export type SuggestContext = SuggestInput['context'];
 
 export type AiProvider = {
     name: string;     // 'mock' | 'anthropic' | …
+
+    /**
+     * Enrich a user-supplied word list. Implementations MUST preserve the
+     * input order: `result.cards[i].word` corresponds to
+     * `input.words[i]` (after de-dup, which is done in the service layer).
+     *
+     * Implementations MAY emit per-card events via `onCard` as soon as each
+     * card is parsed from the streaming LLM output; non-streaming
+     * implementations can omit it.
+     */
+    enrichWords: (
+        input: EnrichWordsInput,
+        opts?: { onCard?: (event: EnrichWordsEvent) => void },
+    ) => Promise<EnrichWordsResult>;
+
     generateDeck: (input: GenerateDeckInput) => Promise<AiDeckDraft>;
     suggest: (
         input: { context: SuggestContext; deckId?: string; dueCount: number; streak: number },

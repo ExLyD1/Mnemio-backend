@@ -2,6 +2,8 @@ import type {
     AiDeckDraft,
     AiProvider,
     AiSuggestion,
+    EnrichWordsEvent,
+    EnrichWordsResult,
     SuggestContext,
 } from './ai.provider.js';
 
@@ -25,6 +27,39 @@ const PLACEHOLDER_DEFS = [
  */
 export const mockProvider: AiProvider = {
     name: 'mock',
+
+    async enrichWords(input, opts): Promise<EnrichWordsResult> {
+        const start = Date.now();
+        const cards = input.words.map((word) => ({
+            word,
+            // Deterministic placeholder definition so the FE can wire
+            // against the shape without burning real LLM credits.
+            definition: `[mock] ${input.sourceLanguage} definition for "${word}"`,
+            phonetic: `/${word.toLowerCase()}/`,
+            partOfSpeech: 'noun',
+            example: `Example sentence using ${word}.`,
+            exampleTranslation: `Translation of example for ${word}.`,
+            tags: input.context ? [input.context.toLowerCase().split(/\s+/)[0]!] : ['mock'],
+            difficulty: 'medium' as const,
+        }));
+
+        // Fire per-card events so streaming callers can dev against the mock.
+        if (opts?.onCard) {
+            cards.forEach((card, position) => {
+                opts.onCard!({ type: 'card', position, card });
+            });
+        }
+
+        const meta = {
+            requested: input.words.length,
+            enriched: cards.length,
+            durationMs: Date.now() - start,
+            tokensInput: 0,
+            tokensOutput: 0,
+        };
+        opts?.onCard?.({ type: 'done', meta } satisfies EnrichWordsEvent);
+        return { cards, meta };
+    },
 
     async generateDeck(input) {
         const count = input.count ?? 8;

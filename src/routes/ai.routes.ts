@@ -9,6 +9,11 @@ const aiRoutes = async (fastify: FastifyInstance) => {
     const aiLimit = { max: 30, timeWindow: '1 minute' };
 
     fastify.post(
+        '/ai/enrich-words',
+        { config: { rateLimit: aiLimit } },
+        aiController.enrichWords,
+    );
+    fastify.post(
         '/ai/generate-deck',
         { config: { rateLimit: aiLimit } },
         aiController.generateDeck,
