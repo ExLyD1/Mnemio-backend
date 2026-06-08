@@ -305,6 +305,93 @@ export const logout = async (refreshToken: string | null): Promise<void> => {
     }
 };
 
+// ---------- OAuth sign-in (Google) ----------
+
+// Link-or-create. Order of attempts (matches plan §3.1 + Open question #6):
+//   1. If we already have an OAuthIdentity for (provider, providerUserId),
+//      sign in that user.
+//   2. Else if there's a user with this email AND they're already verified
+//      (password account), link the OAuth identity to them.
+//   3. Else create a brand-new user with the OAuth email (pre-verified).
+export const signInWithProvider = async (
+    fastify: FastifyInstance,
+    params: {
+        provider: 'google';
+        providerUserId: string;
+        email: string;
+        fullName?: string | null;
+        emailVerifiedByProvider: boolean;
+    },
+    ctx: RequestContext,
+): Promise<AuthResult> => {
+    const existingIdentity = await authRepo.findOAuthIdentity(
+        params.provider,
+        params.providerUserId,
+    );
+    if (existingIdentity) {
+        const user = await authRepo.findUserById(existingIdentity.userId);
+        if (!user) {
+            // Identity row points at a deleted user — defensive recovery.
+            throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'OAuth identity is stale');
+        }
+        await authRepo.writeAuditLog({
+            userId: user.id,
+            event: 'oauth.signin',
+            ip: ctx.ip ?? null,
+            details: { provider: params.provider },
+        });
+        return buildAuthResult(fastify, user, ctx);
+    }
+
+    const existingByEmail = await authRepo.findUserByEmail(params.email);
+    if (existingByEmail) {
+        // Only auto-link if the password account is verified (otherwise an
+        // attacker who pre-registered the email could hijack the Google flow).
+        if (!existingByEmail.emailVerifiedAt) {
+            throw new BadRequestError(
+                'AUTH_EMAIL_UNVERIFIED_LINK',
+                'An unverified account already exists for this email. Verify it first or use a different Google account.',
+            );
+        }
+        await authRepo.createOAuthIdentity({
+            userId: existingByEmail.id,
+            provider: params.provider,
+            providerUserId: params.providerUserId,
+        });
+        await authRepo.writeAuditLog({
+            userId: existingByEmail.id,
+            event: 'oauth.linked',
+            ip: ctx.ip ?? null,
+            details: { provider: params.provider },
+        });
+        return buildAuthResult(fastify, existingByEmail, ctx);
+    }
+
+    // Brand-new user.
+    if (!params.emailVerifiedByProvider) {
+        throw new BadRequestError(
+            'OAUTH_EMAIL_UNVERIFIED',
+            'Google has not verified this email; cannot create an account from it',
+        );
+    }
+    const created = await authRepo.createOAuthUser({
+        email: params.email,
+        fullName: params.fullName ?? null,
+    });
+    await authRepo.createOAuthIdentity({
+        userId: created.id,
+        provider: params.provider,
+        providerUserId: params.providerUserId,
+    });
+    await authRepo.writeAuditLog({
+        userId: created.id,
+        event: 'oauth.register',
+        ip: ctx.ip ?? null,
+        details: { provider: params.provider },
+    });
+    return buildAuthResult(fastify, created, ctx);
+};
+
 // ---------- Me ----------
 
 export const me = async (

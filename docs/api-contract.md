@@ -15,7 +15,7 @@ integrate every endpoint below today.
 
 | Domain | Endpoints |
 |---|---|
-| Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` |
+| Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` · `GET /auth/oauth/google`, `/auth/oauth/google/callback` · `POST /auth/oauth/exchange` |
 | Users | `PATCH /users/me` · `DELETE /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
 | Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` · `GET /decks/:id/export` · `POST /decks/:id/cards/import` |
 | Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
@@ -393,6 +393,45 @@ FE should also delete `accessToken` from `localStorage` after this call.
 ```ts
 // 200 Response: { user: User; needsProfile: boolean; welcome: WelcomeState }
 // Errors: 401 AUTH_INVALID_TOKEN → try /auth/refresh
+```
+
+#### Google OAuth flow (3 endpoints)
+
+End-to-end:
+1. FE redirects the user to `GET /auth/oauth/google` (backend sets state
+   + PKCE cookies, redirects to Google).
+2. Google sends the user to `/auth/oauth/google/callback?code=...&state=...`.
+   Backend validates state, exchanges the code, looks up or creates the
+   user, **sets the `mnemio_refresh` cookie**, generates a short-lived
+   exchange code, and 302-redirects to
+   `${WEB_URL}/auth/oauth/callback?code=<short_lived>`.
+3. FE swaps the short code via `POST /auth/oauth/exchange { code }` and
+   gets `{ accessToken, user, needsProfile, welcome }`.
+
+Identity-linking policy:
+- Existing OAuth identity for `(provider, providerUserId)` → sign in that user.
+- Existing **verified** password user with the same email → link OAuth
+  identity, sign in.
+- Existing **unverified** password user with the same email → error
+  `AUTH_EMAIL_UNVERIFIED_LINK` (would let an attacker hijack a half-finished
+  registration).
+- Else → create a new user with `emailVerifiedAt = now()`, link identity, sign in.
+
+```ts
+GET /auth/oauth/google      → 302 to https://accounts.google.com/...
+GET /auth/oauth/google/callback?code=&state=
+  → on success: 302 to ${WEB_URL}/auth/oauth/callback?code=<short>
+  → on failure: 302 to ${WEB_URL}/auth/oauth/error?reason=<...>
+                 (reasons: missing_state | bad_state | missing_code |
+                  exchange_failed | OAUTH_EMAIL_UNVERIFIED | etc.)
+
+POST /auth/oauth/exchange
+  Body: { code: string }
+  200:  { accessToken, user, needsProfile, welcome }   // refresh cookie already set
+  Errors:
+    400 OAUTH_BAD_EXCHANGE_CODE
+    400 OAUTH_EXCHANGE_EXPIRED      — older than 60s or already redeemed
+    400 OAUTH_NOT_CONFIGURED        — server is missing Google creds
 ```
 
 ### Users

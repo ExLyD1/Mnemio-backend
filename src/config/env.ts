@@ -57,6 +57,7 @@ const envSchema = z.object({
 
     OAUTH_GOOGLE_CLIENT_ID: z.string().optional(),
     OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
+    OAUTH_GOOGLE_REDIRECT_URL: z.string().url().optional(),
     OAUTH_FACEBOOK_CLIENT_ID: z.string().optional(),
     OAUTH_FACEBOOK_CLIENT_SECRET: z.string().optional(),
     OAUTH_APPLE_CLIENT_ID: z.string().optional(),

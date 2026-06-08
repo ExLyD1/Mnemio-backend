@@ -29,6 +29,46 @@ export const readRefreshCookie = (request: FastifyRequest): string | null => {
     return value && value.length > 0 ? value : null;
 };
 
+// ---------- OAuth state + PKCE cookies ----------
+//
+// Used between GET /auth/oauth/google → Google → /callback. Scoped narrowly
+// to the OAuth callback path and TTL'd to ~10 min so they don't linger.
+const OAUTH_STATE = 'mnemio_oauth_state';
+const OAUTH_VERIFIER = 'mnemio_oauth_verifier';
+const OAUTH_COOKIE_PATH = '/api/v1/auth/oauth';
+const OAUTH_TTL = 10 * 60;
+
+const oauthCookieOptions = () => ({
+    httpOnly: true,
+    secure: isProd,
+    sameSite: 'lax' as const,
+    path: OAUTH_COOKIE_PATH,
+    maxAge: OAUTH_TTL,
+});
+
+export const setOAuthCookies = (
+    reply: FastifyReply,
+    state: string,
+    codeVerifier: string,
+): void => {
+    reply.setCookie(OAUTH_STATE, state, oauthCookieOptions());
+    reply.setCookie(OAUTH_VERIFIER, codeVerifier, oauthCookieOptions());
+};
+
+export const readOAuthCookies = (
+    request: FastifyRequest,
+): { state: string; codeVerifier: string } | null => {
+    const state = request.cookies?.[OAUTH_STATE];
+    const codeVerifier = request.cookies?.[OAUTH_VERIFIER];
+    if (!state || !codeVerifier) return null;
+    return { state, codeVerifier };
+};
+
+export const clearOAuthCookies = (reply: FastifyReply): void => {
+    reply.clearCookie(OAUTH_STATE, { path: OAUTH_COOKIE_PATH });
+    reply.clearCookie(OAUTH_VERIFIER, { path: OAUTH_COOKIE_PATH });
+};
+
 export const registerCookies = async (fastify: FastifyInstance): Promise<void> => {
     await fastify.register(cookie);
 };
