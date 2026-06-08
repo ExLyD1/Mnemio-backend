@@ -301,6 +301,20 @@ Most auth responses include `needsProfile: boolean` alongside `user`. It's
 local heuristics — to decide whether to send the user to the account-details
 step.**
 
+### `welcome` flags
+Auth responses also carry a `welcome` block — three booleans the FE can use to
+pick between the empty-state dashboard and "Continue studying":
+```ts
+welcome: {
+  hasDeck:     boolean,  // user has authored at least one deck
+  hasSession:  boolean,  // user has at least one completed study session
+  hasReviewed: boolean,  // user has at least one CardProgress row
+}
+```
+Computed via three `count > 0` probes in parallel (~3ms). Refreshed on every
+`/auth/me`, `/auth/login`, `/auth/refresh`, `/auth/verify-email` — so once a
+user creates their first deck, the next response flips `hasDeck`.
+
 ---
 
 ## 3. Endpoint reference
@@ -331,7 +345,7 @@ Consume an OTP; on success, mark verified, set refresh cookie, return access tok
 { userId: string; code: string }      // 6-digit code
 
 // 200 Response  +  Set-Cookie: mnemio_refresh=...
-{ accessToken: string; user: User; needsProfile: boolean }
+{ accessToken: string; user: User; needsProfile: boolean; welcome: WelcomeState }
 
 // Errors: 400 AUTH_INVALID_CODE · 400 AUTH_OTP_EXHAUSTED
 ```
@@ -349,7 +363,7 @@ Consume an OTP; on success, mark verified, set refresh cookie, return access tok
 // Request: { email: string; password: string }
 
 // 200 Response  +  Set-Cookie: mnemio_refresh=...
-{ accessToken: string; user: User; needsProfile: boolean }
+{ accessToken: string; user: User; needsProfile: boolean; welcome: WelcomeState }
 
 // Errors:
 // 401 AUTH_INVALID_CREDENTIALS
@@ -362,7 +376,7 @@ sent via `Set-Cookie`), returns a fresh access token.
 ```ts
 // Request: (no body)
 // 200 Response  +  Set-Cookie: mnemio_refresh=... (rotated)
-{ accessToken: string; user: User; needsProfile: boolean }
+{ accessToken: string; user: User; needsProfile: boolean; welcome: WelcomeState }
 
 // Errors: 401 AUTH_INVALID_REFRESH  → hard logout (cookie was rotated/stolen)
 ```
@@ -376,7 +390,7 @@ FE should also delete `accessToken` from `localStorage` after this call.
 
 #### `GET /auth/me`  *(auth)*
 ```ts
-// 200 Response: { user: User; needsProfile: boolean }
+// 200 Response: { user: User; needsProfile: boolean; welcome: WelcomeState }
 // Errors: 401 AUTH_INVALID_TOKEN → try /auth/refresh
 ```
 

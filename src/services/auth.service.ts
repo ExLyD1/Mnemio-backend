@@ -2,6 +2,7 @@ import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
 import type { UserModel as User } from '../../generated/prisma/models/User.js';
 import * as authRepo from '../repositories/auth.repository.js';
+import { getWelcomeState, type WelcomeState } from '../repositories/welcome.repository.js';
 import { toPublicUser, needsProfile, type PublicUser } from '../shared/mappers.js';
 import { BadRequestError, ConflictError, UnauthorizedError, RateLimitedError } from '../shared/errors.js';
 import {
@@ -35,6 +36,7 @@ export type AuthTokens = {
 export type AuthResult = AuthTokens & {
     user: PublicUser;
     needsProfile: boolean;
+    welcome: WelcomeState;
 };
 
 const signAccessToken = (fastify: FastifyInstance, user: User): string =>
@@ -66,11 +68,15 @@ const buildAuthResult = async (
     user: User,
     ctx: RequestContext,
 ): Promise<AuthResult> => {
-    const tokens = await issueTokens(fastify, user, ctx);
+    const [tokens, welcome] = await Promise.all([
+        issueTokens(fastify, user, ctx),
+        getWelcomeState(user.id),
+    ]);
     return {
         ...tokens,
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
+        welcome,
     };
 };
 
@@ -273,7 +279,10 @@ export const refresh = async (
     const user = await authRepo.findUserById(record.userId);
     if (!user) throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid refresh token');
 
-    const tokens = await issueTokens(fastify, user, ctx);
+    const [tokens, welcome] = await Promise.all([
+        issueTokens(fastify, user, ctx),
+        getWelcomeState(user.id),
+    ]);
     await authRepo.revokeRefreshToken(
         record.id,
         (await authRepo.findRefreshTokenByHash(hashToken(tokens.refreshToken)))?.id,
@@ -282,6 +291,7 @@ export const refresh = async (
         ...tokens,
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
+        welcome,
     };
 };
 
@@ -297,8 +307,13 @@ export const logout = async (refreshToken: string | null): Promise<void> => {
 
 // ---------- Me ----------
 
-export const me = async (userId: string): Promise<{ user: PublicUser; needsProfile: boolean }> => {
-    const user = await authRepo.findUserById(userId);
+export const me = async (
+    userId: string,
+): Promise<{ user: PublicUser; needsProfile: boolean; welcome: WelcomeState }> => {
+    const [user, welcome] = await Promise.all([
+        authRepo.findUserById(userId),
+        getWelcomeState(userId),
+    ]);
     if (!user) throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'User no longer exists');
-    return { user: toPublicUser(user), needsProfile: needsProfile(user) };
+    return { user: toPublicUser(user), needsProfile: needsProfile(user), welcome };
 };
