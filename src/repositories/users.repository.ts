@@ -17,3 +17,8 @@ export const updateUser = (id: string, patch: UpdateMePatch) =>
         where: { id },
         data: patch,
     });
+
+// Cascades wipe decks, cards, sessions, progress, achievements, preferences,
+// AI usage, refresh tokens, email verifications, and OAuth identities.
+// audit_log.userId is onDelete: SetNull so the security trail survives.
+export const deleteUser = (id: string) => prisma.user.delete({ where: { id } });

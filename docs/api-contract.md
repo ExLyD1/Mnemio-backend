@@ -16,7 +16,7 @@ integrate every endpoint below today.
 | Domain | Endpoints |
 |---|---|
 | Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` |
-| Users | `PATCH /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
+| Users | `PATCH /users/me` · `DELETE /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
 | Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` |
 | Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
 | Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
@@ -411,6 +411,18 @@ Profile completion. All fields optional; at least one required.
 
 // Errors: 400 VALIDATION_ERROR · 409 AUTH_USERNAME_TAKEN
 ```
+
+#### `DELETE /users/me`  *(auth)*
+Permanently delete the signed-in account. Cascades wipe decks, cards,
+sessions, progress, achievements, preferences, AI usage, refresh tokens,
+email verifications, and OAuth identities. `audit_log` rows survive with
+`userId = NULL` (security trail). Idempotent — re-issuing returns 204.
+```ts
+// Request: (no body)
+// 204 No Content  +  Set-Cookie: mnemio_refresh=; Max-Age=0
+```
+FE should also delete `accessToken` from `localStorage` and hard-redirect
+to the marketing landing page.
 
 ### Decks
 
