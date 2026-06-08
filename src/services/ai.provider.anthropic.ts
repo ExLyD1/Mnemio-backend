@@ -12,6 +12,9 @@ import type {
     AiDeckDraft,
     AiProvider,
     AiSuggestion,
+    ChatResult,
+    ChatStreamEvent,
+    ChatTurn,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -437,9 +440,58 @@ const suggest = async (input: {
     return data;
 };
 
+// ---------- chat ----------
+
+const chat = async (
+    input: { messages: ChatTurn[]; systemPrompt: string; maxOutputTokens: number },
+    opts?: { onEvent?: (event: ChatStreamEvent) => void; signal?: AbortSignal },
+): Promise<ChatResult> => {
+    // Anthropic rejects empty message arrays — caller should never let this
+    // happen, but bail with a clear error if it does.
+    if (input.messages.length === 0) {
+        throw new AiValidationFailedError('chat requires at least one message');
+    }
+
+    let buffer = '';
+    let tokensInput = 0;
+    let tokensOutput = 0;
+
+    try {
+        const stream = client().messages.stream({
+            model: env.ANTHROPIC_MODEL,
+            max_tokens: input.maxOutputTokens,
+            system: input.systemPrompt,
+            messages: input.messages.map((m) => ({ role: m.role, content: m.content })),
+        });
+
+        // Abort on signal — propagates the cancellation up through finalMessage().
+        if (opts?.signal) {
+            opts.signal.addEventListener('abort', () => stream.abort(), { once: true });
+        }
+
+        stream.on('text', (delta) => {
+            buffer += delta;
+            opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+        });
+
+        const finalMessage = await stream.finalMessage();
+        tokensInput = finalMessage.usage.input_tokens;
+        tokensOutput = finalMessage.usage.output_tokens;
+    } catch (err) {
+        const status =
+            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
+        throw new AiProviderError(status, (err as Error).message);
+    }
+
+    const meta = { tokensInput, tokensOutput };
+    opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
+    return { content: buffer, tokensInput, tokensOutput };
+};
+
 export const anthropicProvider: AiProvider = {
     name: 'anthropic',
     enrichWords,
     generateDeck,
     suggest,
+    chat,
 };

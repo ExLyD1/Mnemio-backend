@@ -76,6 +76,30 @@ export type AiSuggestion = {
 
 export type SuggestContext = SuggestInput['context'];
 
+// ---------- Chat ----------
+
+export type ChatRole = 'user' | 'assistant';
+
+// A single conversational turn. System prompts are kept separate (passed as
+// `systemPrompt` on the input) so providers can hand them to the API's
+// dedicated `system` field instead of stuffing them in the message array.
+export type ChatTurn = { role: ChatRole; content: string };
+
+export type ChatDoneMeta = {
+    tokensInput: number;
+    tokensOutput: number;
+};
+
+export type ChatStreamEvent =
+    | { type: 'token'; delta: string }
+    | { type: 'done'; meta: ChatDoneMeta };
+
+export type ChatResult = {
+    content: string;
+    tokensInput: number;
+    tokensOutput: number;
+};
+
 export type AiProvider = {
     name: string;     // 'mock' | 'anthropic' | …
 
@@ -100,4 +124,18 @@ export type AiProvider = {
     suggest: (
         input: { context: SuggestContext; deckId?: string; dueCount: number; streak: number },
     ) => Promise<AiSuggestion>;
+
+    /**
+     * Stream a multi-turn chat reply. `messages` is the full conversation in
+     * chronological order; `systemPrompt` is the persona/scope wrapper (no
+     * grounding at MVP — see chat.prompt.ts).
+     *
+     * Implementations MUST forward each text chunk as `{ type: 'token', delta }`
+     * via `onEvent` (when provided) and emit one final `{ type: 'done', meta }`
+     * with the usage counts.
+     */
+    chat: (
+        input: { messages: ChatTurn[]; systemPrompt: string; maxOutputTokens: number },
+        opts?: { onEvent?: (event: ChatStreamEvent) => void; signal?: AbortSignal },
+    ) => Promise<ChatResult>;
 };

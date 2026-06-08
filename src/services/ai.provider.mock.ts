@@ -2,6 +2,8 @@ import type {
     AiDeckDraft,
     AiProvider,
     AiSuggestion,
+    ChatResult,
+    ChatStreamEvent,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -99,6 +101,28 @@ export const mockProvider: AiProvider = {
             } satisfies GenerateDeckEvent);
         }
         return { ...header, cards } satisfies AiDeckDraft;
+    },
+
+    async chat(input, opts): Promise<ChatResult> {
+        // Deterministic 3-token reply so the FE can exercise streaming UI
+        // without burning Anthropic credits. Picks tone from the last user
+        // message length so the dev experience varies slightly.
+        const lastUserTurn = [...input.messages].reverse().find((m) => m.role === 'user');
+        const tokens =
+            lastUserTurn && lastUserTurn.content.length > 40
+                ? ['Here', ' is a quick', ' answer.']
+                : ['Sure', ', happy to help', '.'];
+
+        for (const delta of tokens) {
+            opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+        }
+        const meta = { tokensInput: 0, tokensOutput: 0 };
+        opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
+        return {
+            content: tokens.join(''),
+            tokensInput: meta.tokensInput,
+            tokensOutput: meta.tokensOutput,
+        };
     },
 
     async suggest(input) {
