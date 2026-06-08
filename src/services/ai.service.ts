@@ -31,7 +31,7 @@ const provider = selectProvider();
  * word list (post-trim) so callers can map provider output back to whatever
  * the user pasted.
  */
-const prepareWords = (input: EnrichWordsInput): EnrichWordsInput => {
+export const prepareWords = (input: EnrichWordsInput): EnrichWordsInput => {
     const seen = new Set<string>();
     const unique: string[] = [];
     for (const raw of input.words) {
