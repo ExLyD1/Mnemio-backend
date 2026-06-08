@@ -3,6 +3,7 @@ import * as srsRepo from '../repositories/srs.repository.js';
 import * as activityRepo from '../repositories/activity.repository.js';
 import * as budget from './ai.budget.service.js';
 import { mockProvider } from './ai.provider.mock.js';
+import { anthropicProvider } from './ai.provider.anthropic.js';
 import type {
     AiProvider,
     EnrichWordsEvent,
@@ -16,9 +17,7 @@ import type {
 import { AiTooManyWordsError } from '../shared/errors.js';
 
 const selectProvider = (): AiProvider => {
-    // Add real providers (anthropic, openai, etc.) by importing them and
-    // returning here. The mock keeps the FE unblocked.
-    if (env.AI_PROVIDER === 'mock') return mockProvider;
+    if (env.AI_PROVIDER === 'anthropic') return anthropicProvider;
     return mockProvider;
 };
 
