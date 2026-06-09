@@ -9,6 +9,9 @@ const decksRoutes = async (fastify: FastifyInstance) => {
     fastify.get('/decks/:id', decksController.getOne);
     fastify.patch('/decks/:id', decksController.update);
     fastify.delete('/decks/:id', decksController.remove);
+
+    fastify.get('/decks/:id/export', decksController.exportDeck);
+    fastify.post('/decks/:id/cards/import', decksController.importCards);
 };
 
 export default decksRoutes;

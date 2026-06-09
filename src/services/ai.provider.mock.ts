@@ -2,6 +2,11 @@ import type {
     AiDeckDraft,
     AiProvider,
     AiSuggestion,
+    ChatResult,
+    ChatStreamEvent,
+    EnrichWordsEvent,
+    EnrichWordsResult,
+    GenerateDeckEvent,
     SuggestContext,
 } from './ai.provider.js';
 
@@ -26,7 +31,41 @@ const PLACEHOLDER_DEFS = [
 export const mockProvider: AiProvider = {
     name: 'mock',
 
-    async generateDeck(input) {
+    async enrichWords(input, opts): Promise<EnrichWordsResult> {
+        const start = Date.now();
+        const cards = input.words.map((word) => ({
+            word,
+            // Deterministic placeholder definition so the FE can wire
+            // against the shape without burning real LLM credits.
+            definition: `[mock] ${input.sourceLanguage} definition for "${word}"`,
+            phonetic: `/${word.toLowerCase()}/`,
+            partOfSpeech: 'noun',
+            example: `Example sentence using ${word}.`,
+            exampleTranslation: `Translation of example for ${word}.`,
+            tags: input.context ? [input.context.toLowerCase().split(/\s+/)[0]!] : ['mock'],
+            difficulty: 'medium' as const,
+        }));
+
+        // Fire per-card events so streaming callers can dev against the mock.
+        if (opts?.onCard) {
+            cards.forEach((card, position) => {
+                opts.onCard!({ type: 'card', position, card });
+            });
+        }
+
+        const meta = {
+            requested: input.words.length,
+            enriched: cards.length,
+            durationMs: Date.now() - start,
+            tokensInput: 0,
+            tokensOutput: 0,
+        };
+        opts?.onCard?.({ type: 'done', meta } satisfies EnrichWordsEvent);
+        return { cards, meta };
+    },
+
+    async generateDeck(input, opts) {
+        const start = Date.now();
         const count = input.count ?? 8;
         const cards = Array.from({ length: count }, (_, i) => {
             const word = `${titleCase(input.targetLanguage)} term ${i + 1}`;
@@ -43,16 +82,47 @@ export const mockProvider: AiProvider = {
             };
         });
 
-        const draft: AiDeckDraft = {
+        const header = {
             title: titleCase(input.topic),
             description: `AI-drafted vocabulary deck on "${input.topic}". Edit before saving.`,
             sourceLanguage: input.sourceLanguage,
             targetLanguage: input.targetLanguage,
             subject: 'languages',
             glyph: '✨',
-            cards,
         };
-        return draft;
+        if (opts?.onEvent) {
+            opts.onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
+            cards.forEach((card, position) =>
+                opts.onEvent!({ type: 'card', position, card } satisfies GenerateDeckEvent),
+            );
+            opts.onEvent({
+                type: 'done',
+                meta: { durationMs: Date.now() - start, tokensInput: 0, tokensOutput: 0 },
+            } satisfies GenerateDeckEvent);
+        }
+        return { ...header, cards } satisfies AiDeckDraft;
+    },
+
+    async chat(input, opts): Promise<ChatResult> {
+        // Deterministic 3-token reply so the FE can exercise streaming UI
+        // without burning Anthropic credits. Picks tone from the last user
+        // message length so the dev experience varies slightly.
+        const lastUserTurn = [...input.messages].reverse().find((m) => m.role === 'user');
+        const tokens =
+            lastUserTurn && lastUserTurn.content.length > 40
+                ? ['Here', ' is a quick', ' answer.']
+                : ['Sure', ', happy to help', '.'];
+
+        for (const delta of tokens) {
+            opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+        }
+        const meta = { tokensInput: 0, tokensOutput: 0 };
+        opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
+        return {
+            content: tokens.join(''),
+            tokensInput: meta.tokensInput,
+            tokensOutput: meta.tokensOutput,
+        };
     },
 
     async suggest(input) {

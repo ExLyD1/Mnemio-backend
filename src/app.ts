@@ -5,7 +5,10 @@ import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { env } from './config/env.js';
+import { prisma } from './db/prisma.js';
+import { registerCleanupJob } from './jobs/cleanup.job.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
+import { initSentry } from './plugins/sentry.js';
 import { registerJwt } from './plugins/jwt.js';
 import { registerCookies } from './plugins/cookies.js';
 import authRoutes from './routes/auth.routes.js';
@@ -19,11 +22,17 @@ import achievementsRoutes from './routes/achievements.routes.js';
 import statsRoutes from './routes/stats.routes.js';
 import discoverRoutes from './routes/discover.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import importsRoutes from './routes/imports.routes.js';
+import chatRoutes from './routes/chat.routes.js';
 import mediaRoutes from './routes/media.routes.js';
 
 export const API_PREFIX = '/api/v1';
 
 export const buildApp = async (): Promise<FastifyInstance> => {
+    // Initialize Sentry before Fastify so any boot-time uncaught throws still
+    // get captured. No-op when SENTRY_DSN is unset.
+    initSentry();
+
     const fastify = Fastify({
         logger: {
             level: env.LOG_LEVEL,
@@ -44,6 +53,13 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         global: false,
         max: 120,
         timeWindow: '1 minute',
+        // Match our standard { code, message, details } envelope so the FE
+        // doesn't need to special-case 429s from @fastify/rate-limit.
+        errorResponseBuilder: (_req, context) => ({
+            code: 'RATE_LIMITED',
+            message: `Rate limit exceeded, retry in ${context.after}.`,
+            details: { retryAfter: context.after, max: context.max },
+        }),
     });
 
     await fastify.register(multipart, {
@@ -65,7 +81,23 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     await registerJwt(fastify);
     registerErrorHandler(fastify);
 
+    // Liveness — cheap, no I/O. Uptime monitors target this.
     fastify.get('/health', async () => ({ status: 'ok' }));
+
+    // Readiness — touches the DB. Container orchestrators (Railway, k8s)
+    // target this; a 503 here means "don't route traffic yet."
+    fastify.get('/ready', async (_req, reply) => {
+        try {
+            await prisma.$queryRaw`SELECT 1`;
+            return { status: 'ready' };
+        } catch (err) {
+            fastify.log.warn({ err }, 'readiness probe failed');
+            return reply.code(503).send({
+                code: 'NOT_READY',
+                message: 'Database is not reachable.',
+            });
+        }
+    });
 
     await fastify.register(
         async (api) => {
@@ -80,10 +112,19 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(statsRoutes);
             await api.register(discoverRoutes);
             await api.register(aiRoutes);
+            await api.register(importsRoutes);
+            await api.register(chatRoutes);
             await api.register(mediaRoutes);
         },
         { prefix: API_PREFIX },
     );
+
+    const stopCleanup = registerCleanupJob(fastify.log);
+    if (stopCleanup) {
+        fastify.addHook('onClose', async () => {
+            stopCleanup();
+        });
+    }
 
     return fastify;
 };

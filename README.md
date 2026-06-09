@@ -296,11 +296,24 @@ Catalog is code-defined ([`src/services/achievements.catalog.ts`](./src/services
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/ai/generate-deck` | ✓ | Returns an ephemeral deck draft for the FE to pipe into Create Deck |
+| POST | `/ai/enrich-words` | ✓ | **Key feature.** User pastes a word list (≤100); AI returns one card per word (order preserved). FE persists via existing `/decks/:id/cards/bulk`. Streams via SSE when `Accept: text/event-stream`. |
+| POST | `/ai/generate-deck` | ✓ | Returns an ephemeral deck draft from a topic. Streams via SSE when `Accept: text/event-stream`. |
 | POST | `/ai/suggest` | ✓ | Mimi contextual nudge (`dashboard` / `deck_detail` / `review`) |
 
-Currently powered by the **mock provider** — swap to a real LLM via
-`AI_PROVIDER` env. See [`docs/ai-integration-plan.md`](./docs/ai-integration-plan.md).
+**Providers** (`AI_PROVIDER` env):
+- `mock` (default) — deterministic placeholders; no LLM cost.
+- `anthropic` — Claude Haiku 4.5 via `@anthropic-ai/sdk`. Requires
+  `ANTHROPIC_API_KEY`.
+
+Response shapes are identical across providers — FE never branches on
+`provider`.
+
+**Per-user daily caps** (configurable via env):
+- `enrich`: 5/day  ·  `generate`: 20/day  ·  `suggest`: 60/day
+- Max words per `enrich` call: 100
+
+See [`docs/ai-integration-plan.md`](./docs/ai-integration-plan.md) for
+provider design + cost forecast.
 
 ### Media
 

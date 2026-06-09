@@ -6,18 +6,19 @@
 
 ## 0. Status
 
-**Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped
-(42 endpoints under `/api/v1` + `GET /health` + static `/media/*`). Nothing in
-this document is "coming later" unless it says so explicitly. The FE can
-integrate every endpoint below today.
+**Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped,
+plus the post-MVP additions (Google OAuth, account deletion, welcome flags,
+Quizlet/text imports, deck import/export, real-time AI chat). **57 endpoints
+under `/api/v1`** + `GET /health` + `GET /ready` + static `/media/*`. Nothing
+in this document is "coming later" unless it says so explicitly.
 
-### Endpoint inventory (42 under `/api/v1`)
+### Endpoint inventory (57 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
-| Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` |
-| Users | `PATCH /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
-| Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` |
+| Auth | `POST /auth/register`, `verify-email`, `resend-otp`, `login`, `refresh`, `logout` · `GET /auth/me` · `GET /auth/oauth/google`, `/auth/oauth/google/callback` · `POST /auth/oauth/exchange` |
+| Users | `PATCH /users/me` · `DELETE /users/me` · `GET /users/me/preferences` · `PATCH /users/me/preferences` |
+| Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` · `GET /decks/:id/export` · `POST /decks/:id/cards/import` |
 | Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
 | Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
 | SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
@@ -25,9 +26,11 @@ integrate every endpoint below today.
 | Achievements | `GET /achievements` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
-| AI | `POST /ai/generate-deck` · `POST /ai/suggest` |
+| AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/suggest` |
+| Imports | `POST /imports/quizlet` · `POST /imports/text` |
+| Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
-| Ops | `GET /health` (no `/api/v1` prefix) |
+| Ops | `GET /health` · `GET /ready` (both un-prefixed) |
 
 ### Invariants the FE must respect
 
@@ -43,6 +46,9 @@ integrate every endpoint below today.
 | 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
 | 9 | Ownership is checked at the repo layer — listing/getting/modifying someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. |
 | 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
+| 11 | Every auth response (`login`, `verify-email`, `refresh`, `me`) now carries `welcome: { hasDeck, hasSession, hasReviewed }` — use it for dashboard variant selection instead of fanning out three count probes from the FE. |
+| 12 | `/imports/*` and `/ai/*` share a per-user daily-cap rollup in `ai_usage`. A user can hit the import cap without affecting AI calls and vice versa — distinct error codes (`IMPORT_BUDGET_EXCEEDED` vs `AI_BUDGET_EXCEEDED`). |
+| 13 | `/chat/conversations/:id/messages` is the only endpoint where partial-success matters: a streamed assistant reply that gets cut mid-flight is persisted with `status: 'partial'` and the user is NOT charged a daily-cap unit. The FE can render the half-reply and offer "retry." |
 
 ### Demo data
 `npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
@@ -124,10 +130,26 @@ type ApiError = {
 | `DECK_NOT_FOUND` / `CARD_NOT_FOUND` / `SESSION_NOT_FOUND` | resource routes | 404 page or toast |
 | `DECK_EMPTY` | `POST /sessions` | Disable "Study" CTA when `cardCount === 0` |
 | `SESSION_NOT_ACTIVE` | `POST /sessions/:id/complete` | Refetch session, sync FE state |
+| `AI_TOO_MANY_WORDS` | `POST /ai/enrich-words` | "Max {max} words per batch — got {got}." `details.{max,got}` |
+| `AI_BUDGET_EXCEEDED` | any `/ai/*` | "Daily AI quota reached." `details.kind`, `details.capPerDay` |
+| `AI_PROVIDER_ERROR` | any `/ai/*` | Generic "AI is having a moment — try again." `details.providerStatus` for logs |
+| `AI_VALIDATION_FAILED` | any `/ai/*` | Same UX as provider error; LLM returned garbage |
+| `IMPORT_BAD_URL` | `POST /imports/quizlet` | "URL must be a `quizlet.com` set link." |
+| `IMPORT_NOT_FOUND` | `POST /imports/quizlet` | "Set is private, removed, or doesn't exist." |
+| `IMPORT_PARSE_FAILED` | `POST /imports/*` · `POST /decks/:id/cards/import` | "Couldn't parse this content." Suggest pasting text instead for Quizlet. |
+| `IMPORT_UPSTREAM_ERROR` | `POST /imports/quizlet` | "Quizlet didn't respond — try again." `details.providerStatus` |
+| `IMPORT_BUDGET_EXCEEDED` | `POST /imports/*` | "Daily import quota reached." `details.capPerDay` |
+| `OAUTH_NOT_CONFIGURED` | `/auth/oauth/*` | "Google sign-in isn't enabled on this deployment." Hide the button. |
+| `OAUTH_BAD_EXCHANGE_CODE` | `POST /auth/oauth/exchange` | "Sign-in code missing — start over." |
+| `OAUTH_EXCHANGE_EXPIRED` | `POST /auth/oauth/exchange` | "Sign-in took too long — start over." |
+| `OAUTH_EMAIL_UNVERIFIED` | `/auth/oauth/google/callback` | Surface via the `/auth/oauth/error?reason=` redirect. |
+| `AUTH_EMAIL_UNVERIFIED_LINK` | `/auth/oauth/google/callback` | The user already has an unverified password account with that email; tell them to verify it first or use a different Google account. |
+| `NOT_READY` | `GET /ready` | 503 — DB ping failed. Ops-only; FE doesn't call `/ready`. |
+| `CHAT_NOT_FOUND` | any `/chat/conversations/:id*` | 404 — conversation missing or owned by someone else. |
 
-> Note: `@fastify/rate-limit` 429 responses currently use the plugin's default
-> shape (`{ statusCode, error, message }`), not our envelope. Treat **HTTP 429**
-> itself as the signal. Can be normalized on request.
+**429 envelope:** `@fastify/rate-limit` is now configured with our standard
+envelope, so a rate-limited request returns
+`{ code: 'RATE_LIMITED', message, details: { retryAfter, max } }`.
 
 ### Rate limiting
 - Global default: 120 req/min/IP.
@@ -289,6 +311,52 @@ type Preference = {
   favorites: string[];         // deckIds
   updatedAt: string;
 };
+
+// Returned on every token-issuing auth response + GET /auth/me.
+type WelcomeState = {
+  hasDeck: boolean;
+  hasSession: boolean;
+  hasReviewed: boolean;
+};
+
+// Ephemeral card draft — used as both the AI-enrichment / generate-deck
+// output and the /imports/* output, so the FE renders one review/preview
+// UI for all three sources.
+type AiCardDraft = {
+  word: string;
+  definition: string;
+  phonetic?: string;
+  partOfSpeech?: string;
+  example?: string;
+  exampleTranslation?: string;
+  tags?: string[];
+  difficulty?: 'easy' | 'medium' | 'hard';
+};
+
+// Real-time chat (POST /chat/*). Conversations are server-persisted so the
+// user can resume across devices. Messages are append-only — re-sending the
+// same prompt creates a new ChatMessage row, never edits an existing one.
+type Conversation = {
+  id: string;
+  title: string;           // auto-set from the first user message; user can rename
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt: string;   // drives sidebar order
+};
+
+type ChatMessageRole = 'user' | 'assistant' | 'system';
+type ChatMessageStatus = 'complete' | 'partial';   // 'partial' when a stream got cut
+
+type ChatMessage = {
+  id: string;
+  conversationId: string;
+  role: ChatMessageRole;
+  content: string;                 // plain text or markdown — no HTML
+  status: ChatMessageStatus;
+  tokensInput: number | null;      // assistant rows only
+  tokensOutput: number | null;     // assistant rows only
+  createdAt: string;
+};
 ```
 
 ### `needsProfile` flag
@@ -296,6 +364,20 @@ Most auth responses include `needsProfile: boolean` alongside `user`. It's
 `true` when `user.username` or `user.fullName` is `null`. **Use this flag — not
 local heuristics — to decide whether to send the user to the account-details
 step.**
+
+### `welcome` flags
+Auth responses also carry a `welcome` block — three booleans the FE can use to
+pick between the empty-state dashboard and "Continue studying":
+```ts
+welcome: {
+  hasDeck:     boolean,  // user has authored at least one deck
+  hasSession:  boolean,  // user has at least one completed study session
+  hasReviewed: boolean,  // user has at least one CardProgress row
+}
+```
+Computed via three `count > 0` probes in parallel (~3ms). Refreshed on every
+`/auth/me`, `/auth/login`, `/auth/refresh`, `/auth/verify-email` — so once a
+user creates their first deck, the next response flips `hasDeck`.
 
 ---
 
@@ -327,7 +409,7 @@ Consume an OTP; on success, mark verified, set refresh cookie, return access tok
 { userId: string; code: string }      // 6-digit code
 
 // 200 Response  +  Set-Cookie: mnemio_refresh=...
-{ accessToken: string; user: User; needsProfile: boolean }
+{ accessToken: string; user: User; needsProfile: boolean; welcome: WelcomeState }
 
 // Errors: 400 AUTH_INVALID_CODE · 400 AUTH_OTP_EXHAUSTED
 ```
@@ -345,7 +427,7 @@ Consume an OTP; on success, mark verified, set refresh cookie, return access tok
 // Request: { email: string; password: string }
 
 // 200 Response  +  Set-Cookie: mnemio_refresh=...
-{ accessToken: string; user: User; needsProfile: boolean }
+{ accessToken: string; user: User; needsProfile: boolean; welcome: WelcomeState }
 
 // Errors:
 // 401 AUTH_INVALID_CREDENTIALS
@@ -358,7 +440,7 @@ sent via `Set-Cookie`), returns a fresh access token.
 ```ts
 // Request: (no body)
 // 200 Response  +  Set-Cookie: mnemio_refresh=... (rotated)
-{ accessToken: string; user: User; needsProfile: boolean }
+{ accessToken: string; user: User; needsProfile: boolean; welcome: WelcomeState }
 
 // Errors: 401 AUTH_INVALID_REFRESH  → hard logout (cookie was rotated/stolen)
 ```
@@ -372,8 +454,47 @@ FE should also delete `accessToken` from `localStorage` after this call.
 
 #### `GET /auth/me`  *(auth)*
 ```ts
-// 200 Response: { user: User; needsProfile: boolean }
+// 200 Response: { user: User; needsProfile: boolean; welcome: WelcomeState }
 // Errors: 401 AUTH_INVALID_TOKEN → try /auth/refresh
+```
+
+#### Google OAuth flow (3 endpoints)
+
+End-to-end:
+1. FE redirects the user to `GET /auth/oauth/google` (backend sets state
+   + PKCE cookies, redirects to Google).
+2. Google sends the user to `/auth/oauth/google/callback?code=...&state=...`.
+   Backend validates state, exchanges the code, looks up or creates the
+   user, **sets the `mnemio_refresh` cookie**, generates a short-lived
+   exchange code, and 302-redirects to
+   `${WEB_URL}/auth/oauth/callback?code=<short_lived>`.
+3. FE swaps the short code via `POST /auth/oauth/exchange { code }` and
+   gets `{ accessToken, user, needsProfile, welcome }`.
+
+Identity-linking policy:
+- Existing OAuth identity for `(provider, providerUserId)` → sign in that user.
+- Existing **verified** password user with the same email → link OAuth
+  identity, sign in.
+- Existing **unverified** password user with the same email → error
+  `AUTH_EMAIL_UNVERIFIED_LINK` (would let an attacker hijack a half-finished
+  registration).
+- Else → create a new user with `emailVerifiedAt = now()`, link identity, sign in.
+
+```ts
+GET /auth/oauth/google      → 302 to https://accounts.google.com/...
+GET /auth/oauth/google/callback?code=&state=
+  → on success: 302 to ${WEB_URL}/auth/oauth/callback?code=<short>
+  → on failure: 302 to ${WEB_URL}/auth/oauth/error?reason=<...>
+                 (reasons: missing_state | bad_state | missing_code |
+                  exchange_failed | OAUTH_EMAIL_UNVERIFIED | etc.)
+
+POST /auth/oauth/exchange
+  Body: { code: string }
+  200:  { accessToken, user, needsProfile, welcome }   // refresh cookie already set
+  Errors:
+    400 OAUTH_BAD_EXCHANGE_CODE
+    400 OAUTH_EXCHANGE_EXPIRED      — older than 60s or already redeemed
+    400 OAUTH_NOT_CONFIGURED        — server is missing Google creds
 ```
 
 ### Users
@@ -393,6 +514,18 @@ Profile completion. All fields optional; at least one required.
 
 // Errors: 400 VALIDATION_ERROR · 409 AUTH_USERNAME_TAKEN
 ```
+
+#### `DELETE /users/me`  *(auth)*
+Permanently delete the signed-in account. Cascades wipe decks, cards,
+sessions, progress, achievements, preferences, AI usage, refresh tokens,
+email verifications, and OAuth identities. `audit_log` rows survive with
+`userId = NULL` (security trail). Idempotent — re-issuing returns 204.
+```ts
+// Request: (no body)
+// 204 No Content  +  Set-Cookie: mnemio_refresh=; Max-Age=0
+```
+FE should also delete `accessToken` from `localStorage` and hard-redirect
+to the marketing landing page.
 
 ### Decks
 
@@ -470,6 +603,48 @@ Example:
 ```ts
 // 204 No Content   (cascades to cards, progress, sessions)
 ```
+
+#### `GET /decks/:id/export?format=csv|json`  *(auth)*
+File download of every card in the deck (in `position` order).
+- `csv` (default): columns `word,definition,phonetic,reading,partOfSpeech,
+  example,exampleTranslation,tags,difficulty,type`. `tags` are joined with
+  `;`. Quoting follows RFC 4180 for embedded commas, quotes, and newlines.
+- `json`: `{ deck: { title, description, sourceLanguage, targetLanguage },
+  cards: Card[] }` — drop IDs, timestamps, and media URLs (those don't
+  re-import).
+
+```ts
+// 200 Response:
+//   Content-Type: text/csv | application/json
+//   Content-Disposition: attachment; filename="<deck-slug>.<ext>"
+//   Body: file payload
+// Errors: 404 DECK_NOT_FOUND
+```
+
+#### `POST /decks/:id/cards/import`  *(auth)*
+Bulk-add cards to an existing deck from a CSV or JSON payload (typically
+produced by `GET /decks/:id/export` from this app or another). Pasted text
+is fine — multipart isn't required.
+```ts
+// Request
+{
+  format: 'csv' | 'json';
+  text: string;       // ≤ 1 000 000 chars
+}
+
+// 201 Response: { created: number }
+
+// Errors:
+// 400 VALIDATION_ERROR        — empty body or unknown format
+// 404 DECK_NOT_FOUND          — caller doesn't own the deck
+// 422 IMPORT_PARSE_FAILED     — couldn't extract any cards from the input
+```
+
+CSV must include a header row with at least `word` and `definition`.
+Unknown columns are ignored. Invalid `difficulty`/`type` values are
+dropped (the import doesn't fail). JSON accepts either a bare card array
+or `{ deck?, cards: [...] }` — `deck` metadata is ignored, only `cards`
+are imported.
 
 ### Cards
 
@@ -809,14 +984,100 @@ starts **private** (`isPublic: false`) and carries `sourceDeckId = <original>`.
 
 ### AI  *(P2)*
 
-Mimi-powered helpers. The MVP backend ships a **mock provider** so the FE can
-wire these surfaces without a real LLM key — response shapes are stable across
-the provider swap (set via `AI_PROVIDER` env var).
+Mnemio's AI surface. The backend supports two providers via `AI_PROVIDER` env:
+- `mock` (default) — deterministic placeholders; FE-safe, no LLM cost.
+- `anthropic` — Claude Haiku 4.5 via `@anthropic-ai/sdk`. Requires
+  `ANTHROPIC_API_KEY`.
+
+**Response shapes are identical across providers.** The FE never branches on
+provider.
+
+#### `POST /ai/enrich-words`  *(auth)* ⭐ key feature
+Takes a user-supplied list of words and returns one `AiCardDraft` per word
+with definition + optional metadata. **Server does not persist** — the FE
+shows the result, lets the user review, then commits via the existing
+`POST /decks/:id/cards/bulk` (works for both "add to open deck" and
+"create new deck then bulk-add" flows).
+
+```ts
+// Request
+{
+  words: string[];               // 1–100 (server-enforced cap), each 1–80 chars
+  sourceLanguage: string;        // language for the definition (e.g. 'en')
+  targetLanguage: string;        // language of the input words (e.g. 'es')
+  context?: string;              // optional disambiguation hint, ≤ 200 chars
+  fields?: ('phonetic' | 'partOfSpeech' | 'example' | 'exampleTranslation'
+            | 'tags' | 'difficulty')[];   // which optional fields to fill;
+                                          // default: all
+}
+
+// 200 Response (non-streaming — no Accept: text/event-stream)
+{
+  provider: 'mock' | 'anthropic';
+  cards: AiCardDraft[];          // SAME order/length as request `words`
+                                 // (after server-side trim + de-dup)
+  meta: {
+    requested: number;           // = words.length after de-dup
+    enriched: number;            // = cards where definition !== ''
+    durationMs: number;
+    tokensInput: number;
+    tokensOutput: number;
+  };
+}
+```
+
+**Invariants:**
+- **Order preserved.** `cards[i].word` matches `words[i]` (post-trim/dedup).
+- **Partial success.** Words the LLM can't define come back with
+  `definition: ''` and `tags: ['ai-unfilled']`. Blocked content returns
+  `tags: ['ai-blocked']`. Never fails the whole batch on a single bad word.
+- **Server-side dedup.** Duplicates in the paste are collapsed before the
+  LLM call (case-insensitive). FE re-expands if it needs the user's paste
+  order verbatim.
+
+**Errors:**
+- `400 AI_TOO_MANY_WORDS` — input exceeds `AI_MAX_WORDS_PER_ENRICH` (default 100).
+- `429 AI_BUDGET_EXCEEDED` — daily per-user cap hit.
+- `502 AI_PROVIDER_ERROR` — upstream LLM failure; retry with backoff.
+- `502 AI_VALIDATION_FAILED` — provider output failed schema validation
+  after one retry.
+
+##### Streaming variant — same endpoint, `Accept: text/event-stream`
+
+For 50-word batches that take 5–8s, the FE can stream cards as they arrive
+instead of staring at a spinner. Send `Accept: text/event-stream` on the same
+POST (or `?stream=1`) and the backend writes Server-Sent Events:
+
+```
+event: start
+data: { "provider": "anthropic" }
+
+event: card
+data: { "type": "card", "position": 0,
+        "card": { "word": "agua", "definition": "water", "..." } }
+
+event: card
+data: { "type": "card", "position": 1,
+        "card": { "word": "pan", "definition": "bread", "..." } }
+
+...
+
+event: done
+data: { "type": "done", "meta": { "requested": 8, "enriched": 8, "..." } }
+```
+
+If a mid-stream error occurs, the backend emits one `event: error` frame with
+the standard envelope (`{ code, message, details? }`) before closing.
+
+FE pattern: read with `fetch().then(r => r.body.getReader())` and parse the
+SSE frames; map each `card` event into the table by `position`.
 
 #### `POST /ai/generate-deck`  *(auth)*
-Generates a deck draft based on a topic. **Server does not persist** — the FE
-shows the draft to the user, then calls `POST /decks` + bulk card create if
-the user accepts.
+Generates a deck draft from a topic (no input word list). Useful when the
+user has no list yet ("just give me 8 Italian café terms"). **Server does
+not persist** — the FE shows the draft and the user accepts via
+`POST /decks` + `POST /decks/:id/cards/bulk`.
+
 ```ts
 // Request
 {
@@ -826,9 +1087,9 @@ the user accepts.
   count?: number;                // 1–20, default 8
 }
 
-// 200 Response
+// 200 Response (non-streaming)
 {
-  provider: string;              // 'mock' for MVP
+  provider: 'mock' | 'anthropic';
   draft: {
     title: string;
     description: string;
@@ -836,22 +1097,21 @@ the user accepts.
     targetLanguage: string;
     subject?: string;
     glyph?: string;
-    cards: {
-      word: string;
-      definition: string;
-      phonetic?: string;
-      partOfSpeech?: string;
-      example?: string;
-      exampleTranslation?: string;
-      tags?: string[];
-      difficulty?: 'easy' | 'medium' | 'hard';
-    }[];
+    cards: AiCardDraft[];
   };
 }
 ```
 
+##### Streaming variant — `Accept: text/event-stream`
+
+Same SSE protocol as enrich-words, but with one additional event type:
+`header` fires first (with `title/description/subject/glyph/…`) so the FE can
+render the deck shell before any cards arrive. Then `card` events for each
+generated card, then `done`.
+
 #### `POST /ai/suggest`  *(auth)*
 Contextual Mimi nudge for the dashboard / deck detail / review screens.
+Always single-response (small payload, no streaming needed).
 ```ts
 // Request
 {
@@ -867,7 +1127,192 @@ Contextual Mimi nudge for the dashboard / deck detail / review screens.
 }
 ```
 
-Both endpoints are rate-limited to 30 req/min per user.
+#### Common — rate limits + budget
+
+| Limit | Value | Throws |
+|---|---|---|
+| Request rate | 30/min/user across all three endpoints | `429 RATE_LIMITED` |
+| Daily `enrich` cap | 5/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `generate` cap | 20/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `suggest` cap | 60/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
+| Max words per `enrich` call | 100 (default) | `400 AI_TOO_MANY_WORDS` |
+
+Caps are configurable via env (`AI_DAILY_*_CAP_PER_USER`, `AI_MAX_WORDS_PER_ENRICH`).
+
+### Imports  *(Quizlet + paste-text)*
+
+Stateless: nothing is persisted by these endpoints. They return
+`AiCardDraft[]` in the same shape as `/ai/enrich-words` so the FE reuses
+the existing review/preview UI, then commits with `POST /decks` and
+`POST /decks/:id/cards/bulk`.
+
+#### `POST /imports/quizlet`  *(auth)*
+Fetches a Quizlet public-set URL, extracts term/definition pairs from the
+embedded `__NEXT_DATA__` JSON, returns the cards.
+```ts
+// Request
+{ url: string }   // https://quizlet.com/<setId>/<slug>/
+
+// 200 Response
+{
+  source: { kind: 'quizlet'; setId: string; title: string };
+  cards: AiCardDraft[];     // same shape as /ai/enrich-words result
+}
+
+// Errors:
+// 400 IMPORT_BAD_URL          — url isn't a quizlet.com set URL
+// 404 IMPORT_NOT_FOUND        — set is private, removed, or 404
+// 422 IMPORT_PARSE_FAILED     — fetched OK but couldn't extract cards
+//                               (Quizlet may have changed their HTML)
+// 429 IMPORT_BUDGET_EXCEEDED  — daily per-user cap reached (details.capPerDay)
+// 502 IMPORT_UPSTREAM_ERROR   — Quizlet returned non-200 or timed out
+```
+
+Counts against a shared `import` daily cap (`IMPORT_DAILY_CAP_PER_USER`,
+default 20) regardless of which import endpoint is used.
+
+> **ToS note for the FE:** add a one-line confirmation in the FE flow —
+> "By importing, you confirm you have the right to use this content."
+> Quizlet's ToS prohibits automated scraping; this is the same pattern
+> Anki-style importers use, but the legal responsibility ultimately
+> belongs to the importing user.
+
+#### `POST /imports/text`  *(auth)*
+Paste-fallback for users who can't or won't share a Quizlet URL. Parses
+TSV (`word<TAB>definition`), CSV (`word,definition`), or newline-paired
+(`word\ndefinition\nword\n…`).
+```ts
+// Request
+{
+  text: string;
+  format?: 'tsv'|'csv'|'newline'|'auto'   // default 'auto' (detect by first-line punctuation)
+}
+
+// 200 Response
+{
+  source: { kind: 'text'; format: 'tsv'|'csv'|'newline' };
+  cards: AiCardDraft[];
+}
+
+// Errors:
+// 400 VALIDATION_ERROR       — empty text or > 100 000 chars
+// 422 IMPORT_PARSE_FAILED    — no card pairs could be extracted
+// 429 IMPORT_BUDGET_EXCEEDED — shared cap with /imports/quizlet
+```
+
+### Chat  *(real-time AI)*
+
+Server-persisted multi-turn chat against Claude Haiku 4.5. Conversations
+live in their own tables so users can resume on any device; the sidebar
+orders by `lastMessageAt DESC`. Each user-message turn counts against the
+`chat` daily cap (`AI_DAILY_CHAT_CAP_PER_USER`, default 50).
+
+The send-message endpoint streams tokens via SSE; all other endpoints are
+plain JSON. SSE-or-JSON negotiation is the same `Accept: text/event-stream`
++ `?stream=1` switch the other AI endpoints use.
+
+#### `GET /chat/conversations`  *(auth)*
+Sidebar list. Cursor-paginated by `lastMessageAt DESC, id DESC`.
+```ts
+// Query: ?cursor?=string&limit?=number(<=100)   default limit 20
+// 200 Response: Page<Conversation>
+```
+
+#### `POST /chat/conversations`  *(auth)*
+Create a new conversation. Empty body is fine — the FE typically creates
+first and sends the user's first message in a follow-up call.
+```ts
+// Request
+{ title?: string }                  // 1..120 chars; defaults to 'New chat'
+
+// 201 Response: Conversation
+```
+
+#### `GET /chat/conversations/:id`  *(auth)*
+Fetch the conversation header plus its most recent 50 messages
+(`createdAt ASC, id ASC`).
+```ts
+// 200 Response: { conversation: Conversation; messages: ChatMessage[] }
+// Errors: 404 CHAT_NOT_FOUND
+```
+
+#### `PATCH /chat/conversations/:id`  *(auth)*
+Rename. Replaces the auto-generated title.
+```ts
+// Request: { title: string }       // 1..120 chars
+// 200 Response: Conversation
+// Errors: 404 CHAT_NOT_FOUND
+```
+
+#### `DELETE /chat/conversations/:id`  *(auth)*
+Hard delete. Cascades to all messages.
+```ts
+// 204 No Content
+// Errors: 404 CHAT_NOT_FOUND
+```
+
+#### `POST /chat/conversations/:id/messages`  *(auth)*
+Append a user message and stream the assistant reply.
+```ts
+// Request
+{ content: string }                 // 1..4000 chars (trimmed)
+```
+
+**SSE response** (when `Accept: text/event-stream` or `?stream=1`):
+```
+event: start
+data: {
+  userMessage: ChatMessage,
+  assistantMessageId: string        // the still-empty placeholder we'll fill via tokens
+}
+
+event: token
+data: { delta: string }             // one event per provider chunk
+
+event: done
+data: {
+  assistantMessage: ChatMessage,    // status: 'complete', tokens populated
+  conversationTitle: string,        // may have been auto-set on the first turn
+  tokensInput: number,
+  tokensOutput: number
+}
+
+event: error                         // mid-stream failure
+data: { code: string, message: string, details?: object }
+```
+
+After an `event: error` the assistant message stays in the database with
+`status: 'partial'` and whatever text we got before the failure. The user
+is NOT charged a daily-cap unit. The FE should render the partial reply
+and offer the user a "retry" affordance.
+
+**Non-SSE response** (default JSON):
+```ts
+// 200 Response
+{
+  userMessage: ChatMessage,
+  assistantMessage: ChatMessage,
+  conversationTitle: string,
+  tokensInput: number,
+  tokensOutput: number
+}
+
+// Errors:
+// 404 CHAT_NOT_FOUND        — caller doesn't own this conversation
+// 429 AI_BUDGET_EXCEEDED    — details.kind === 'chat', details.capPerDay
+// 429 RATE_LIMITED          — per-route 30 req/min/user throttle
+// 502 AI_PROVIDER_ERROR     — Anthropic returned non-200
+// 502 AI_VALIDATION_FAILED  — provider returned nothing usable
+```
+
+**Context window:** the backend sends only the most recent
+`AI_CHAT_CONTEXT_TURNS` (default 20) `user`+`assistant` messages to the
+LLM, oldest first. Older messages remain in the DB and are returned by
+`GET /chat/conversations/:id` for display but don't ride along to Claude.
+
+**Auto-title rule:** on the user's first message in a conversation, the
+title flips from `"New chat"` to the trimmed message (up to 60 chars, ellipsis
+suffix when truncated). Subsequent turns leave the title alone.
 
 ### Media  *(P2)*
 
@@ -917,9 +1362,22 @@ attach. For avatars, the response already updated the user row.
 
 ### Health (ops)
 
+Both endpoints are unauthenticated and live **outside** the `/api/v1`
+prefix. Hit them at the server root.
+
 #### `GET /health`  *(public, **no** `/api/v1` prefix)*
+Cheap liveness — no I/O. Point uptime monitors (BetterUptime, etc.) here.
 ```ts
 // 200 Response: { status: 'ok' }
+```
+
+#### `GET /ready`  *(public, **no** `/api/v1` prefix)*
+Readiness — runs `SELECT 1` against Postgres. Use this as the container
+orchestrator's healthcheck path (Railway, k8s, Docker `HEALTHCHECK`).
+A 503 here means "don't route traffic yet."
+```ts
+// 200 Response: { status: 'ready' }
+// 503 Response: { code: 'NOT_READY', message: 'Database is not reachable.' }
 ```
 
 ---
@@ -944,7 +1402,7 @@ Single client in `app/api/_client.ts`:
 register(email, password)
   → 201 { userId, email }                  → OTP step (carry userId)
 verifyEmail(userId, code)
-  → 200 { accessToken, user, needsProfile } + cookie set
+  → 200 { accessToken, user, needsProfile, welcome } + cookie set
        needsProfile === true → account-details step (PATCH /users/me)
        needsProfile === false → /dashboard
 ```
@@ -954,6 +1412,127 @@ login(email, password)
   → 200 → if needsProfile: account-details step; else /dashboard
   → 401 EMAIL_NOT_VERIFIED → OTP step with details.userId
 ```
+For Google sign-in (when `OAUTH_GOOGLE_CLIENT_ID` is set on the server):
+```
+click "Continue with Google"
+  → window.location = `${API}/auth/oauth/google`     // backend redirects to Google
+                                                     // → user picks an account
+                                                     // → Google → /auth/oauth/google/callback
+                                                     // → backend sets refresh cookie
+                                                     // → 302 to ${WEB_URL}/auth/oauth/callback?code=<short>
+on FE /auth/oauth/callback?code=<short>:
+  POST /auth/oauth/exchange { code }
+  → 200 { accessToken, user, needsProfile, welcome }
+  → route by needsProfile, same as login
+on FE /auth/oauth/error?reason=<...>:
+  show a friendly error; common reasons: missing_state, bad_state,
+  exchange_failed, AUTH_EMAIL_UNVERIFIED_LINK, OAUTH_EMAIL_UNVERIFIED.
+```
+
+### Welcome-state wiring
+Every token-issuing auth response carries `welcome: { hasDeck, hasSession,
+hasReviewed }`. Use those to pick the dashboard variant:
+- `hasDeck === false` → empty-state CTA "Create your first deck"
+- `hasDeck && !hasReviewed` → "Pick a card to start reviewing"
+- `hasReviewed && hasSession` → "Continue studying" card
+
+These flip naturally on the next `/auth/refresh`, so the dashboard stays in
+sync without extra count calls.
+
+### Import + commit pattern
+Both `/imports/quizlet` and `/imports/text` are **stateless** — they return
+`AiCardDraft[]` without writing anything. The FE reuses the AI-enrichment
+preview UI, then commits with the existing endpoints:
+```
+POST /imports/quizlet { url } | /imports/text { text }
+  → { source, cards: AiCardDraft[] }
+   → preview UI (same as /ai/enrich-words)
+       → "Create new deck":  POST /decks → POST /decks/:id/cards/bulk
+       → "Add to <deck>":    POST /decks/:id/cards/bulk
+```
+
+For deck round-trips between users, `GET /decks/:id/export?format=csv|json`
+produces a file the recipient can re-import via
+`POST /decks/:id/cards/import { format, text }`.
+
+### Account deletion
+`DELETE /users/me` cascades everything the user owns and clears the refresh
+cookie. After the 204:
+1. Delete `accessToken` from `localStorage`.
+2. Hard-redirect to the marketing page (don't try to refresh — the cookie is
+   gone and the user no longer exists).
+
+### Chat / SSE consumption
+The send-message endpoint is the only place in the API where a single
+response can fail *after* it has already started writing data. The FE
+must treat the stream as authoritative for the live message rendering,
+but fall back to refetching `GET /chat/conversations/:id` for the final
+persisted state.
+
+Outline of a Nuxt-side consumer:
+```ts
+// 1. Open the stream
+const res = await fetch(`${API}/chat/conversations/${id}/messages`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+        'authorization': `Bearer ${accessToken}`,
+        'content-type': 'application/json',
+        'accept': 'text/event-stream',
+    },
+    body: JSON.stringify({ content }),
+});
+
+// 2. Parse SSE frames (one event: line + one data: line per frame, blank line terminator).
+const reader = res.body!.getReader();
+const decoder = new TextDecoder();
+let buf = '';
+let assistantId: string | null = null;
+let assistantContent = '';
+
+for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // Frames are separated by a blank line ("\n\n").
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const event = /^event:\s*(.+)$/m.exec(frame)?.[1] ?? 'message';
+        const data = JSON.parse(/^data:\s*(.+)$/m.exec(frame)?.[1] ?? '{}');
+        switch (event) {
+            case 'start':
+                assistantId = data.assistantMessageId;
+                // optimistic-insert userMessage into the FE store
+                break;
+            case 'token':
+                assistantContent += data.delta;
+                // append delta to the placeholder in the FE store
+                break;
+            case 'done':
+                // replace the placeholder with data.assistantMessage; update title.
+                break;
+            case 'error':
+                // surface a toast; the partial reply is preserved server-side
+                // so a refetch of GET /chat/conversations/:id will show it.
+                break;
+        }
+    }
+}
+```
+
+Important edge cases:
+- **User navigates away mid-stream:** the FE just stops reading. The
+  server keeps the partial assistant row (`status: 'partial'`); the next
+  `GET /chat/conversations/:id` returns it with whatever content the
+  server saw. No charge against the daily cap.
+- **Multiple tabs:** each opens its own stream. The server doesn't
+  multiplex — two concurrent sends to the same conversation produce two
+  independent assistant rows, both of which the next fetch returns.
+- **JSON fallback:** if SSE is awkward (proxy, library, test rig), omit
+  the `Accept: text/event-stream` header and the endpoint returns the
+  same final payload as a single JSON body.
 
 ### Session flow
 - Starting a new session implicitly ends the active one. Don't fight it from FE.
@@ -999,7 +1578,7 @@ BASE=http://localhost:3001/api/v1
 curl -sX POST "$BASE/auth/login" -c cookies.txt \
      -H 'content-type: application/json' \
      -d '{"email":"demo@mnemio.local","password":"demo-password-123"}'
-# → { "accessToken": "...", "user": { ... }, "needsProfile": false }
+# → { "accessToken": "...", "user": { ... }, "needsProfile": false, "welcome": { ... } }
 
 ACCESS=...      # paste the accessToken from above
 
@@ -1013,7 +1592,37 @@ curl -s "$BASE/decks/<deckId>" -H "Authorization: Bearer $ACCESS"
 
 # 4. Refresh (no body; cookie travels via -b)
 curl -sX POST "$BASE/auth/refresh" -b cookies.txt -c cookies.txt
-# → { accessToken (new), user, needsProfile }
+# → { accessToken (new), user, needsProfile, welcome }
+```
+
+### Chat smoke (mock provider — no Anthropic credits burned)
+```bash
+# Make sure AI_PROVIDER=mock in .env to avoid hitting Claude.
+
+# 1. Create a new conversation
+CONV=$(curl -sX POST "$BASE/chat/conversations" \
+     -H "authorization: Bearer $ACCESS" \
+     -H 'content-type: application/json' \
+     -d '{}' | jq -r .id)
+
+# 2. Stream a reply via SSE (-N disables buffering)
+curl -N -X POST "$BASE/chat/conversations/$CONV/messages" \
+     -H "authorization: Bearer $ACCESS" \
+     -H 'accept: text/event-stream' \
+     -H 'content-type: application/json' \
+     -d '{"content":"Teach me three Spanish words for fruit."}'
+# Expect:  event: start   event: token (xN)   event: done
+
+# 3. Or get the whole reply at once (JSON, no streaming)
+curl -sX POST "$BASE/chat/conversations/$CONV/messages" \
+     -H "authorization: Bearer $ACCESS" \
+     -H 'content-type: application/json' \
+     -d '{"content":"Another question"}' | jq
+# → { userMessage, assistantMessage, conversationTitle, tokensInput, tokensOutput }
+
+# 4. Read the conversation back
+curl -s "$BASE/chat/conversations/$CONV" \
+     -H "authorization: Bearer $ACCESS" | jq '.messages | map({role, content, status})'
 ```
 
 ### Full sign-up flow (manual OTP)
@@ -1027,22 +1636,35 @@ curl -sX POST "$BASE/auth/register" -H 'content-type: application/json' \
 curl -sX POST "$BASE/auth/verify-email" -c cookies.txt \
      -H 'content-type: application/json' \
      -d '{"userId":"<id>","code":"123456"}'
-# → { accessToken, user, needsProfile: true } + cookie set
+# → { accessToken, user, needsProfile: true, welcome } + cookie set
 ```
 
 ---
 
 ## 6. What's NOT in this contract
 
+Full deferral list with rationale is in [`backlog.md`](./backlog.md); this
+section captures only the items that interact with this contract directly.
+
 ### Operational gaps (contract stays the same when these land)
 - **Admin surface for `featured`**: today, the `featured` flag is set directly
   in the DB. A `POST /admin/decks/:id/feature` (gated on `user.role='admin'`)
   is a small post-MVP addition when curation moves out of SQL.
-- **Real LLM provider for `/ai/*`**: swap the `mock` provider for an
-  Anthropic/OpenAI adapter via `AI_PROVIDER` env. Response shapes don't change.
 - **S3-backed media**: `/media/uploads` shape stays; storage backend swaps
   from local FS to S3 presigned PUTs (see `src/services/media.service.ts`
   comment header for the migration steps).
+
+### Chat — designed-around but deferred
+The `/chat/*` endpoints intentionally ship without:
+- **Grounding** (auto-injecting the user's recent decks, due count, last
+  mistakes into the system prompt). Hook lives at
+  `src/services/chat.prompt.ts`.
+- **Tool use** (`createDeck`, `addCardsToDeck`, etc.). The Anthropic SDK
+  supports `tools` blocks; the provider interface accepts them when we add
+  them.
+- **Image / audio attachments**. `ChatMessage.content` is text-only at MVP.
+- **AI-generated titles**. First-user-message truncation is the auto-title
+  rule for now.
 
 ### Optional sub-stats deferred from P1
 Tagged "Optional P2" in `backend-plan.md §7`; not built but can be added later
@@ -1051,11 +1673,8 @@ without breaking existing `/stats/*` shapes:
 - `/stats/study-patterns` (hour × day-of-week heatmap)
 - `/stats/xp` and league/leaderboard
 
-### Out of MVP entirely (no plans to ship)
+### Out of MVP entirely (see [`backlog.md`](./backlog.md) for full reasoning)
 - Password reset / forgot-password (manual support intervention at MVP).
 - Folders, leagues (leaderboard).
-- Account deletion endpoint.
 - WebSockets / push notifications.
-
-If anything in this list becomes urgent, raise it in `backend-plan.md §Open
-questions` before wiring the FE.
+- Apple / Facebook / Microsoft OAuth (only Google ships at MVP).
