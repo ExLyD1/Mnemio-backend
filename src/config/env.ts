@@ -73,6 +73,9 @@ const envSchema = z.object({
 }).refine(
     (v) => v.AI_PROVIDER !== 'anthropic' || (v.ANTHROPIC_API_KEY && v.ANTHROPIC_API_KEY.length > 0),
     { message: 'ANTHROPIC_API_KEY is required when AI_PROVIDER=anthropic', path: ['ANTHROPIC_API_KEY'] },
+).refine(
+    (v) => v.MAIL_PROVIDER !== 'resend' || (v.MAIL_PROVIDER_API_KEY && v.MAIL_PROVIDER_API_KEY.length > 0),
+    { message: 'MAIL_PROVIDER_API_KEY is required when MAIL_PROVIDER=resend', path: ['MAIL_PROVIDER_API_KEY'] },
 );
 
 const parsed = envSchema.safeParse(process.env);
