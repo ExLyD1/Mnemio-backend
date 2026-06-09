@@ -21,6 +21,10 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/generated ./generated
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
+# Prisma 7 reads prisma.config.ts at runtime to resolve schema path + DATABASE_URL.
+# Without it, `prisma migrate deploy` in the pre-deploy step fails to find any
+# schema. Copy all the compiled variants so the loader picks the right one.
+COPY --from=builder /app/prisma.config.* ./
 COPY package.json ./
 
 EXPOSE 3001
