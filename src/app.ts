@@ -36,14 +36,30 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     const fastify = Fastify({
         logger: {
             level: env.LOG_LEVEL,
-            redact: ['req.headers.authorization', 'req.body.password', 'req.body.refreshToken', 'req.body.code'],
+            redact: [
+                'req.headers.authorization',
+                'req.body.password',
+                'req.body.refreshToken',
+                'req.body.code',
+            ],
             ...(env.NODE_ENV === 'development' ? { transport: { target: 'pino-pretty' } } : {}),
         },
         trustProxy: true,
     });
 
+    const corsOrigins = env.WEB_URLS.length > 0 ? env.WEB_URLS : [env.WEB_URL];
+
     await fastify.register(cors, {
-        origin: env.WEB_URL,
+        origin: (origin, callback) => {
+            // Requests without Origin (curl, server-to-server, health checks)
+            // are not CORS browser requests and can be accepted.
+            if (!origin) {
+                callback(null, true);
+                return;
+            }
+
+            callback(null, corsOrigins.includes(origin));
+        },
         credentials: true,
         methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization'],
@@ -64,7 +80,13 @@ export const buildApp = async (): Promise<FastifyInstance> => {
 
     await fastify.register(multipart, {
         // Hard ceiling for any upload; per-kind enforcement is in media.service.ts.
-        limits: { fileSize: Math.max(env.MEDIA_MAX_AVATAR_BYTES, env.MEDIA_MAX_IMAGE_BYTES, env.MEDIA_MAX_AUDIO_BYTES) },
+        limits: {
+            fileSize: Math.max(
+                env.MEDIA_MAX_AVATAR_BYTES,
+                env.MEDIA_MAX_IMAGE_BYTES,
+                env.MEDIA_MAX_AUDIO_BYTES,
+            ),
+        },
     });
 
     // Serve uploaded files from MEDIA_DIR under MEDIA_PUBLIC_BASE. Production
