@@ -95,20 +95,37 @@ export const sendMessage = async (
             request.params.id,
             input.content,
             (frame) => {
-                if (frame.type === 'start') {
-                    sse.write('start', {
-                        userMessage: frame.userMessage,
-                        assistantMessageId: frame.assistantMessageId,
-                    });
-                } else if (frame.type === 'token') {
-                    sse.write('token', { delta: frame.delta });
-                } else {
-                    sse.write('done', {
-                        assistantMessage: frame.assistantMessage,
-                        conversationTitle: frame.conversationTitle,
-                        tokensInput: frame.tokensInput,
-                        tokensOutput: frame.tokensOutput,
-                    });
+                switch (frame.type) {
+                    case 'start':
+                        sse.write('start', {
+                            userMessage: frame.userMessage,
+                            assistantMessageId: frame.assistantMessageId,
+                        });
+                        break;
+                    case 'token':
+                        sse.write('token', { delta: frame.delta });
+                        break;
+                    case 'tool_use':
+                        sse.write('tool_use', {
+                            name: frame.name,
+                            input: frame.input,
+                        });
+                        break;
+                    case 'tool_result':
+                        sse.write('tool_result', {
+                            name: frame.name,
+                            ok: frame.ok,
+                            data: frame.data,
+                        });
+                        break;
+                    case 'done':
+                        sse.write('done', {
+                            assistantMessage: frame.assistantMessage,
+                            conversationTitle: frame.conversationTitle,
+                            tokensInput: frame.tokensInput,
+                            tokensOutput: frame.tokensOutput,
+                        });
+                        break;
                 }
             },
         );

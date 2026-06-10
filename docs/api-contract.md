@@ -355,7 +355,19 @@ type ChatMessage = {
   status: ChatMessageStatus;
   tokensInput: number | null;      // assistant rows only
   tokensOutput: number | null;     // assistant rows only
+  attachments?: ChatAttachment[];  // present when the assistant ran a tool
   createdAt: string;
+};
+
+// Structured side-effect produced when the chat model called a tool. Today
+// the only kind is 'deck' (the create_deck tool). Future tools (audio,
+// image, study session…) extend this discriminated union without breaking
+// the FE contract.
+type ChatAttachment = {
+  type: 'deck';
+  deckId: string;
+  title: string;
+  cardCount: number;
 };
 ```
 
@@ -1269,17 +1281,47 @@ data: {
 event: token
 data: { delta: string }             // one event per provider chunk
 
+# Optional pair — emitted only when the model calls a tool (today: create_deck).
+event: tool_use
+data: { name: 'create_deck', input: { topic?, words?, sourceLanguage?, ... } }
+
+event: tool_result
+data: {
+  name: 'create_deck',
+  ok: boolean,                       // true on success
+  data: ChatAttachment | { reason: string }  // attachment on ok:true, reason on ok:false
+}
+
+# More `event: token` frames may follow as the model writes its follow-up
+# text after the tool runs.
+
 event: done
 data: {
-  assistantMessage: ChatMessage,    // status: 'complete', tokens populated
+  assistantMessage: ChatMessage,    // status: 'complete', tokens populated, attachments populated when a tool fired
   conversationTitle: string,        // may have been auto-set on the first turn
-  tokensInput: number,
+  tokensInput: number,              // sum of round-1 + round-2 when a tool fired
   tokensOutput: number
 }
 
 event: error                         // mid-stream failure
 data: { code: string, message: string, details?: object }
 ```
+
+**Tool semantics:** when the model decides the user wants a deck
+(explicit words, topic request, "make me a deck"…), it calls
+`create_deck`. The backend runs it via the existing `enrich-words` or
+`generate-deck` pipeline and persists a real `Deck` + `Card[]` owned by
+the caller. The SSE stream emits `tool_use` → `tool_result`, then more
+`token` frames as the model writes its confirmation. The final
+`assistantMessage.attachments` contains
+`[{ type: 'deck', deckId, title, cardCount }]` — the FE already renders
+this as a clickable link card.
+
+If the tool fails (`ok: false`), no attachment is persisted, the model
+writes a text apology, and `assistantMessage.attachments` is omitted.
+The user is still charged one `chat` budget unit. The underlying error
+code lives in `tool_result.data.reason` (`AI_BUDGET_EXCEEDED`,
+`AI_PROVIDER_ERROR`, `INTERNAL`, etc.).
 
 After an `event: error` the assistant message stays in the database with
 `status: 'partial'` and whatever text we got before the failure. The user
@@ -1510,8 +1552,19 @@ for (;;) {
                 assistantContent += data.delta;
                 // append delta to the placeholder in the FE store
                 break;
+            case 'tool_use':
+                // OPTIONAL: render a "Creating deck…" indicator next to
+                // the assistant placeholder. data = { name, input }.
+                break;
+            case 'tool_result':
+                // OPTIONAL: swap the indicator for a preview chip. The
+                // canonical attachment also arrives on `done` so the
+                // simplest FE just waits for that.
+                break;
             case 'done':
-                // replace the placeholder with data.assistantMessage; update title.
+                // replace the placeholder with data.assistantMessage;
+                // attachments[] is on the assistantMessage when a tool
+                // fired. update conversation title.
                 break;
             case 'error':
                 // surface a toast; the partial reply is preserved server-side
