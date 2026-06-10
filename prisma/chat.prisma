@@ -35,6 +35,11 @@ model ChatMessage {
   tokensInput    Int?                              // assistant rows only
   tokensOutput   Int?                              // assistant rows only
   status         String   @default("complete")     // 'complete' | 'partial'
+  // Structured side-effects produced during a tool-use turn (e.g. a deck the
+  // assistant created via the create_deck tool). Null when the assistant
+  // didn't call any tool. JSON shape is the ChatAttachment[] DTO; we keep it
+  // as Json? so adding new attachment kinds doesn't need another migration.
+  attachments    Json?
   createdAt      DateTime @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
