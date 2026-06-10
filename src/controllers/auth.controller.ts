@@ -9,7 +9,7 @@ import {
     verifyEmailSchema,
     resendOtpSchema,
 } from '../schemas/auth.schema.js';
-import { BadRequestError } from '../shared/errors.js';
+import { AppError, BadRequestError } from '../shared/errors.js';
 import {
     setRefreshCookie,
     clearRefreshCookie,
@@ -81,7 +81,17 @@ export const me = async (request: FastifyRequest, reply: FastifyReply) => {
 // ---------- Google OAuth ----------
 
 export const googleAuthStart = async (_request: FastifyRequest, reply: FastifyReply) => {
-    googleOAuth.assertGoogleConfigured();
+    // Mirror the callback's redirect-on-failure pattern. The FE renders the
+    // same /auth/oauth/error page either way; a 302 keeps the user inside
+    // the browser flow instead of dumping a raw JSON error mid-redirect.
+    try {
+        googleOAuth.assertGoogleConfigured();
+    } catch (err) {
+        const reason = err instanceof AppError ? err.code : 'OAUTH_NOT_CONFIGURED';
+        const target = new URL('/auth/oauth/error', env.WEB_URL);
+        target.searchParams.set('reason', reason);
+        return reply.redirect(target.toString(), 302);
+    }
     const { state, codeVerifier } = googleOAuth.newStateAndVerifier();
     setOAuthCookies(reply, state, codeVerifier);
     const url = googleOAuth.buildAuthorizationUrl(state, codeVerifier);
