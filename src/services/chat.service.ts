@@ -15,8 +15,19 @@ import * as chatRepo from '../repositories/chat.repository.js';
 import * as budget from './ai.budget.service.js';
 import { mockProvider } from './ai.provider.mock.js';
 import { anthropicProvider } from './ai.provider.anthropic.js';
-import type { AiProvider, ChatStreamEvent } from './ai.provider.js';
+import type {
+    AiProvider,
+    ChatStreamEvent,
+    ChatToolOutcome,
+    ChatToolsConfig,
+} from './ai.provider.js';
 import { CHAT_SYSTEM_PROMPT, autoTitle } from './chat.prompt.js';
+import {
+    CREATE_DECK_TOOL_DEF,
+    runCreateDeck,
+    type CreateDeckToolInput,
+} from './chat.tools.js';
+import type { ChatAttachment } from '../shared/mappers.chat.js';
 
 // Same selector ai.service uses — keeps the mock/real switch single-sourced
 // at env.AI_PROVIDER.
@@ -112,12 +123,54 @@ export type SendMessageStreamFrame =
       }
     | { type: 'token'; delta: string }
     | {
+          type: 'tool_use';
+          name: string;
+          input: Record<string, unknown>;
+      }
+    | {
+          type: 'tool_result';
+          name: string;
+          ok: boolean;
+          data: unknown;
+      }
+    | {
           type: 'done';
           assistantMessage: PublicMessage;
           conversationTitle: string;
           tokensInput: number;
           tokensOutput: number;
       };
+
+// Builds the tools config the provider receives. Lives here (not in
+// chat.tools.ts) because it closes over the per-request userId — each call
+// to runCreateDeck is scoped to who actually sent the message.
+const toolsForUser = (userId: string): ChatToolsConfig => ({
+    defs: [CREATE_DECK_TOOL_DEF],
+    run: async (call): Promise<ChatToolOutcome> => {
+        if (call.name !== 'create_deck') {
+            return {
+                ok: false,
+                data: { reason: `Unknown tool: ${call.name}` },
+                resultJson: JSON.stringify({ ok: false, reason: 'UNKNOWN_TOOL' }),
+            };
+        }
+        const result = await runCreateDeck(userId, call.input as CreateDeckToolInput);
+        if (result.ok) {
+            return {
+                ok: true,
+                data: result.attachment,
+                // The model gets the same JSON the FE will render — it can
+                // mention the title/id in its follow-up text.
+                resultJson: JSON.stringify({ ok: true, ...result.attachment }),
+            };
+        }
+        return {
+            ok: false,
+            data: { reason: result.reason },
+            resultJson: JSON.stringify({ ok: false, reason: result.reason }),
+        };
+    },
+});
 
 // Both the JSON and SSE controller paths share this driver. The `onFrame`
 // callback fires for every interesting moment so the controller can either
@@ -185,6 +238,7 @@ export const sendMessage = async (
     let buffer = '';
     let tokensInput = 0;
     let tokensOutput = 0;
+    let attachments: ChatAttachment[] | undefined;
 
     try {
         const result = await provider().chat(
@@ -192,12 +246,26 @@ export const sendMessage = async (
                 messages: turnsForModel,
                 systemPrompt: CHAT_SYSTEM_PROMPT,
                 maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
+                tools: toolsForUser(userId),
             },
             {
                 onEvent: (event: ChatStreamEvent) => {
                     if (event.type === 'token') {
                         buffer += event.delta;
                         onFrame({ type: 'token', delta: event.delta });
+                    } else if (event.type === 'tool_use') {
+                        onFrame({
+                            type: 'tool_use',
+                            name: event.call.name,
+                            input: event.call.input,
+                        });
+                    } else if (event.type === 'tool_result') {
+                        onFrame({
+                            type: 'tool_result',
+                            name: event.name,
+                            ok: event.ok,
+                            data: event.data,
+                        });
                     }
                 },
             },
@@ -210,6 +278,12 @@ export const sendMessage = async (
         }
         tokensInput = result.tokensInput;
         tokensOutput = result.tokensOutput;
+        // The provider's attachments are typed as unknown[] (provider layer
+        // is tool-agnostic). chat.tools is the only caller; we trust it
+        // returned ChatAttachment objects.
+        if (result.attachments && result.attachments.length > 0) {
+            attachments = result.attachments as ChatAttachment[];
+        }
     } catch (err) {
         // Save whatever we got so the FE can render the partial reply.
         await chatRepo.finalizeAssistantMessage({
@@ -231,6 +305,7 @@ export const sendMessage = async (
         tokensInput,
         tokensOutput,
         status: 'complete',
+        ...(attachments ? { attachments } : {}),
     });
 
     let conversationTitle = conv.title;

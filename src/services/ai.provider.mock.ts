@@ -104,12 +104,50 @@ export const mockProvider: AiProvider = {
     },
 
     async chat(input, opts): Promise<ChatResult> {
-        // Deterministic 3-token reply so the FE can exercise streaming UI
-        // without burning Anthropic credits. Picks tone from the last user
-        // message length so the dev experience varies slightly.
+        // Deterministic reply so the FE can exercise streaming UI without
+        // burning Anthropic credits. Tools-aware: when the caller provides
+        // a tools config AND the last user turn looks like a deck request
+        // ("create", "deck", or "make"), fake the full tool-use loop so the
+        // FE can exercise tool_use/tool_result frames too.
         const lastUserTurn = [...input.messages].reverse().find((m) => m.role === 'user');
+        const lastUserText = lastUserTurn?.content ?? '';
+        const wantsDeck =
+            !!input.tools &&
+            input.tools.defs.some((d) => d.name === 'create_deck') &&
+            /\b(create|deck|make)\b/i.test(lastUserText);
+
+        if (wantsDeck) {
+            const intro = ['One moment', ', creating that deck', '.'];
+            for (const delta of intro) {
+                opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+            }
+            const call = { name: 'create_deck', input: { topic: 'Sample topic' } };
+            opts?.onEvent?.({ type: 'tool_use', call } satisfies ChatStreamEvent);
+            const outcome = await input.tools!.run(call);
+            opts?.onEvent?.({
+                type: 'tool_result',
+                name: 'create_deck',
+                ok: outcome.ok,
+                data: outcome.data,
+            } satisfies ChatStreamEvent);
+            const outro = outcome.ok
+                ? [' Done', ' — added it', ' to your library.']
+                : [' Sorry', ', I couldn\'t finish that.'];
+            for (const delta of outro) {
+                opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+            }
+            const meta = { tokensInput: 0, tokensOutput: 0 };
+            opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
+            return {
+                content: intro.concat(outro).join(''),
+                tokensInput: meta.tokensInput,
+                tokensOutput: meta.tokensOutput,
+                ...(outcome.ok ? { attachments: [outcome.data] } : {}),
+            };
+        }
+
         const tokens =
-            lastUserTurn && lastUserTurn.content.length > 40
+            lastUserText.length > 40
                 ? ['Here', ' is a quick', ' answer.']
                 : ['Sure', ', happy to help', '.'];
 

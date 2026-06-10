@@ -1,5 +1,6 @@
-import type { Prisma } from '../../generated/prisma/client.js';
+import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
+import type { ChatAttachment } from '../shared/mappers.chat.js';
 
 // ---------- Conversations ----------
 
@@ -82,13 +83,16 @@ export const createMessage = (data: {
 
 // Used when the streaming reply finishes: replace the placeholder content
 // and flip status to 'complete'. tokensInput/Output are nullable in the
-// schema but always set on assistant rows.
+// schema but always set on assistant rows. `attachments` is set only when a
+// tool fired during the turn; we explicitly null it out otherwise so a retry
+// after a tool failure clears stale data from the partial placeholder.
 export const finalizeAssistantMessage = (data: {
     id: string;
     content: string;
     tokensInput: number;
     tokensOutput: number;
     status?: 'complete' | 'partial';
+    attachments?: ChatAttachment[];
 }) =>
     prisma.chatMessage.update({
         where: { id: data.id },
@@ -97,6 +101,10 @@ export const finalizeAssistantMessage = (data: {
             tokensInput: data.tokensInput,
             tokensOutput: data.tokensOutput,
             status: data.status ?? 'complete',
+            attachments:
+                data.attachments && data.attachments.length > 0
+                    ? (data.attachments as unknown as Prisma.InputJsonValue)
+                    : Prisma.JsonNull,
         },
     });
 

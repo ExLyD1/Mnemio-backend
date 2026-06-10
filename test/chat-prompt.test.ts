@@ -9,6 +9,10 @@ describe('chat.prompt / CHAT_SYSTEM_PROMPT', () => {
     it('asks for concise replies (cost + UX)', () => {
         expect(CHAT_SYSTEM_PROMPT.toLowerCase()).toContain('concise');
     });
+
+    it('mentions the create_deck tool so the model knows it exists', () => {
+        expect(CHAT_SYSTEM_PROMPT).toContain('create_deck');
+    });
 });
 
 describe('chat.prompt / autoTitle', () => {

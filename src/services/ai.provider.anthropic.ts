@@ -14,6 +14,9 @@ import type {
     AiSuggestion,
     ChatResult,
     ChatStreamEvent,
+    ChatToolCall,
+    ChatToolOutcome,
+    ChatToolsConfig,
     ChatTurn,
     EnrichWordsEvent,
     EnrichWordsResult,
@@ -442,50 +445,189 @@ const suggest = async (input: {
 
 // ---------- chat ----------
 
-const chat = async (
-    input: { messages: ChatTurn[]; systemPrompt: string; maxOutputTokens: number },
-    opts?: { onEvent?: (event: ChatStreamEvent) => void; signal?: AbortSignal },
-): Promise<ChatResult> => {
-    // Anthropic rejects empty message arrays — caller should never let this
-    // happen, but bail with a clear error if it does.
-    if (input.messages.length === 0) {
-        throw new AiValidationFailedError('chat requires at least one message');
-    }
+// Shape Anthropic returns inside content blocks for a tool call.
+type ToolUseBlock = {
+    type: 'tool_use';
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+};
 
+// Run a single streaming pass against Anthropic. Forwards text deltas as
+// 'token' events; returns the final message + the parsed tool_use block if
+// the model decided to call one. Errors map to AiProviderError as elsewhere.
+const runChatRound = async (params: {
+    messages: Anthropic.MessageParam[];
+    system: string;
+    maxOutputTokens: number;
+    tools?: ChatToolsConfig;
+    onEvent?: (event: ChatStreamEvent) => void;
+    signal?: AbortSignal;
+}): Promise<{
+    content: string;
+    tokensInput: number;
+    tokensOutput: number;
+    toolUse: ToolUseBlock | null;
+    rawAssistantBlocks: Anthropic.ContentBlock[];
+}> => {
     let buffer = '';
-    let tokensInput = 0;
-    let tokensOutput = 0;
-
     try {
         const stream = client().messages.stream({
             model: env.ANTHROPIC_MODEL,
-            max_tokens: input.maxOutputTokens,
-            system: input.systemPrompt,
-            messages: input.messages.map((m) => ({ role: m.role, content: m.content })),
+            max_tokens: params.maxOutputTokens,
+            system: params.system,
+            messages: params.messages,
+            ...(params.tools
+                ? {
+                      tools: params.tools.defs as unknown as Anthropic.Tool[],
+                      // 'auto' = model decides. Plain chat keeps working when
+                      // the user isn't asking for a deck.
+                      tool_choice: { type: 'auto' as const },
+                  }
+                : {}),
         });
 
-        // Abort on signal — propagates the cancellation up through finalMessage().
-        if (opts?.signal) {
-            opts.signal.addEventListener('abort', () => stream.abort(), { once: true });
+        if (params.signal) {
+            params.signal.addEventListener('abort', () => stream.abort(), { once: true });
         }
 
         stream.on('text', (delta) => {
             buffer += delta;
-            opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+            params.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
         });
 
         const finalMessage = await stream.finalMessage();
-        tokensInput = finalMessage.usage.input_tokens;
-        tokensOutput = finalMessage.usage.output_tokens;
+        const toolBlock = finalMessage.content.find(
+            (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
+        );
+        return {
+            content: buffer,
+            tokensInput: finalMessage.usage.input_tokens,
+            tokensOutput: finalMessage.usage.output_tokens,
+            toolUse: toolBlock
+                ? {
+                      type: 'tool_use',
+                      id: toolBlock.id,
+                      name: toolBlock.name,
+                      input: toolBlock.input as Record<string, unknown>,
+                  }
+                : null,
+            rawAssistantBlocks: finalMessage.content,
+        };
     } catch (err) {
         const status =
             err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
         throw new AiProviderError(status, (err as Error).message);
     }
+};
 
+const chat = async (
+    input: {
+        messages: ChatTurn[];
+        systemPrompt: string;
+        maxOutputTokens: number;
+        tools?: ChatToolsConfig;
+    },
+    opts?: { onEvent?: (event: ChatStreamEvent) => void; signal?: AbortSignal },
+): Promise<ChatResult> => {
+    if (input.messages.length === 0) {
+        throw new AiValidationFailedError('chat requires at least one message');
+    }
+
+    const initialMessages: Anthropic.MessageParam[] = input.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+    }));
+
+    const round1 = await runChatRound({
+        messages: initialMessages,
+        system: input.systemPrompt,
+        maxOutputTokens: input.maxOutputTokens,
+        ...(input.tools ? { tools: input.tools } : {}),
+        ...(opts?.onEvent ? { onEvent: opts.onEvent } : {}),
+        ...(opts?.signal ? { signal: opts.signal } : {}),
+    });
+
+    // No tool call → behaves exactly like the pre-tool chat: stream text,
+    // emit done, return content.
+    if (!round1.toolUse || !input.tools) {
+        const meta = {
+            tokensInput: round1.tokensInput,
+            tokensOutput: round1.tokensOutput,
+        };
+        opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
+        return {
+            content: round1.content,
+            tokensInput: round1.tokensInput,
+            tokensOutput: round1.tokensOutput,
+        };
+    }
+
+    // Tool call path: dispatch, wrap the result as a tool_result block, then
+    // run round 2 (no tools — we don't support chains in MVP).
+    const call: ChatToolCall = {
+        name: round1.toolUse.name,
+        input: round1.toolUse.input,
+    };
+    opts?.onEvent?.({ type: 'tool_use', call } satisfies ChatStreamEvent);
+
+    let outcome: ChatToolOutcome;
+    try {
+        outcome = await input.tools.run(call);
+    } catch (err) {
+        // Defensive: tool handler isn't supposed to throw, but if it does
+        // make sure the model still gets a tool_result so the conversation
+        // doesn't dangle.
+        outcome = {
+            ok: false,
+            data: { reason: 'INTERNAL' },
+            resultJson: JSON.stringify({ ok: false, reason: 'INTERNAL', message: (err as Error).message }),
+        };
+    }
+
+    opts?.onEvent?.({
+        type: 'tool_result',
+        name: call.name,
+        ok: outcome.ok,
+        data: outcome.data,
+    } satisfies ChatStreamEvent);
+
+    const round2Messages: Anthropic.MessageParam[] = [
+        ...initialMessages,
+        { role: 'assistant', content: round1.rawAssistantBlocks as Anthropic.ContentBlockParam[] },
+        {
+            role: 'user',
+            content: [
+                {
+                    type: 'tool_result',
+                    tool_use_id: round1.toolUse.id,
+                    content: outcome.resultJson,
+                    ...(outcome.ok ? {} : { is_error: true }),
+                },
+            ],
+        },
+    ];
+
+    const round2 = await runChatRound({
+        messages: round2Messages,
+        system: input.systemPrompt,
+        maxOutputTokens: input.maxOutputTokens,
+        // No tools on round 2 — keep it strictly the final text reply.
+        ...(opts?.onEvent ? { onEvent: opts.onEvent } : {}),
+        ...(opts?.signal ? { signal: opts.signal } : {}),
+    });
+
+    const tokensInput = round1.tokensInput + round2.tokensInput;
+    const tokensOutput = round1.tokensOutput + round2.tokensOutput;
     const meta = { tokensInput, tokensOutput };
     opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
-    return { content: buffer, tokensInput, tokensOutput };
+
+    return {
+        content: round1.content + round2.content,
+        tokensInput,
+        tokensOutput,
+        ...(outcome.ok ? { attachments: [outcome.data] } : {}),
+    };
 };
 
 export const anthropicProvider: AiProvider = {

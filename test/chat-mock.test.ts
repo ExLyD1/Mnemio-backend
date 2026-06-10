@@ -71,3 +71,70 @@ describe('ai.provider.mock / chat', () => {
         expect(result.tokensOutput).toBe(0);
     });
 });
+
+describe('ai.provider.mock / chat with tools', () => {
+    const deckToolDef = {
+        name: 'create_deck',
+        description: 'create a deck',
+        input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
+    };
+
+    it('fires the tool flow when the user asks to create a deck', async () => {
+        const events: ChatStreamEvent[] = [];
+        const runMock = vi.fn().mockResolvedValue({
+            ok: true,
+            data: { type: 'deck', deckId: 'd1', title: 'X', cardCount: 5 },
+            resultJson: '{}',
+        });
+
+        const result = await mockProvider.chat(
+            {
+                messages: [{ role: 'user', content: 'create a deck please' }],
+                systemPrompt: '',
+                maxOutputTokens: 1024,
+                tools: { defs: [deckToolDef], run: runMock },
+            },
+            { onEvent: (e) => events.push(e) },
+        );
+
+        const types = events.map((e) => e.type);
+        expect(types).toContain('tool_use');
+        expect(types).toContain('tool_result');
+        expect(types.at(-1)).toBe('done');
+        expect(runMock).toHaveBeenCalledTimes(1);
+        expect(result.attachments).toEqual([
+            { type: 'deck', deckId: 'd1', title: 'X', cardCount: 5 },
+        ]);
+    });
+
+    it('does NOT fire the tool flow for plain chat even when tools are provided', async () => {
+        const events: ChatStreamEvent[] = [];
+        const runMock = vi.fn();
+        await mockProvider.chat(
+            {
+                messages: [{ role: 'user', content: 'how are you?' }],
+                systemPrompt: '',
+                maxOutputTokens: 1024,
+                tools: { defs: [deckToolDef], run: runMock },
+            },
+            { onEvent: (e) => events.push(e) },
+        );
+        expect(events.map((e) => e.type)).not.toContain('tool_use');
+        expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it('omits attachments when the tool returned ok:false', async () => {
+        const runMock = vi.fn().mockResolvedValue({
+            ok: false,
+            data: { reason: 'AI_BUDGET_EXCEEDED' },
+            resultJson: '{}',
+        });
+        const result = await mockProvider.chat({
+            messages: [{ role: 'user', content: 'create a deck' }],
+            systemPrompt: '',
+            maxOutputTokens: 1024,
+            tools: { defs: [deckToolDef], run: runMock },
+        });
+        expect(result.attachments).toBeUndefined();
+    });
+});

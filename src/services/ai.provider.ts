@@ -90,14 +90,47 @@ export type ChatDoneMeta = {
     tokensOutput: number;
 };
 
+// A tool the model is allowed to call mid-conversation. `defs` is the array
+// Anthropic expects (name + description + input_schema); `run` is the
+// callback the provider invokes when the model emits a tool_use block.
+export type ChatToolCall = {
+    name: string;
+    input: Record<string, unknown>;
+};
+
+// What the provider passes back to the model on round 2 as the tool_result.
+// `data` is the public payload echoed to the FE; `resultJson` is what the
+// model actually reads. They're separate because the FE shouldn't see
+// internal scaffolding (auth tokens, ai_usage rollups), but the model
+// benefits from a richer context.
+export type ChatToolOutcome =
+    | { ok: true; data: unknown; resultJson: string }
+    | { ok: false; data: { reason: string }; resultJson: string };
+
+export type ChatToolDef = {
+    name: string;
+    description: string;
+    input_schema: Record<string, unknown>;
+};
+
+export type ChatToolsConfig = {
+    defs: ChatToolDef[];
+    run: (call: ChatToolCall) => Promise<ChatToolOutcome>;
+};
+
 export type ChatStreamEvent =
     | { type: 'token'; delta: string }
+    | { type: 'tool_use'; call: ChatToolCall }
+    | { type: 'tool_result'; name: string; ok: boolean; data: unknown }
     | { type: 'done'; meta: ChatDoneMeta };
 
 export type ChatResult = {
     content: string;
     tokensInput: number;
     tokensOutput: number;
+    // Populated when a tool fired successfully — surfaced on the assistant
+    // message so the FE can render the deck card next to the text reply.
+    attachments?: unknown[];
 };
 
 export type AiProvider = {
@@ -130,12 +163,23 @@ export type AiProvider = {
      * chronological order; `systemPrompt` is the persona/scope wrapper (no
      * grounding at MVP — see chat.prompt.ts).
      *
+     * When `tools` is supplied, the model MAY emit a tool_use block during
+     * its first reply. The provider dispatches `tools.run(call)`, forwards
+     * the result to the model, and continues streaming the final text reply
+     * over the same stream. Tokens from BOTH rounds are emitted via the same
+     * `onEvent` callback; usage counts are summed.
+     *
      * Implementations MUST forward each text chunk as `{ type: 'token', delta }`
      * via `onEvent` (when provided) and emit one final `{ type: 'done', meta }`
      * with the usage counts.
      */
     chat: (
-        input: { messages: ChatTurn[]; systemPrompt: string; maxOutputTokens: number },
+        input: {
+            messages: ChatTurn[];
+            systemPrompt: string;
+            maxOutputTokens: number;
+            tools?: ChatToolsConfig;
+        },
         opts?: { onEvent?: (event: ChatStreamEvent) => void; signal?: AbortSignal },
     ) => Promise<ChatResult>;
 };
