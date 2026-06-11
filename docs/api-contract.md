@@ -8,11 +8,11 @@
 
 **Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped,
 plus the post-MVP additions (Google OAuth, account deletion, welcome flags,
-Quizlet/text imports, deck import/export, real-time AI chat). **57 endpoints
+Quizlet/text imports, deck import/export, real-time AI chat). **61 endpoints
 under `/api/v1`** + `GET /health` + `GET /ready` + static `/media/*`. Nothing
 in this document is "coming later" unless it says so explicitly.
 
-### Endpoint inventory (57 under `/api/v1`)
+### Endpoint inventory (61 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -29,6 +29,7 @@ in this document is "coming later" unless it says so explicitly.
 | AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
+| Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
 | Ops | `GET /health` · `GET /ready` (both un-prefixed) |
 
@@ -1355,6 +1356,50 @@ LLM, oldest first. Older messages remain in the DB and are returned by
 **Auto-title rule:** on the user's first message in a conversation, the
 title flips from `"New chat"` to the trimmed message (up to 60 chars, ellipsis
 suffix when truncated). Subsequent turns leave the title alone.
+
+### Public (SEO)
+
+Unauthenticated, read-only mirror of the discover surface for marketing
+pages, server-rendered deck previews, and `sitemap.xml` generation. All
+filters match the authed `/discover/*` endpoints — when a deck flips
+`isPublic` to false, it disappears from both sides in lock-step.
+
+Per-route throttle: 60 req/min/IP on the browsing endpoints, 10 req/min/IP
+on the sitemap.
+
+#### `GET /public/discover/decks`  *(public)*
+```ts
+// Same query string as authed GET /discover/decks:
+//   ?cursor?=string&limit?=number(<=50)&q?=string&lang?=string
+//   &subject?=string&sort?=popular|recent   (default 'recent')
+// 200 Response: PageWithTotal<DeckWithAuthor>
+```
+
+Per-user mastery is omitted (no viewer concept). `stats.mastered`,
+`stats.learning`, `stats.due` are all `0` — `stats.total`, `stats.new`,
+`stats.masteredPct` still come from the deck's own `cardCount`.
+
+#### `GET /public/discover/categories`  *(public)*
+```ts
+// 200 Response: { items: { subject: string; count: number }[] }
+```
+Identical body to the authed variant.
+
+#### `GET /public/decks/:id`  *(public)*
+```ts
+// 200 Response: { deck: DeckWithAuthor; cards: Card[] }
+// Errors: 404 DECK_NOT_FOUND   (deck is private, missing, or has isPublic=false)
+```
+Cards inlined the same way as the authed `GET /decks/:id`. SEO renderer
+can build the page without a second request.
+
+#### `GET /public/sitemap/decks`  *(public)*
+Minimal projection — id + ISO `updatedAt` — for the FE's `sitemap.xml`
+generator. Hard cap of 50 000 rows per the sitemap protocol; split into
+shards before then.
+```ts
+// 200 Response: { items: { id: string; updatedAt: string }[] }
+```
 
 ### Media  *(P2)*
 
