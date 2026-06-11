@@ -21,6 +21,7 @@ import dashboardRoutes from './routes/dashboard.routes.js';
 import achievementsRoutes from './routes/achievements.routes.js';
 import statsRoutes from './routes/stats.routes.js';
 import discoverRoutes from './routes/discover.routes.js';
+import publicRoutes from './routes/public.routes.js';
 import aiRoutes from './routes/ai.routes.js';
 import importsRoutes from './routes/imports.routes.js';
 import chatRoutes from './routes/chat.routes.js';
@@ -133,6 +134,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(achievementsRoutes);
             await api.register(statsRoutes);
             await api.register(discoverRoutes);
+            await api.register(publicRoutes);
             await api.register(aiRoutes);
             await api.register(importsRoutes);
             await api.register(chatRoutes);

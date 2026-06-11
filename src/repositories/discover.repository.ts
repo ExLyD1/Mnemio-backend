@@ -120,3 +120,14 @@ export const bumpCopyCount = (deckId: string) =>
         where: { id: deckId },
         data: { copyCount: { increment: 1 } },
     });
+
+// Sitemap projection: id + updatedAt only, ordered for stable diffs. Hard cap
+// of 50k matches the sitemap.xml protocol limit; FE should split into multiple
+// sitemaps before then anyway.
+export const listAllPublicDeckIds = () =>
+    prisma.deck.findMany({
+        where: { isPublic: true },
+        select: { id: true, updatedAt: true },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: 50_000,
+    });
