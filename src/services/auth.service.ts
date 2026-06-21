@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { UserModel as User } from '../../generated/prisma/models/User.js';
 import * as authRepo from '../repositories/auth.repository.js';
 import { getWelcomeState, type WelcomeState } from '../repositories/welcome.repository.js';
+import * as entitlementService from './entitlement.service.js';
 import { toPublicUser, needsProfile, type PublicUser } from '../shared/mappers.js';
 import { BadRequestError, ConflictError, UnauthorizedError, RateLimitedError } from '../shared/errors.js';
 import {
@@ -396,11 +397,12 @@ export const signInWithProvider = async (
 
 export const me = async (
     userId: string,
-): Promise<{ user: PublicUser; needsProfile: boolean; welcome: WelcomeState }> => {
-    const [user, welcome] = await Promise.all([
+): Promise<{ user: PublicUser; needsProfile: boolean; welcome: WelcomeState; plan: 'free' | 'premium' }> => {
+    const [user, welcome, plan] = await Promise.all([
         authRepo.findUserById(userId),
         getWelcomeState(userId),
+        entitlementService.getPlan(userId),
     ]);
     if (!user) throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'User no longer exists');
-    return { user: toPublicUser(user), needsProfile: needsProfile(user), welcome };
+    return { user: toPublicUser(user), needsProfile: needsProfile(user), welcome, plan };
 };
