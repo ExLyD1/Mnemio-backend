@@ -101,6 +101,19 @@ const envSchema = z
         OAUTH_APPLE_TEAM_ID: z.string().optional(),
         OAUTH_APPLE_KEY_ID: z.string().optional(),
         OAUTH_APPLE_PRIVATE_KEY: z.string().optional(),
+
+        // Stripe billing
+        STRIPE_SECRET_KEY: z.string().optional(),
+        STRIPE_WEBHOOK_SECRET: z.string().optional(),
+        STRIPE_PRICE_MONTHLY: z.string().optional(),
+        STRIPE_PRICE_ANNUAL: z.string().optional(),
+
+        // Per-user daily caps for premium plan (defaults = 10× free)
+        AI_DAILY_ENRICH_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(50),
+        AI_DAILY_GENERATE_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),
+        AI_DAILY_SUGGEST_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(600),
+        AI_DAILY_CHAT_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(500),
+        IMPORT_DAILY_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),
     })
     .refine(
         (v) =>

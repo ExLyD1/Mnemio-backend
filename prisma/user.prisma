@@ -30,6 +30,7 @@ model User {
   dailyActivity       DailyActivity[]
   aiUsage             AiUsage[]
   conversations       Conversation[]
+  subscription        Subscription?
 
   @@map("users")
 }

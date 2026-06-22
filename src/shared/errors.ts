@@ -138,3 +138,9 @@ export class ChatNotFoundError extends NotFoundError {
         super('CHAT_NOT_FOUND', 'Conversation not found');
     }
 }
+
+export class PremiumRequiredError extends ForbiddenError {
+    constructor() {
+        super('PREMIUM_REQUIRED', 'This feature requires a premium subscription');
+    }
+}

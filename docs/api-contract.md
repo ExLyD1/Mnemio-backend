@@ -8,11 +8,12 @@
 
 **Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped,
 plus the post-MVP additions (Google OAuth, account deletion, welcome flags,
-Quizlet/text imports, deck import/export, real-time AI chat). **61 endpoints
-under `/api/v1`** + `GET /health` + `GET /ready` + static `/media/*`. Nothing
-in this document is "coming later" unless it says so explicitly.
+Quizlet/text imports, deck import/export, real-time AI chat, and paid
+subscriptions via Stripe). **65 endpoints under `/api/v1`** + `GET /health` +
+`GET /ready` + static `/media/*`. Nothing in this document is "coming later"
+unless it says so explicitly.
 
-### Endpoint inventory (61 under `/api/v1`)
+### Endpoint inventory (65 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -31,6 +32,7 @@ in this document is "coming later" unless it says so explicitly.
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
+| Billing | `POST /billing/checkout` · `GET /billing/subscription` · `POST /billing/portal` · `POST /billing/webhook` |
 | Ops | `GET /health` · `GET /ready` (both un-prefixed) |
 
 ### Invariants the FE must respect
@@ -50,6 +52,7 @@ in this document is "coming later" unless it says so explicitly.
 | 11 | Every auth response (`login`, `verify-email`, `refresh`, `me`) now carries `welcome: { hasDeck, hasSession, hasReviewed }` — use it for dashboard variant selection instead of fanning out three count probes from the FE. |
 | 12 | `/imports/*` and `/ai/*` share a per-user daily-cap rollup in `ai_usage`. A user can hit the import cap without affecting AI calls and vice versa — distinct error codes (`IMPORT_BUDGET_EXCEEDED` vs `AI_BUDGET_EXCEEDED`). |
 | 13 | `/chat/conversations/:id/messages` is the only endpoint where partial-success matters: a streamed assistant reply that gets cut mid-flight is persisted with `status: 'partial'` and the user is NOT charged a daily-cap unit. The FE can render the half-reply and offer "retry." |
+| 14 | `GET /auth/me` (and every token-issuing auth response) now returns `plan: 'free' \| 'premium'` at the top level. Store it in auth state alongside `user` — the FE uses it to show/hide premium UI and to optimistically gate features before the server enforces them. On `403 PREMIUM_REQUIRED` from any endpoint, show the paywall modal (the server enforces even if the FE shows the feature). |
 
 ### Demo data
 `npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
@@ -147,6 +150,10 @@ type ApiError = {
 | `AUTH_EMAIL_UNVERIFIED_LINK` | `/auth/oauth/google/callback` | The user already has an unverified password account with that email; tell them to verify it first or use a different Google account. |
 | `NOT_READY` | `GET /ready` | 503 — DB ping failed. Ops-only; FE doesn't call `/ready`. |
 | `CHAT_NOT_FOUND` | any `/chat/conversations/:id*` | 404 — conversation missing or owned by someone else. |
+| `PREMIUM_REQUIRED` | any gated endpoint | 403 — feature requires an active subscription. Show paywall/upgrade modal. |
+| `BILLING_NOT_CONFIGURED` | any `/billing/*` | 400 — Stripe keys absent on this deployment. Hide billing UI entirely. |
+| `BILLING_NO_SUBSCRIPTION` | `GET /billing/subscription` · `POST /billing/portal` | 404 — user has no subscription row. Treat the same as `plan: 'free'`. |
+| `BILLING_PRICE_NOT_CONFIGURED` | `POST /billing/checkout` | 400 — specific plan price ID missing in env. Fall back to the other plan or show "unavailable". |
 
 **429 envelope:** `@fastify/rate-limit` is now configured with our standard
 envelope, so a rate-limited request returns
@@ -192,6 +199,22 @@ type User = {
   streak: number;              // ALWAYS 0 — use /stats/overview.streak instead
   createdAt: string;
   updatedAt: string;
+};
+
+// Returned at the top level of GET /auth/me and every token-issuing response
+// alongside `user`. Distinct from User so auth state can hold both without nesting.
+type Plan = 'free' | 'premium';
+
+// Current subscription details. Returned by GET /billing/subscription.
+// Null / 404 means no subscription row exists — treat as plan: 'free'.
+type Subscription = {
+  id: string;
+  status: 'trialing' | 'active' | 'past_due' | 'canceled' | 'expired';
+  plan: 'monthly' | 'annual';
+  currentPeriodStart: string;   // ISO 8601 UTC
+  currentPeriodEnd: string;     // ISO 8601 UTC — access until this date on 'canceled'
+  cancelAtPeriodEnd: boolean;   // true when user canceled but period hasn't ended
+  trialEnd: string | null;      // ISO 8601 UTC, non-null only during 'trialing'
 };
 
 type DeckStats = {
@@ -467,9 +490,13 @@ FE should also delete `accessToken` from `localStorage` after this call.
 
 #### `GET /auth/me`  *(auth)*
 ```ts
-// 200 Response: { user: User; needsProfile: boolean; welcome: WelcomeState }
+// 200 Response: { user: User; needsProfile: boolean; welcome: WelcomeState; plan: Plan }
 // Errors: 401 AUTH_INVALID_TOKEN → try /auth/refresh
 ```
+`plan` is the fast entitlement check — `'premium'` when the user has an active
+subscription (`status ∈ {trialing, active, past_due, canceled}` and
+`currentPeriodEnd > now`). Use it to show/hide UI. The server enforces gating
+independently; the FE never fully trusts it for hard access control.
 
 #### Google OAuth flow (3 endpoints)
 
@@ -1142,15 +1169,20 @@ Always single-response (small payload, no streaming needed).
 
 #### Common — rate limits + budget
 
-| Limit | Value | Throws |
-|---|---|---|
-| Request rate | 30/min/user across all three endpoints | `429 RATE_LIMITED` |
-| Daily `enrich` cap | 5/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
-| Daily `generate` cap | 20/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
-| Daily `suggest` cap | 60/day/user (default) | `429 AI_BUDGET_EXCEEDED` |
-| Max words per `enrich` call | 100 (default) | `400 AI_TOO_MANY_WORDS` |
+| Limit | Free tier | Premium tier | Throws |
+|---|---|---|---|
+| Request rate | 30/min/user | 30/min/user | `429 RATE_LIMITED` |
+| Daily `enrich` cap | 5/day | 50/day (env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `generate` cap | 20/day | 200/day (env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `suggest` cap | 60/day | 600/day (env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `chat` cap | 50/day | 500/day (env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `import` cap | 20/day | 200/day (env) | `429 IMPORT_BUDGET_EXCEEDED` |
+| Max words per `enrich` call | 100 | 100 | `400 AI_TOO_MANY_WORDS` |
 
-Caps are configurable via env (`AI_DAILY_*_CAP_PER_USER`, `AI_MAX_WORDS_PER_ENRICH`).
+Free and premium caps are independently configurable via env
+(`AI_DAILY_*_CAP_PER_USER` for free, `AI_DAILY_*_CAP_PREMIUM_PER_USER` for
+premium). The cap used is determined server-side from the caller's active
+subscription — the FE never sends plan information in the request body.
 
 ### Imports  *(Quizlet + paste-text)*
 
@@ -1447,6 +1479,85 @@ After upload, the URL is served at `GET <url>` (no auth needed; treat as a
 public link). For card uploads, `PATCH /cards/:id { audioUrl | imageUrl }` to
 attach. For avatars, the response already updated the user row.
 
+### Billing
+
+Stripe-powered subscription management. Requires `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY`, and `STRIPE_PRICE_ANNUAL` to
+be set in the backend env. When any of these are absent, every `/billing/*`
+call returns `400 BILLING_NOT_CONFIGURED` — the FE should hide billing UI
+entirely in that case (useful for local dev without a Stripe account).
+
+#### `POST /billing/checkout`  *(auth)*
+Create a Stripe Checkout session and return the hosted-page URL. The FE
+redirects the user to that URL; Stripe handles card collection, then redirects
+back.
+```ts
+// Request
+{ plan: 'monthly' | 'annual' }
+
+// 201 Response
+{ url: string }   // redirect the user here (window.location = url)
+
+// Errors:
+// 400 BILLING_NOT_CONFIGURED     — Stripe keys missing
+// 400 BILLING_PRICE_NOT_CONFIGURED — env missing STRIPE_PRICE_MONTHLY/ANNUAL
+```
+Stripe redirects back to:
+- Success: `${WEB_URL}/billing/success?session_id=<id>`
+- Cancel: `${WEB_URL}/billing/cancel`
+
+On the success page, poll `GET /billing/subscription` until `status` becomes
+`active` or `trialing` (webhook fires within ~1 s in practice; 3 s poll is
+fine).
+
+#### `GET /billing/subscription`  *(auth)*
+Current subscription details.
+```ts
+// 200 Response: Subscription
+// 404 BILLING_NO_SUBSCRIPTION — user has no subscription row (plan: 'free')
+```
+
+#### `POST /billing/portal`  *(auth)*
+Create a Stripe Customer Portal session and return the URL. The portal lets
+the user cancel, change payment method, or download invoices — all without
+any custom UI.
+```ts
+// Request: (empty body)
+
+// 201 Response
+{ url: string }   // redirect the user here
+
+// Errors:
+// 400 BILLING_NOT_CONFIGURED
+// 404 BILLING_NO_SUBSCRIPTION — user has never subscribed
+```
+
+#### `POST /billing/webhook`  *(public — Stripe-signed, **no** JWT)*
+Stripe event receiver. The FE **never calls this directly** — it is only for
+Stripe's servers. Listed here for completeness.
+
+The backend processes:
+| Stripe event | Effect |
+|---|---|
+| `customer.subscription.created` | Upsert subscription row (→ `trialing`/`active`) |
+| `customer.subscription.updated` | Update status, plan, period, `cancelAtPeriodEnd` |
+| `customer.subscription.deleted` | Set status → `expired` |
+| `invoice.payment_succeeded` | Set status → `active`, advance period dates |
+| `invoice.payment_failed` | Set status → `past_due` |
+
+All events are idempotent (duplicate delivery is a no-op). Unhandled event
+types return 200 silently.
+
+#### Subscription lifecycle UX
+| `status` from `GET /billing/subscription` | What the FE should show |
+|---|---|
+| No subscription (404) | "Upgrade to Premium" CTAs; AI quota 429 → paywall modal |
+| `trialing` | "Trial ends on {trialEnd}" banner |
+| `active` | Normal premium experience |
+| `past_due` | "Payment failed — update card" banner (link to `POST /billing/portal`) |
+| `canceled` | "Plan ends on {currentPeriodEnd}" banner + resubscribe CTA; access intact |
+| `expired` | Reverts to free-tier; premium features gate with paywall |
+
 ### Health (ops)
 
 Both endpoints are unauthenticated and live **outside** the `/api/v1`
@@ -1631,6 +1742,42 @@ Important edge cases:
 - **JSON fallback:** if SSE is awkward (proxy, library, test rig), omit
   the `Accept: text/event-stream` header and the endpoint returns the
   same final payload as a single JSON body.
+
+### Billing / subscription flow
+
+```
+// Subscribe (pricing page CTA)
+POST /billing/checkout { plan: 'monthly' | 'annual' }
+  → { url }
+  → window.location = url                // Stripe-hosted Checkout
+     └─ success → ${WEB_URL}/billing/success?session_id=...
+          // poll GET /billing/subscription every ~3s until status ∈ {active, trialing}
+          // then refresh auth state (GET /auth/me) so plan flips to 'premium'
+     └─ cancel → ${WEB_URL}/billing/cancel
+          // no subscription was created; user stays free
+
+// Manage / cancel (billing settings page)
+POST /billing/portal
+  → { url }
+  → window.location = url                // Stripe Customer Portal (cancel, card, invoices)
+
+// Read current state (billing settings page)
+GET /billing/subscription
+  → Subscription or 404 (= free)
+
+// Hard gate: server returns 403 PREMIUM_REQUIRED
+// → show paywall / upgrade modal regardless of FE plan state
+```
+
+**Auth state:** store `plan` from every auth response alongside `user`. Update
+it on every `GET /auth/me` call. The FE uses `plan === 'premium'` to show or
+hide UI elements, but always handles `403 PREMIUM_REQUIRED` from the server as
+the authoritative gate.
+
+**`BILLING_NOT_CONFIGURED`:** when the backend is running without Stripe keys
+(local dev, staging without billing), every `/billing/*` call returns this
+code. Guard: before rendering any billing UI, check that a prior call didn't
+return this error; if it did, hide all upgrade/subscription UI silently.
 
 ### Session flow
 - Starting a new session implicitly ends the active one. Don't fight it from FE.

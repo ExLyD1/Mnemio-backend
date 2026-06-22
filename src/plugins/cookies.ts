@@ -13,6 +13,9 @@ const refreshCookieOptions = (maxAgeSeconds: number) => ({
     sameSite: 'lax' as const,
     path: REFRESH_COOKIE_PATH,
     maxAge: maxAgeSeconds,
+    // Expires mirrors Max-Age so all browsers treat the cookie as persistent.
+    // Max-Age takes precedence in modern browsers; Expires is the fallback.
+    expires: new Date(Date.now() + maxAgeSeconds * 1000),
 });
 
 export const setRefreshCookie = (reply: FastifyReply, token: string): void => {
