@@ -30,6 +30,9 @@ export const webhook = async (request: FastifyRequest, reply: FastifyReply) => {
     if (typeof sig !== 'string') {
         throw new BadRequestError('BILLING_WEBHOOK_MISSING_SIG', 'Missing stripe-signature header');
     }
-    await billingService.handleWebhookEvent(request.body as Buffer, sig);
-    reply.send({ received: true });
+    const emits = await billingService.handleWebhookEvent(request.body as Buffer, sig);
+    // ACK Stripe FIRST, then fire analytics — a Mixpanel hiccup must never delay
+    // or fail the webhook acknowledgement (Stripe would retry an un-ACKed event).
+    await reply.send({ received: true });
+    for (const emit of emits) emit();
 };
