@@ -1,6 +1,7 @@
 import * as sessionsRepo from '../repositories/sessions.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as achievementsService from './achievements.service.js';
+import * as milestone from './milestone.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import { toPublicSession, type PublicSession } from '../shared/mappers.session.js';
 import type { CreateSessionInput, UpdateSessionInput } from '../schemas/session.schema.js';
@@ -88,6 +89,8 @@ export const complete = async (
     achievementsService.evaluate(ownerId, 'session_complete').catch(() => {
         // Swallow: achievement-system errors must not break session completion.
     });
+
+    void milestone.checkFirstSession(ownerId);
 
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
     return toPublicSession(fresh!);

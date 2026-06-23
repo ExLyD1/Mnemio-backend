@@ -1,6 +1,7 @@
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as deckStatsRepo from '../repositories/deck-stats.repository.js';
+import * as milestone from './milestone.service.js';
 import {
     decodeCursor,
     encodeCursor,
@@ -78,6 +79,7 @@ export const create = async (ownerId: string, input: CreateDeckInput): Promise<P
         glyph: input.glyph ?? null,
         subject: input.subject ?? null,
     });
+    void milestone.checkFirstDeck(ownerId);
     return toPublicDeck(deck);
 };
 
