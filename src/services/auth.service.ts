@@ -4,6 +4,7 @@ import type { UserModel as User } from '../../generated/prisma/models/User.js';
 import * as authRepo from '../repositories/auth.repository.js';
 import { getWelcomeState, type WelcomeState } from '../repositories/welcome.repository.js';
 import * as entitlementService from './entitlement.service.js';
+import * as analytics from './analytics.service.js';
 import { toPublicUser, needsProfile, type PublicUser } from '../shared/mappers.js';
 import { BadRequestError, ConflictError, UnauthorizedError, RateLimitedError } from '../shared/errors.js';
 import {
@@ -79,6 +80,18 @@ const buildAuthResult = async (
         needsProfile: needsProfile(user),
         welcome,
     };
+};
+
+// Fire-and-forget analytics for a brand-new account. Called only at the genuine
+// creation sites (first email verification / new OAuth user) so it never fires
+// for returning logins. The backend is the only reliable source of new-vs-
+// returning, especially for OAuth.
+const emitAccountCreated = (user: User, method: 'email' | 'google'): void => {
+    analytics.track(user.id, 'account_created', { method });
+    analytics.setUserProps(user.id, {
+        plan: 'free',
+        signup_date: (user.createdAt ?? new Date()).toISOString(),
+    });
 };
 
 // ---------- Public OTP issuance ----------
@@ -168,6 +181,9 @@ export const verifyEmail = async (
         event: 'otp.verify.success',
         ip: ctx.ip ?? null,
     });
+    // First successful verification = the account is now real. The early-return
+    // above means re-verifying an already-verified account won't re-fire this.
+    emitAccountCreated(verifiedUser, 'email');
     return buildAuthResult(fastify, verifiedUser, ctx);
 };
 
@@ -390,6 +406,9 @@ export const signInWithProvider = async (
         ip: ctx.ip ?? null,
         details: { provider: params.provider },
     });
+    // Brand-new OAuth user only — the two branches above (existing identity /
+    // link to existing account) are returning users and must not fire this.
+    emitAccountCreated(created, 'google');
     return buildAuthResult(fastify, created, ctx);
 };
 

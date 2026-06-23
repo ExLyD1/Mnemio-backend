@@ -1,5 +1,6 @@
 import * as discoverRepo from '../repositories/discover.repository.js';
 import * as deckStatsRepo from '../repositories/deck-stats.repository.js';
+import * as milestone from './milestone.service.js';
 import { prisma } from '../db/prisma.js';
 import {
     encodeCursor,
@@ -137,6 +138,9 @@ export const copy = async (viewerId: string, sourceDeckId: string): Promise<Publ
 
         return clone.id;
     });
+
+    // Cloning a public deck is also a "first deck" path — count it as activation.
+    void milestone.checkFirstDeck(viewerId);
 
     const fresh = await prisma.deck.findUnique({ where: { id: newDeckId } });
     const stats = await deckStatsRepo.aggregateDeckStats(viewerId, [newDeckId]);

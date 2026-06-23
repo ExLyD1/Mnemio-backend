@@ -2,6 +2,7 @@ import * as srsRepo from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as activityRepo from '../repositories/activity.repository.js';
 import * as achievementsService from './achievements.service.js';
+import * as milestone from './milestone.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
 import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
@@ -58,6 +59,10 @@ export const rate = async (
     });
 
     achievementsService.evaluate(ownerId, 'rate').catch(() => {});
+
+    // Only a brand-new progress row can be the user's first-ever review; skip
+    // the probe on re-reviews of an already-seen card so it can't double-fire.
+    if (!existing) void milestone.checkFirstReview(ownerId);
 
     return {
         cardId: saved.cardId,

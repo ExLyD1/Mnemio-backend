@@ -108,6 +108,10 @@ const envSchema = z
         STRIPE_PRICE_MONTHLY: z.string().optional(),
         STRIPE_PRICE_ANNUAL: z.string().optional(),
 
+        // Mixpanel server-side analytics (no-op when unset)
+        MIXPANEL_TOKEN: z.string().optional(),
+        MIXPANEL_API_SECRET: z.string().optional(),
+
         // Per-user daily caps for premium plan (defaults = 10× free)
         AI_DAILY_ENRICH_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(50),
         AI_DAILY_GENERATE_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),

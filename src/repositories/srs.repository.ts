@@ -3,6 +3,10 @@ import { prisma } from '../db/prisma.js';
 export const findProgress = (userId: string, cardId: string) =>
     prisma.cardProgress.findUnique({ where: { userId_cardId: { userId, cardId } } });
 
+// Count of distinct reviewed cards — used to detect the first-review milestone.
+export const countProgress = (userId: string): Promise<number> =>
+    prisma.cardProgress.count({ where: { userId } });
+
 export const upsertProgress = (data: {
     userId: string;
     cardId: string;

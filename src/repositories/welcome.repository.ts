@@ -13,7 +13,8 @@ export type WelcomeState = {
 export const getWelcomeState = async (userId: string): Promise<WelcomeState> => {
     const [deckCount, sessionCount, progressCount] = await Promise.all([
         prisma.deck.count({ where: { authorId: userId }, take: 1 }),
-        prisma.studySession.count({ where: { userId, status: 'completed' }, take: 1 }),
+        // completeSession() writes status 'complete' (not 'completed') — keep in sync.
+        prisma.studySession.count({ where: { userId, status: 'complete' }, take: 1 }),
         prisma.cardProgress.count({ where: { userId }, take: 1 }),
     ]);
     return {

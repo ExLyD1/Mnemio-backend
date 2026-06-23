@@ -2,6 +2,7 @@ import Stripe from 'stripe';
 import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
 import * as subscriptionRepo from '../repositories/subscription.repository.js';
+import * as analytics from './analytics.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import type { SubscriptionRow } from '../repositories/subscription.repository.js';
 
@@ -63,6 +64,10 @@ export const createCheckoutSession = async (
         success_url: successUrl,
         cancel_url: cancelUrl,
         metadata: { userId, plan },
+        // Propagate userId onto the Subscription itself — Stripe does NOT copy
+        // session metadata to the subscription, and the webhook handlers resolve
+        // the user via sub.metadata.userId.
+        subscription_data: { metadata: { userId, plan } },
     });
 
     if (!session.url) {
@@ -99,15 +104,31 @@ const planFromPriceId = (priceId: string): string => {
     return 'unknown';
 };
 
+// Narrow to the analytics contract's BillingPlan; null when the price isn't one
+// of our configured plans (so we skip emitting rather than send 'unknown').
+const billingPlanFromPriceId = (priceId: string): 'monthly' | 'annual' | null => {
+    if (priceId === env.STRIPE_PRICE_ANNUAL) return 'annual';
+    if (priceId === env.STRIPE_PRICE_MONTHLY) return 'monthly';
+    return null;
+};
+
+const centsToUnits = (cents: number | null | undefined): number => (cents ?? 0) / 100;
+
+// Deferred analytics emission. Handlers return these instead of emitting inline
+// so the controller can ACK Stripe FIRST, then fire them — a Mixpanel outage can
+// never delay or fail the webhook acknowledgement.
+type AnalyticsEmit = () => void;
+
 const handleSubscriptionUpsert = async (
     tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
     sub: Stripe.Subscription,
-): Promise<void> => {
+    ctx: { isCreated: boolean; previousStatus?: string | undefined },
+): Promise<AnalyticsEmit[]> => {
     const item = sub.items.data[0];
-    if (!item) return;
+    if (!item) return [];
 
     const userId = sub.metadata['userId'];
-    if (!userId) return;
+    if (!userId) return [];
 
     const data: subscriptionRepo.UpsertSubscriptionData = {
         userId,
@@ -139,28 +160,80 @@ const handleSubscriptionUpsert = async (
         },
         create: data,
     });
+
+    const billingPlan = billingPlanFromPriceId(item.price.id);
+    if (!billingPlan) return [];
+    const price = centsToUnits(item.price.unit_amount);
+    const emits: AnalyticsEmit[] = [];
+
+    // New subscription that begins in trial → trial_started.
+    if (ctx.isCreated && sub.status === 'trialing') {
+        emits.push(() => analytics.track(userId, 'trial_started', { billing_plan: billingPlan }));
+    }
+    // Existing subscription transitioning trialing → active → trial_converted.
+    if (!ctx.isCreated && ctx.previousStatus === 'trialing' && sub.status === 'active') {
+        emits.push(() =>
+            analytics.track(userId, 'trial_converted', { billing_plan: billingPlan, price }),
+        );
+    }
+    return emits;
+};
+
+// checkout.session.completed → subscription_started. Analytics only (the DB row
+// is written by customer.subscription.created); we still record the event id for
+// idempotency in the enclosing transaction.
+const handleCheckoutCompleted = async (
+    session: Stripe.Checkout.Session,
+): Promise<AnalyticsEmit[]> => {
+    const userId = session.metadata?.['userId'];
+    if (!userId) return [];
+
+    const subRef = session.subscription;
+    const subId = typeof subRef === 'string' ? subRef : subRef?.id;
+    if (!subId) return [];
+
+    const stripe = getStripe();
+    const sub = await stripe.subscriptions.retrieve(subId);
+    const item = sub.items.data[0];
+    if (!item) return [];
+
+    const billingPlan = billingPlanFromPriceId(item.price.id);
+    if (!billingPlan) return [];
+
+    const status: 'trialing' | 'active' = sub.status === 'trialing' ? 'trialing' : 'active';
+    const price = centsToUnits(item.price.unit_amount);
+
+    return [
+        () =>
+            analytics.track(userId, 'subscription_started', {
+                billing_plan: billingPlan,
+                status,
+                price,
+            }),
+        () => analytics.setUserProps(userId, { plan: 'premium', is_ever_paid: true }),
+    ];
 };
 
 const handleInvoicePaymentSucceeded = async (
     tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
     invoice: Stripe.Invoice,
-): Promise<void> => {
+): Promise<AnalyticsEmit[]> => {
     const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
-    if (!customerId) return;
+    if (!customerId) return [];
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const existing = await (tx as any).subscription.findUnique({ where: { stripeCustomerId: customerId } });
-    if (!existing) return;
+    if (!existing) return [];
 
     // In Stripe v22, the subscription reference is on invoice.parent.subscription_details.subscription.
     const subRef = invoice.parent?.subscription_details?.subscription;
     const subId = typeof subRef === 'string' ? subRef : subRef?.id;
-    if (!subId) return;
+    if (!subId) return [];
 
     const stripe = getStripe();
     const stripeSub = await stripe.subscriptions.retrieve(subId);
     const item = stripeSub.items.data[0];
-    if (!item) return;
+    if (!item) return [];
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (tx as any).subscription.update({
@@ -173,6 +246,17 @@ const handleInvoicePaymentSucceeded = async (
             plan: planFromPriceId(item.price.id),
         },
     });
+
+    // Renewal (recurring cycle), not the first invoice → subscription_renewed.
+    // The first invoice is 'subscription_create' and is covered by checkout.
+    if (invoice.billing_reason !== 'subscription_cycle') return [];
+    const billingPlan = billingPlanFromPriceId(item.price.id);
+    if (!billingPlan) return [];
+    const price = centsToUnits(invoice.amount_paid);
+    const userId = existing.userId as string;
+    return [
+        () => analytics.track(userId, 'subscription_renewed', { billing_plan: billingPlan, price }),
+    ];
 };
 
 const handleInvoicePaymentFailed = async (
@@ -192,18 +276,40 @@ const handleInvoicePaymentFailed = async (
 const handleSubscriptionDeleted = async (
     tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
     sub: Stripe.Subscription,
-): Promise<void> => {
+): Promise<AnalyticsEmit[]> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (tx as any).subscription.updateMany({
         where: { stripeSubId: sub.id },
         data: { status: 'expired' },
     });
+
+    const userId = sub.metadata['userId'];
+    if (!userId) return [];
+
+    const item = sub.items.data[0];
+    const billingPlan = item ? billingPlanFromPriceId(item.price.id) : null;
+    const reason = sub.cancellation_details?.reason ?? undefined;
+
+    const emits: AnalyticsEmit[] = [
+        () => analytics.setUserProps(userId, { plan: 'free' }),
+    ];
+    if (billingPlan) {
+        emits.push(() =>
+            analytics.track(userId, 'subscription_canceled', {
+                billing_plan: billingPlan,
+                ...(reason ? { reason } : {}),
+            }),
+        );
+    }
+    return emits;
 };
 
+// Processes the webhook and returns deferred analytics emits. The caller is
+// expected to ACK Stripe before firing them (see billing.controller.webhook).
 export const handleWebhookEvent = async (
     rawBody: Buffer,
     signature: string,
-): Promise<void> => {
+): Promise<AnalyticsEmit[]> => {
     if (!env.STRIPE_WEBHOOK_SECRET || !env.STRIPE_SECRET_KEY) {
         throw new BadRequestError('BILLING_NOT_CONFIGURED', 'Billing is not configured');
     }
@@ -217,27 +323,36 @@ export const handleWebhookEvent = async (
     }
 
     const duplicate = await subscriptionRepo.findWebhookEvent(event.id);
-    if (duplicate) return;
+    if (duplicate) return [];
 
-    await prisma.$transaction(async (tx) => {
+    return prisma.$transaction(async (tx): Promise<AnalyticsEmit[]> => {
         await subscriptionRepo.recordWebhookEvent(tx, event.id, event.type);
 
         switch (event.type) {
+            case 'checkout.session.completed':
+                return handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
             case 'customer.subscription.created':
-            case 'customer.subscription.updated':
-                await handleSubscriptionUpsert(tx, event.data.object as Stripe.Subscription);
-                break;
+                return handleSubscriptionUpsert(tx, event.data.object as Stripe.Subscription, {
+                    isCreated: true,
+                });
+            case 'customer.subscription.updated': {
+                const previousStatus = (
+                    event.data.previous_attributes as Partial<Stripe.Subscription> | undefined
+                )?.status;
+                return handleSubscriptionUpsert(tx, event.data.object as Stripe.Subscription, {
+                    isCreated: false,
+                    previousStatus,
+                });
+            }
             case 'customer.subscription.deleted':
-                await handleSubscriptionDeleted(tx, event.data.object as Stripe.Subscription);
-                break;
+                return handleSubscriptionDeleted(tx, event.data.object as Stripe.Subscription);
             case 'invoice.payment_succeeded':
-                await handleInvoicePaymentSucceeded(tx, event.data.object as Stripe.Invoice);
-                break;
+                return handleInvoicePaymentSucceeded(tx, event.data.object as Stripe.Invoice);
             case 'invoice.payment_failed':
                 await handleInvoicePaymentFailed(tx, event.data.object as Stripe.Invoice);
-                break;
+                return [];
             default:
-                break;
+                return [];
         }
     });
 };

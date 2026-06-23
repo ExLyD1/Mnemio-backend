@@ -125,6 +125,38 @@ errors. Services translate "not found / not owned" into `AppError` subclasses.
 - `MEDIA_STORAGE=local` — writes to `./uploads/`, served via `@fastify/static`;
   S3 presigned-PUT swap path noted in `services/media.service.ts`.
 
+## Analytics (Mixpanel, server-side)
+
+Server-side Mixpanel is the analytics tool. The client (Nuxt FE) fires UI/funnel
+events and calls `mixpanel.identify(user.id)`; the backend fires the events that
+can only be trusted server-side (revenue, account creation, AI-cap hits,
+activation milestones).
+
+- **Module:** `services/analytics.service.ts` — lazy-init guard (sentry.ts
+  pattern), **no-op when `MIXPANEL_TOKEN` is unset**. `track()` / `setUserProps()`
+  are fire-and-forget (try/catch, never throw, never awaited in a hot path).
+- **Golden rule:** every event uses `distinct_id = user.id` (same id as JWT `sub`
+  / `/auth/me`) so server events merge onto the profile the client built. Never
+  use email as the id.
+- **Typed contract:** `analytics/events.ts` `AnalyticsEvent` union — a hand-kept
+  mirror of the FE's `app/analytics/events.ts`. `track()` is typed against it, so
+  names/props can't drift. Keep both in sync until a shared package exists.
+- **Env:** `MIXPANEL_TOKEN` (project token; required to enable). `MIXPANEL_API_SECRET`
+  optional (historical imports only). Both `.optional()` in `config/env.ts`. One var,
+  **per-environment value**: local `.env` holds the dev project token; production
+  (Railway) injects the prod token — keeps dev test events out of the prod project.
+- **Events wired:** `account_created` (auth.service first-verify / new-OAuth only),
+  `first_value_reached` (milestone.service: first deck/session/review),
+  `ai_cap_reached` (ai.budget.service guard — enrich/generate/suggest only),
+  and the Stripe revenue set in `billing.service.ts`
+  (`subscription_started/renewed/canceled`, `trial_started/converted`).
+- **Webhook rule:** the Stripe handler ACKs **first**, then fires analytics — a
+  Mixpanel outage must never delay/fail the webhook ACK. Add new revenue events by
+  returning more deferred emits from `handleWebhookEvent`, not inline.
+- **Adding an event:** add it to `analytics/events.ts` (+ FE mirror), then call
+  `analytics.track(userId, name, props)` at the action site. snake_case names,
+  no PII, omit absent props (never send `null`).
+
 ## Testing
 
 Vitest, `*.test.ts` under `test/`. Current suites are pure-function only

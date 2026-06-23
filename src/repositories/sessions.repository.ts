@@ -86,6 +86,10 @@ export const findLatestIncomplete = (userId: string) =>
 export const findActiveSession = (userId: string) =>
     prisma.studySession.findFirst({ where: { userId, status: 'active' } });
 
+// Count of completed sessions — used to detect the first-session milestone.
+export const countCompletedSessions = (userId: string): Promise<number> =>
+    prisma.studySession.count({ where: { userId, status: 'complete' } });
+
 export const exitSession = (id: string, userId: string) =>
     prisma.studySession.updateMany({
         where: { id, userId, status: 'active' },
