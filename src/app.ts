@@ -9,6 +9,7 @@ import { prisma } from './db/prisma.js';
 import { registerCleanupJob } from './jobs/cleanup.job.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { initSentry } from './plugins/sentry.js';
+import { initAnalytics } from './services/analytics.service.js';
 import { registerJwt } from './plugins/jwt.js';
 import { registerCookies } from './plugins/cookies.js';
 import authRoutes from './routes/auth.routes.js';
@@ -34,6 +35,8 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     // Initialize Sentry before Fastify so any boot-time uncaught throws still
     // get captured. No-op when SENTRY_DSN is unset.
     initSentry();
+    // Initialize server-side Mixpanel. No-op when MIXPANEL_TOKEN is unset.
+    initAnalytics();
 
     const fastify = Fastify({
         logger: {
