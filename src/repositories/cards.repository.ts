@@ -6,7 +6,9 @@ export const findCardById = (id: string) => prisma.card.findUnique({ where: { id
 export const findCardWithOwner = (id: string) =>
     prisma.card.findUnique({
         where: { id },
-        include: { deck: { select: { authorId: true } } },
+        // isPublic lets the SRS layer allow non-owners to rate cards in a public
+        // deck (their progress is keyed by the rater's userId, never the owner's).
+        include: { deck: { select: { authorId: true, isPublic: true } } },
     });
 
 export type ListCardsParams = {
