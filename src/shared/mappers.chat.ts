@@ -15,11 +15,18 @@ export type PublicMessageStatus = 'complete' | 'partial';
 // Structured side-effect of a tool-use turn. Only 'deck' exists today; the
 // union shape leaves room for future tools (audio, image, study session, …)
 // without breaking the FE contract.
+//
+// `action` distinguishes a freshly-created deck (`create_deck`) from cards
+// appended to an existing one (`add_cards`); `addedCount` is the number of cards
+// just appended (only set for 'appended'). `cardCount` is always the deck's
+// current total so the FE can render/refresh it.
 export type ChatAttachment = {
     type: 'deck';
     deckId: string;
     title: string;
     cardCount: number;
+    action?: 'created' | 'appended';
+    addedCount?: number;
 };
 
 export type PublicMessage = {
@@ -62,8 +69,19 @@ const fromDbAttachments = (raw: unknown): ChatAttachment[] | undefined => {
                 deckId: string;
                 title: string;
                 cardCount: number;
+                action?: unknown;
+                addedCount?: unknown;
             };
-            out.push({ type: 'deck', deckId: o.deckId, title: o.title, cardCount: o.cardCount });
+            out.push({
+                type: 'deck',
+                deckId: o.deckId,
+                title: o.title,
+                cardCount: o.cardCount,
+                ...(o.action === 'created' || o.action === 'appended'
+                    ? { action: o.action }
+                    : {}),
+                ...(typeof o.addedCount === 'number' ? { addedCount: o.addedCount } : {}),
+            });
         }
     }
     return out.length > 0 ? out : undefined;

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as chatRepo from '../src/repositories/chat.repository.js';
+import * as decksRepo from '../src/repositories/decks.repository.js';
 import * as budget from '../src/services/ai.budget.service.js';
 import { sendMessage, __setProviderForTesting } from '../src/services/chat.service.js';
 import { AiProviderError, ChatNotFoundError, AiBudgetExceededError } from '../src/shared/errors.js';
@@ -14,12 +15,16 @@ vi.mock('../src/repositories/chat.repository.js', () => ({
     renameAndTouch: vi.fn(),
     touchLastMessageAt: vi.fn(),
 }));
+vi.mock('../src/repositories/decks.repository.js', () => ({
+    findDeckById: vi.fn(),
+}));
 vi.mock('../src/services/ai.budget.service.js', () => ({
     assertWithinBudget: vi.fn(),
     recordUse: vi.fn(),
 }));
 
 const mockedRepo = vi.mocked(chatRepo);
+const mockedDecksRepo = vi.mocked(decksRepo);
 const mockedBudget = vi.mocked(budget);
 
 const conversationRow = (overrides: Record<string, unknown> = {}) => ({
@@ -202,5 +207,105 @@ describe('chat.service / sendMessage', () => {
 
         expect(mockedRepo.renameAndTouch).not.toHaveBeenCalled();
         expect(mockedRepo.touchLastMessageAt).toHaveBeenCalled();
+    });
+
+    it('with an in-context deckId: exposes add_cards, injects deck context, saves provider content + attachment', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        mockedRepo.createMessage
+            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
+            .mockResolvedValueOnce(
+                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
+            );
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({
+                id: 'ai-msg',
+                role: 'assistant',
+                content: 'Added 2 cards to your deck.',
+                status: 'complete',
+            }) as never,
+        );
+        // Owned deck → deckCtx is built.
+        mockedDecksRepo.findDeckById.mockResolvedValue({
+            id: 'deck-9',
+            authorId: 'u',
+            title: 'My French deck',
+            sourceLanguage: 'en',
+            targetLanguage: 'fr',
+            cardCount: 5,
+        } as never);
+
+        const attachment = {
+            type: 'deck',
+            deckId: 'deck-9',
+            title: 'My French deck',
+            cardCount: 7,
+            action: 'appended',
+            addedCount: 2,
+        };
+        let seenToolNames: string[] = [];
+        let seenPrompt = '';
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenToolNames = (input.tools?.defs ?? []).map((d) => d.name);
+                seenPrompt = input.systemPrompt;
+                // Provider's authoritative (round-2) content + attachment.
+                return {
+                    content: 'Added 2 cards to your deck.',
+                    tokensInput: 1,
+                    tokensOutput: 1,
+                    attachments: [attachment],
+                };
+            }),
+        );
+
+        const result = await sendMessage(
+            'u',
+            'c',
+            'add agua and pan to this deck',
+            () => undefined,
+            { deckId: 'deck-9' },
+        );
+
+        // add_cards is offered alongside create_deck, and the deck context is injected.
+        expect(seenToolNames).toContain('add_cards');
+        expect(seenToolNames).toContain('create_deck');
+        expect(seenPrompt).toContain('My French deck');
+        // Saved message = provider content (round-2 authoritative) + attachment.
+        expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith(
+            expect.objectContaining({
+                content: 'Added 2 cards to your deck.',
+                attachments: [attachment],
+            }),
+        );
+        expect(result.assistantMessage.content).toBe('Added 2 cards to your deck.');
+    });
+
+    it('does NOT expose add_cards when no deckId is supplied', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        mockedRepo.createMessage
+            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
+            .mockResolvedValueOnce(
+                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
+            );
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
+        );
+        let seenToolNames: string[] = [];
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenToolNames = (input.tools?.defs ?? []).map((d) => d.name);
+                return { content: 'ok', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', 'hello', () => undefined);
+
+        expect(seenToolNames).toContain('create_deck');
+        expect(seenToolNames).not.toContain('add_cards');
+        expect(mockedDecksRepo.findDeckById).not.toHaveBeenCalled();
     });
 });

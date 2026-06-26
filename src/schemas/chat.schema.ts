@@ -13,6 +13,9 @@ export const renameConversationSchema = z.object({
 
 export const sendMessageSchema = z.object({
     content: z.string().trim().min(1).max(4000),
+    // The deck the user currently has open, if any. Unlocks the add_cards tool
+    // so "add these words to this deck" appends instead of creating a new deck.
+    deckId: z.string().uuid().optional(),
 });
 
 export const listConversationsQuerySchema = z.object({

@@ -82,6 +82,7 @@ export const sendMessage = async (
             request.params.id,
             input.content,
             () => undefined,
+            input.deckId ? { deckId: input.deckId } : {},
         );
         reply.send(result);
         return reply;
@@ -128,6 +129,7 @@ export const sendMessage = async (
                         break;
                 }
             },
+            input.deckId ? { deckId: input.deckId } : {},
         );
     } catch (err) {
         // The service already finalized the partial assistant row before

@@ -12,6 +12,7 @@ import {
     type PublicMessage,
 } from '../shared/mappers.chat.js';
 import * as chatRepo from '../repositories/chat.repository.js';
+import * as decksRepo from '../repositories/decks.repository.js';
 import * as budget from './ai.budget.service.js';
 import { mockProvider } from './ai.provider.mock.js';
 import { anthropicProvider } from './ai.provider.anthropic.js';
@@ -21,11 +22,15 @@ import type {
     ChatToolOutcome,
     ChatToolsConfig,
 } from './ai.provider.js';
-import { CHAT_SYSTEM_PROMPT, autoTitle } from './chat.prompt.js';
+import { buildChatSystemPrompt, autoTitle, type ChatDeckContext } from './chat.prompt.js';
 import {
     CREATE_DECK_TOOL_DEF,
+    ADD_CARDS_TOOL_DEF,
     runCreateDeck,
+    runAddCards,
     type CreateDeckToolInput,
+    type AddCardsToolInput,
+    type ToolResult,
 } from './chat.tools.js';
 import type { ChatAttachment } from '../shared/mappers.chat.js';
 
@@ -141,33 +146,42 @@ export type SendMessageStreamFrame =
           tokensOutput: number;
       };
 
+// Maps a tool handler's ToolResult to the provider-facing ChatToolOutcome. The
+// model gets the same JSON the FE will render so it can mention the title/id in
+// its follow-up text.
+const toOutcome = (result: ToolResult): ChatToolOutcome =>
+    result.ok
+        ? {
+              ok: true,
+              data: result.attachment,
+              resultJson: JSON.stringify({ ok: true, ...result.attachment }),
+          }
+        : {
+              ok: false,
+              data: { reason: result.reason },
+              resultJson: JSON.stringify({ ok: false, reason: result.reason }),
+          };
+
 // Builds the tools config the provider receives. Lives here (not in
-// chat.tools.ts) because it closes over the per-request userId — each call
-// to runCreateDeck is scoped to who actually sent the message.
-const toolsForUser = (userId: string): ChatToolsConfig => ({
-    defs: [CREATE_DECK_TOOL_DEF],
+// chat.tools.ts) because it closes over the per-request userId + the in-context
+// deck — each tool run is scoped to who sent the message. add_cards is exposed
+// ONLY when a deck is open, and the deckId comes from that context (never the
+// model), so the model can't append to an arbitrary deck.
+const toolsForUser = (userId: string, deckCtx?: ChatDeckContext): ChatToolsConfig => ({
+    defs: deckCtx ? [CREATE_DECK_TOOL_DEF, ADD_CARDS_TOOL_DEF] : [CREATE_DECK_TOOL_DEF],
     run: async (call): Promise<ChatToolOutcome> => {
-        if (call.name !== 'create_deck') {
-            return {
-                ok: false,
-                data: { reason: `Unknown tool: ${call.name}` },
-                resultJson: JSON.stringify({ ok: false, reason: 'UNKNOWN_TOOL' }),
-            };
+        if (call.name === 'create_deck') {
+            return toOutcome(await runCreateDeck(userId, call.input as CreateDeckToolInput));
         }
-        const result = await runCreateDeck(userId, call.input as CreateDeckToolInput);
-        if (result.ok) {
-            return {
-                ok: true,
-                data: result.attachment,
-                // The model gets the same JSON the FE will render — it can
-                // mention the title/id in its follow-up text.
-                resultJson: JSON.stringify({ ok: true, ...result.attachment }),
-            };
+        if (call.name === 'add_cards' && deckCtx) {
+            return toOutcome(
+                await runAddCards(userId, deckCtx.deckId, call.input as AddCardsToolInput),
+            );
         }
         return {
             ok: false,
-            data: { reason: result.reason },
-            resultJson: JSON.stringify({ ok: false, reason: result.reason }),
+            data: { reason: `Unknown tool: ${call.name}` },
+            resultJson: JSON.stringify({ ok: false, reason: 'UNKNOWN_TOOL' }),
         };
     },
 });
@@ -186,6 +200,7 @@ export const sendMessage = async (
     conversationId: string,
     content: string,
     onFrame: (frame: SendMessageStreamFrame) => void,
+    opts: { deckId?: string } = {},
 ): Promise<{
     userMessage: PublicMessage;
     assistantMessage: PublicMessage;
@@ -199,6 +214,22 @@ export const sendMessage = async (
     // Budget check BEFORE we persist anything. We don't charge for messages
     // that 429.
     await budget.assertWithinBudget(userId, 'chat');
+
+    // Resolve the in-context deck (the one the user is viewing). Ownership-scoped
+    // — a deckId the user doesn't own is silently ignored, so add_cards simply
+    // stays unavailable rather than leaking that the deck exists.
+    let deckCtx: ChatDeckContext | undefined;
+    if (opts.deckId) {
+        const deck = await decksRepo.findDeckById(opts.deckId, userId);
+        if (deck) {
+            deckCtx = {
+                deckId: deck.id,
+                title: deck.title,
+                sourceLanguage: deck.sourceLanguage,
+                targetLanguage: deck.targetLanguage,
+            };
+        }
+    }
 
     // Is this the auto-title turn?
     const priorUserCount = await chatRepo.countUserMessages(conversationId);
@@ -244,9 +275,9 @@ export const sendMessage = async (
         const result = await provider().chat(
             {
                 messages: turnsForModel,
-                systemPrompt: CHAT_SYSTEM_PROMPT,
+                systemPrompt: buildChatSystemPrompt(deckCtx),
                 maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
-                tools: toolsForUser(userId),
+                tools: toolsForUser(userId, deckCtx),
             },
             {
                 onEvent: (event: ChatStreamEvent) => {
@@ -270,10 +301,11 @@ export const sendMessage = async (
                 },
             },
         );
-        // Belt-and-suspenders: if the provider didn't fire token events for
-        // some reason but returned content (mock path with no onEvent, JSON
-        // controller, …), use the returned content.
-        if (buffer.length === 0 && result.content.length > 0) {
+        // The provider returns the AUTHORITATIVE answer — on a tool call that's
+        // the post-tool-result text only, so a premature "added it" preamble
+        // streamed live never makes it into the saved message. Prefer it; fall
+        // back to the streamed buffer only if the provider returned nothing.
+        if (result.content.length > 0) {
             buffer = result.content;
         }
         tokensInput = result.tokensInput;

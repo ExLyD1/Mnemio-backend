@@ -623,7 +623,11 @@ const chat = async (
     opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
 
     return {
-        content: round1.content + round2.content,
+        // Round-2 ONLY. Round-1 is the pre-tool turn; any text there is a neutral
+        // preamble, never a result. The authoritative answer is generated in
+        // round 2 with the tool_result in context, so it reflects the real
+        // outcome (success or failure) — never a confirmation without a write.
+        content: round2.content,
         tokensInput,
         tokensOutput,
         ...(outcome.ok ? { attachments: [outcome.data] } : {}),
