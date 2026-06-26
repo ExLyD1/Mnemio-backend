@@ -13,6 +13,7 @@
 import * as aiService from './ai.service.js';
 import * as decksService from './decks.service.js';
 import * as cardsService from './cards.service.js';
+import * as decksRepo from '../repositories/decks.repository.js';
 import * as prefsRepo from '../repositories/preferences.repository.js';
 import type { AiCardDraft } from './ai.provider.js';
 import type { ChatAttachment } from '../shared/mappers.chat.js';
@@ -27,6 +28,14 @@ export type CreateDeckToolInput = {
     title?: string;
     sourceLanguage?: string;
     targetLanguage?: string;
+    count?: number;
+};
+
+// add_cards targets the deck the user is viewing — the backend supplies the
+// deckId and the deck's languages, so the model only chooses the content.
+export type AddCardsToolInput = {
+    topic?: string;
+    words?: string[];
     count?: number;
 };
 
@@ -53,6 +62,27 @@ export const CREATE_DECK_TOOL_DEF = {
             sourceLanguage: { type: 'string' as const },
             targetLanguage: { type: 'string' as const },
             count: { type: 'integer' as const, minimum: 3, maximum: 20 },
+        },
+        required: [] as string[],
+        additionalProperties: false,
+    },
+} as const;
+
+export const ADD_CARDS_TOOL_DEF = {
+    name: 'add_cards',
+    description:
+        'Add new cards to the deck the user is CURRENTLY VIEWING (do not create ' +
+        'a new deck). Use when the user asks to add a word or words, or to add ' +
+        'more cards on a theme, to "this deck"/"my deck". Pass `words` when the ' +
+        'user listed them; pass `topic` to generate more cards on a theme. The ' +
+        'target deck and its languages are supplied by the app — you only choose ' +
+        'the content. Only available when a deck is open.',
+    input_schema: {
+        type: 'object' as const,
+        properties: {
+            topic: { type: 'string' as const },
+            words: { type: 'array' as const, items: { type: 'string' as const } },
+            count: { type: 'integer' as const, minimum: 1, maximum: 20 },
         },
         required: [] as string[],
         additionalProperties: false,
@@ -114,6 +144,7 @@ const persistDeck = async (
         deckId: deck.id,
         title: deck.title,
         cardCount: cards.length,
+        action: 'created',
     };
 };
 
@@ -181,6 +212,72 @@ export const runCreateDeck = async (
         // AppError → keep the original `code` so the FE error catalog still
         // maps it (AI_BUDGET_EXCEEDED, AI_PROVIDER_ERROR, etc.). Unknown
         // errors surface as a generic reason and avoid leaking stacks.
+        if (err instanceof AppError) {
+            return { ok: false, reason: err.code };
+        }
+        return { ok: false, reason: 'INTERNAL' };
+    }
+};
+
+// Append cards to an existing, owned deck. `deckId` comes from the in-context
+// deck the user is viewing (supplied by chat.service), never from the model, so
+// it can't target an arbitrary deck. Mirrors runCreateDeck but reuses the deck's
+// own languages and persists via cardsService.bulkCreate (ownership check,
+// positions, cardCount recompute, achievements all handled there).
+export const runAddCards = async (
+    userId: string,
+    deckId: string,
+    input: AddCardsToolInput,
+): Promise<ToolResult> => {
+    const hasWords = Array.isArray(input.words) && input.words.length > 0;
+    const hasTopic = typeof input.topic === 'string' && input.topic.trim().length > 0;
+    if (!hasWords && !hasTopic) {
+        return { ok: false, reason: 'NEEDS_WORDS_OR_TOPIC' };
+    }
+
+    try {
+        // Ownership + source of truth for languages. findDeckById is authorId-scoped.
+        const deck = await decksRepo.findDeckById(deckId, userId);
+        if (!deck) return { ok: false, reason: 'DECK_NOT_FOUND' };
+
+        const sourceLanguage = deck.sourceLanguage;
+        const targetLanguage = deck.targetLanguage;
+
+        const cards: AiCardDraft[] = hasWords
+            ? (
+                  await aiService.enrichWords(userId, {
+                      words: input.words!,
+                      sourceLanguage,
+                      targetLanguage,
+                  })
+              ).cards
+            : (
+                  await aiService.generateDeck(userId, {
+                      topic: input.topic!,
+                      sourceLanguage,
+                      targetLanguage,
+                      ...(input.count ? { count: input.count } : {}),
+                  })
+              ).cards;
+
+        await cardsService.bulkCreate(userId, deckId, {
+            cards: cards.map(cardFromDraft),
+        });
+
+        // Re-read for the deck's new total (bulkCreate recomputes cardCount).
+        const fresh = await decksRepo.findDeckById(deckId, userId);
+        return {
+            ok: true,
+            attachment: {
+                type: 'deck',
+                deckId,
+                title: deck.title,
+                cardCount: fresh?.cardCount ?? cards.length,
+                action: 'appended',
+                addedCount: cards.length,
+            },
+        };
+    } catch (err) {
         if (err instanceof AppError) {
             return { ok: false, reason: err.code };
         }

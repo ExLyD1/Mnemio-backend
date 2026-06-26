@@ -138,3 +138,72 @@ describe('ai.provider.mock / chat with tools', () => {
         expect(result.attachments).toBeUndefined();
     });
 });
+
+describe('ai.provider.mock / chat — add_cards + no-false-success guarantee', () => {
+    const deckToolDef = {
+        name: 'create_deck',
+        description: 'create a deck',
+        input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
+    };
+    const addToolDef = {
+        name: 'add_cards',
+        description: 'add cards',
+        input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
+    };
+
+    it('routes to add_cards (not create_deck) when a deck is open and the user says "add"', async () => {
+        const events: ChatStreamEvent[] = [];
+        const runMock = vi.fn().mockResolvedValue({
+            ok: true,
+            data: { type: 'deck', deckId: 'd1', title: 'X', cardCount: 7, action: 'appended', addedCount: 2 },
+            resultJson: '{}',
+        });
+        const result = await mockProvider.chat(
+            {
+                messages: [{ role: 'user', content: 'add agua and pan to this deck' }],
+                systemPrompt: '',
+                maxOutputTokens: 1024,
+                tools: { defs: [deckToolDef, addToolDef], run: runMock },
+            },
+            { onEvent: (e) => events.push(e) },
+        );
+        const toolUse = events.find((e) => e.type === 'tool_use');
+        expect(toolUse && (toolUse as { call: { name: string } }).call.name).toBe('add_cards');
+        expect(result.attachments?.[0]).toMatchObject({ action: 'appended', addedCount: 2 });
+    });
+
+    it('authoritative content excludes the pre-tool preamble and never claims success on failure', async () => {
+        const runMock = vi.fn().mockResolvedValue({
+            ok: false,
+            data: { reason: 'DECK_NOT_FOUND' },
+            resultJson: '{}',
+        });
+        const result = await mockProvider.chat({
+            messages: [{ role: 'user', content: 'add agua to this deck' }],
+            systemPrompt: '',
+            maxOutputTokens: 1024,
+            tools: { defs: [deckToolDef, addToolDef], run: runMock },
+        });
+        // The saved/authoritative content is the post-tool text only — the
+        // "On it…" preamble is not in it, and a failed tool yields no "added".
+        expect(result.content.toLowerCase()).not.toContain('on it');
+        expect(result.content.toLowerCase()).not.toContain('added');
+        expect(result.attachments).toBeUndefined();
+    });
+
+    it('on success, the success line is the post-tool content (preamble still excluded)', async () => {
+        const runMock = vi.fn().mockResolvedValue({
+            ok: true,
+            data: { type: 'deck', deckId: 'd1', title: 'X', cardCount: 7, action: 'appended', addedCount: 2 },
+            resultJson: '{}',
+        });
+        const result = await mockProvider.chat({
+            messages: [{ role: 'user', content: 'add agua to this deck' }],
+            systemPrompt: '',
+            maxOutputTokens: 1024,
+            tools: { defs: [deckToolDef, addToolDef], run: runMock },
+        });
+        expect(result.content.toLowerCase()).toContain('added');
+        expect(result.content.toLowerCase()).not.toContain('on it');
+    });
+});

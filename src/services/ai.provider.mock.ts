@@ -111,35 +111,47 @@ export const mockProvider: AiProvider = {
         // FE can exercise tool_use/tool_result frames too.
         const lastUserTurn = [...input.messages].reverse().find((m) => m.role === 'user');
         const lastUserText = lastUserTurn?.content ?? '';
-        const wantsDeck =
-            !!input.tools &&
-            input.tools.defs.some((d) => d.name === 'create_deck') &&
-            /\b(create|deck|make)\b/i.test(lastUserText);
+        const hasAdd = !!input.tools?.defs.some((d) => d.name === 'add_cards');
+        const hasCreate = !!input.tools?.defs.some((d) => d.name === 'create_deck');
+        // "add" routes to add_cards (only offered when a deck is open); otherwise
+        // a create/deck/make request routes to create_deck.
+        const wantsAdd = hasAdd && /\badd\b/i.test(lastUserText);
+        const wantsDeck = hasCreate && /\b(create|deck|make)\b/i.test(lastUserText);
 
-        if (wantsDeck) {
-            const intro = ['One moment', ', creating that deck', '.'];
+        if (input.tools && (wantsAdd || wantsDeck)) {
+            const call = wantsAdd
+                ? { name: 'add_cards', input: { words: ['sample'] } }
+                : { name: 'create_deck', input: { topic: 'Sample topic' } };
+
+            // Pre-tool preamble: neutral, never a completion claim, and NOT part
+            // of the authoritative reply (the FE clears it on tool_use).
+            const intro = wantsAdd ? ['On it', '…'] : ['One moment', '…'];
             for (const delta of intro) {
                 opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
             }
-            const call = { name: 'create_deck', input: { topic: 'Sample topic' } };
             opts?.onEvent?.({ type: 'tool_use', call } satisfies ChatStreamEvent);
-            const outcome = await input.tools!.run(call);
+            const outcome = await input.tools.run(call);
             opts?.onEvent?.({
                 type: 'tool_result',
-                name: 'create_deck',
+                name: call.name,
                 ok: outcome.ok,
                 data: outcome.data,
             } satisfies ChatStreamEvent);
+
+            // Post-tool reply is the AUTHORITATIVE content — only here can it
+            // claim success, and only when the tool actually succeeded.
             const outro = outcome.ok
-                ? [' Done', ' — added it', ' to your library.']
-                : [' Sorry', ', I couldn\'t finish that.'];
+                ? wantsAdd
+                    ? ['Added', ' those cards', ' to your deck.']
+                    : ['Done', ' — created your deck.']
+                : ['Sorry', ', I couldn\'t finish that.'];
             for (const delta of outro) {
                 opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
             }
             const meta = { tokensInput: 0, tokensOutput: 0 };
             opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
             return {
-                content: intro.concat(outro).join(''),
+                content: outro.join(''),
                 tokensInput: meta.tokensInput,
                 tokensOutput: meta.tokensOutput,
                 ...(outcome.ok ? { attachments: [outcome.data] } : {}),

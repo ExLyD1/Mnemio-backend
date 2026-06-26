@@ -384,14 +384,16 @@ type ChatMessage = {
 };
 
 // Structured side-effect produced when the chat model called a tool. Today
-// the only kind is 'deck' (the create_deck tool). Future tools (audio,
-// image, study session…) extend this discriminated union without breaking
-// the FE contract.
+// the only kind is 'deck' (the create_deck / add_cards tools). Future tools
+// (audio, image, study session…) extend this discriminated union without
+// breaking the FE contract.
 type ChatAttachment = {
   type: 'deck';
   deckId: string;
   title: string;
-  cardCount: number;
+  cardCount: number;                  // the deck's CURRENT total after the tool ran
+  action?: 'created' | 'appended';    // 'created' = create_deck, 'appended' = add_cards
+  addedCount?: number;                // cards just appended (only on action: 'appended')
 };
 ```
 
@@ -1307,7 +1309,13 @@ Hard delete. Cascades to all messages.
 Append a user message and stream the assistant reply.
 ```ts
 // Request
-{ content: string }                 // 1..4000 chars (trimmed)
+{
+  content: string;                  // 1..4000 chars (trimmed)
+  deckId?: string;                  // uuid — the deck the user currently has OPEN.
+                                    // When present (and owned), unlocks the
+                                    // add_cards tool so "add these words to this
+                                    // deck" appends instead of creating a new deck.
+}
 ```
 
 **SSE response** (when `Accept: text/event-stream` or `?stream=1`):
@@ -1321,19 +1329,25 @@ data: {
 event: token
 data: { delta: string }             // one event per provider chunk
 
-# Optional pair — emitted only when the model calls a tool (today: create_deck).
+# Optional pair — emitted only when the model calls a tool.
+# Tools: create_deck (always) and add_cards (only when the request carried a
+# deckId the user owns).
 event: tool_use
-data: { name: 'create_deck', input: { topic?, words?, sourceLanguage?, ... } }
+data: { name: 'create_deck' | 'add_cards', input: { topic?, words?, ... } }
 
 event: tool_result
 data: {
-  name: 'create_deck',
+  name: 'create_deck' | 'add_cards',
   ok: boolean,                       // true on success
   data: ChatAttachment | { reason: string }  // attachment on ok:true, reason on ok:false
 }
 
-# More `event: token` frames may follow as the model writes its follow-up
-# text after the tool runs.
+# IMPORTANT (BUG-2506-12): any tokens streamed BEFORE `tool_use` are a neutral
+# pre-tool preamble, NOT a result — the FE should clear them on `tool_use` and
+# render the post-`tool_result` tokens. The persisted `assistantMessage.content`
+# is the post-tool text only, so a "added it" confirmation can never appear
+# without a matching successful `tool_result`. More `event: token` frames follow
+# after the tool runs.
 
 event: done
 data: {
@@ -1347,21 +1361,26 @@ event: error                         // mid-stream failure
 data: { code: string, message: string, details?: object }
 ```
 
-**Tool semantics:** when the model decides the user wants a deck
-(explicit words, topic request, "make me a deck"…), it calls
-`create_deck`. The backend runs it via the existing `enrich-words` or
-`generate-deck` pipeline and persists a real `Deck` + `Card[]` owned by
-the caller. The SSE stream emits `tool_use` → `tool_result`, then more
-`token` frames as the model writes its confirmation. The final
-`assistantMessage.attachments` contains
-`[{ type: 'deck', deckId, title, cardCount }]` — the FE already renders
-this as a clickable link card.
+**Tool semantics:** two deck tools, chosen by the model:
+- **`create_deck`** — when the user wants a NEW deck (explicit words, topic
+  request, "make me a deck"…). Persists a fresh `Deck` + `Card[]`; attachment
+  `action: 'created'`.
+- **`add_cards`** — appends to the deck the user is viewing. Offered **only**
+  when the request carried a `deckId` the caller owns; the target deckId comes
+  from that context (never from the model), and the new cards use the deck's
+  own languages. Persists `Card[]` onto the existing deck via the same
+  bulk-create path; attachment `action: 'appended'`, `addedCount: N`, and
+  `cardCount` = the deck's new total.
 
-If the tool fails (`ok: false`), no attachment is persisted, the model
-writes a text apology, and `assistantMessage.attachments` is omitted.
-The user is still charged one `chat` budget unit. The underlying error
-code lives in `tool_result.data.reason` (`AI_BUDGET_EXCEEDED`,
-`AI_PROVIDER_ERROR`, `INTERNAL`, etc.).
+Both run via the existing `enrich-words` / `generate-deck` pipeline. The final
+`assistantMessage.attachments` carries the affected deck so the FE can render a
+link card and refresh the open deck.
+
+If the tool fails (`ok: false`), no attachment is persisted, the model writes a
+text apology (post-tool), and `assistantMessage.attachments` is omitted. The
+user is still charged one `chat` budget unit. The error code lives in
+`tool_result.data.reason` (`AI_BUDGET_EXCEEDED`, `DECK_NOT_FOUND`,
+`NEEDS_WORDS_OR_TOPIC`, `AI_PROVIDER_ERROR`, `INTERNAL`, …).
 
 After an `event: error` the assistant message stays in the database with
 `status: 'partial'` and whatever text we got before the failure. The user
