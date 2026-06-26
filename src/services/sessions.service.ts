@@ -15,8 +15,13 @@ export const start = async (
     ownerId: string,
     input: CreateSessionInput,
 ): Promise<PublicSession> => {
-    const deck = await decksRepo.findDeckById(input.deckId, ownerId);
-    if (!deck) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    // Owners study their own decks; anyone may study a public deck. The session
+    // row itself belongs to the requester (userId = ownerId), so a viewer's
+    // session never touches the owner's data. Private decks 404 for non-owners.
+    const deck = await decksRepo.findDeckByIdUnscoped(input.deckId);
+    if (!deck || (deck.authorId !== ownerId && !deck.isPublic)) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
 
     const cards = await sessionsRepo.listDeckCardIds(input.deckId);
     if (cards.length === 0) {

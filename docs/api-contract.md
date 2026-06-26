@@ -47,7 +47,7 @@ unless it says so explicitly.
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
 | 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
-| 9 | Ownership is checked at the repo layer — listing/getting/modifying someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. |
+| 9 | Ownership is checked at the repo layer — listing/**modifying** someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. **Exception (public decks):** an authenticated non-owner may **read, study, and rate** a deck with `isPublic = true` — `GET /decks/:id`, `POST /sessions`, and `POST /srs/rate` succeed. SRS is keyed by `(requesterId, cardId)`, so each studier has fully independent progress and a viewer never touches the owner's. **Writes stay owner-only** (`PATCH`/`DELETE` deck, all card create/update/delete). Flipping `isPublic = false` re-locks read/study/rate immediately (back to `404`); previously-written viewer SRS rows persist but become unreachable. |
 | 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
 | 11 | Every auth response (`login`, `verify-email`, `refresh`, `me`) now carries `welcome: { hasDeck, hasSession, hasReviewed }` — use it for dashboard variant selection instead of fanning out three count probes from the FE. |
 | 12 | `/imports/*` and `/ai/*` share a per-user daily-cap rollup in `ai_usage`. A user can hit the import cap without affecting AI calls and vice versa — distinct error codes (`IMPORT_BUDGET_EXCEEDED` vs `AI_BUDGET_EXCEEDED`). |
@@ -611,15 +611,22 @@ Example (after `npm run seed`):
 The FE's Deck Detail page, study queue, and Add Card flow all assume the entire
 card list is present, so the deck detail returns cards **inline** rather than
 paged. Hard cap is 1000 (matches the FE per-deck limit).
+
+Returns to the **owner** OR any authenticated user when the deck is
+`isPublic = true` (see invariant #9). `role`/`isOwner` tell the FE which UI to
+render; `stats` always reflect **the requester's** SRS, never the owner's. A
+private deck 404s for non-owners.
 ```ts
 // Query: ?cardsLimit?=number(<=1000)  default 1000
 
 // 200 Response
 {
-  deck: Deck;
-  cards: Card[];              // sorted by (position ASC, id ASC), up to cap
+  deck: Deck;                // deck.stats = the REQUESTER's progress
+  cards: Card[];             // sorted by (position ASC, id ASC), up to cap
+  role: 'owner' | 'viewer';
+  isOwner: boolean;
 }
-// Errors: 404 DECK_NOT_FOUND
+// Errors: 404 DECK_NOT_FOUND   (also when a non-owner requests a private deck)
 ```
 Example:
 ```json

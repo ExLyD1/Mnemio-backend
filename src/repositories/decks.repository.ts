@@ -50,6 +50,13 @@ export const countDecks = ({ ownerId, q }: Pick<ListDecksParams, 'ownerId' | 'q'
 export const findDeckById = (id: string, ownerId: string) =>
     prisma.deck.findFirst({ where: { id, authorId: ownerId } });
 
+// Ownership-agnostic lookup. Callers MUST enforce access themselves: a deck is
+// readable/studyable by a non-owner only when `isPublic` is true. Used by the
+// public-deck study paths (deck detail, session start) where the viewer may not
+// be the owner.
+export const findDeckByIdUnscoped = (id: string) =>
+    prisma.deck.findUnique({ where: { id } });
+
 export type DeckCreateData = {
     title: string;
     description: string;

@@ -20,10 +20,14 @@ export const rate = async (
     ownerId: string,
     input: { cardId: string; rating: Rating },
 ): Promise<PublicCardProgress> => {
-    // Ownership: user must own the deck the card belongs to.
+    // Access: the rater must own the card's deck OR the deck must be public.
+    // The progress row is keyed by (ownerId = rater, cardId), so two users
+    // studying the same shared deck keep fully independent SRS — a viewer's
+    // ratings never touch the owner's progress. Private decks stay 403 for
+    // non-owners, which also re-locks the moment isPublic flips to false.
     const card = await cardsRepo.findCardWithOwner(input.cardId);
     if (!card) throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
-    if (card.deck.authorId !== ownerId) {
+    if (card.deck.authorId !== ownerId && !card.deck.isPublic) {
         throw new ForbiddenError('CARD_FORBIDDEN', 'You do not own this card');
     }
 
