@@ -77,8 +77,13 @@ else the field), an optional 1-glyph emoji, and N high-quality cards.
 Each card has the same fields as enrich (definition is required; phonetic /
 partOfSpeech / example / exampleTranslation / tags / difficulty optional).
 
-Pick words that are useful for a learner around the requested topic. Avoid
-duplicates and trivial synonyms. Order from easier to harder.
+If the topic names or implies a specific set of items (e.g. "names of X",
+"the capitals of Y", a species/category the caller clearly means to
+enumerate), the cards MUST be those actual items — do not substitute generic
+themed vocabulary instead of the real entities the topic asks for. Only fall
+back to generic learner vocabulary around the topic when the topic is
+genuinely open-ended and does not name a specific set. Avoid duplicates and
+trivial synonyms. Order from easier to harder.
 
 Call the emit_deck tool exactly once.
 `.trim();
