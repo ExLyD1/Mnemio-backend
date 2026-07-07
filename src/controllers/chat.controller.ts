@@ -75,6 +75,11 @@ export const sendMessage = async (
 ) => {
     const input = sendMessageSchema.parse(request.body);
 
+    const opts = {
+        ...(input.deckId ? { deckId: input.deckId } : {}),
+        ...(input.locale ? { locale: input.locale } : {}),
+    };
+
     if (!wantsSse(request)) {
         // Non-streaming: collect frames into the final response shape.
         const result = await chatService.sendMessage(
@@ -82,7 +87,7 @@ export const sendMessage = async (
             request.params.id,
             input.content,
             () => undefined,
-            input.deckId ? { deckId: input.deckId } : {},
+            opts,
         );
         reply.send(result);
         return reply;
@@ -129,7 +134,7 @@ export const sendMessage = async (
                         break;
                 }
             },
-            input.deckId ? { deckId: input.deckId } : {},
+            opts,
         );
     } catch (err) {
         // The service already finalized the partial assistant row before

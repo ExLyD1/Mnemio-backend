@@ -308,4 +308,29 @@ describe('chat.service / sendMessage', () => {
         expect(seenToolNames).not.toContain('add_cards');
         expect(mockedDecksRepo.findDeckById).not.toHaveBeenCalled();
     });
+
+    it('threads opts.locale into the system prompt', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        mockedRepo.createMessage
+            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
+            .mockResolvedValueOnce(
+                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
+            );
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'Привіт!' }) as never,
+        );
+        let seenPrompt = '';
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenPrompt = input.systemPrompt;
+                return { content: 'Привіт!', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', 'Привіт', () => undefined, { locale: 'uk' });
+
+        expect(seenPrompt).toContain('"uk"');
+    });
 });

@@ -154,7 +154,14 @@ const toOutcome = (result: ToolResult): ChatToolOutcome =>
         ? {
               ok: true,
               data: result.attachment,
-              resultJson: JSON.stringify({ ok: true, ...result.attachment }),
+              // `words` grounds the model's round-2 reply in the actual
+              // persisted cards (not just the title/count) — it's only in the
+              // tool_result JSON the model sees, not the FE-facing attachment.
+              resultJson: JSON.stringify({
+                  ok: true,
+                  ...result.attachment,
+                  words: result.words.slice(0, 10),
+              }),
           }
         : {
               ok: false,
@@ -167,11 +174,17 @@ const toOutcome = (result: ToolResult): ChatToolOutcome =>
 // deck — each tool run is scoped to who sent the message. add_cards is exposed
 // ONLY when a deck is open, and the deckId comes from that context (never the
 // model), so the model can't append to an arbitrary deck.
-const toolsForUser = (userId: string, deckCtx?: ChatDeckContext): ChatToolsConfig => ({
+const toolsForUser = (
+    userId: string,
+    deckCtx?: ChatDeckContext,
+    locale?: string | null,
+): ChatToolsConfig => ({
     defs: deckCtx ? [CREATE_DECK_TOOL_DEF, ADD_CARDS_TOOL_DEF] : [CREATE_DECK_TOOL_DEF],
     run: async (call): Promise<ChatToolOutcome> => {
         if (call.name === 'create_deck') {
-            return toOutcome(await runCreateDeck(userId, call.input as CreateDeckToolInput));
+            return toOutcome(
+                await runCreateDeck(userId, call.input as CreateDeckToolInput, locale),
+            );
         }
         if (call.name === 'add_cards' && deckCtx) {
             return toOutcome(
@@ -200,7 +213,7 @@ export const sendMessage = async (
     conversationId: string,
     content: string,
     onFrame: (frame: SendMessageStreamFrame) => void,
-    opts: { deckId?: string } = {},
+    opts: { deckId?: string; locale?: string | null } = {},
 ): Promise<{
     userMessage: PublicMessage;
     assistantMessage: PublicMessage;
@@ -275,9 +288,9 @@ export const sendMessage = async (
         const result = await provider().chat(
             {
                 messages: turnsForModel,
-                systemPrompt: buildChatSystemPrompt(deckCtx),
+                systemPrompt: buildChatSystemPrompt(deckCtx, opts.locale),
                 maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
-                tools: toolsForUser(userId, deckCtx),
+                tools: toolsForUser(userId, deckCtx, opts.locale),
             },
             {
                 onEvent: (event: ChatStreamEvent) => {

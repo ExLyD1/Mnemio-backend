@@ -1,10 +1,21 @@
 import { z } from 'zod';
+import { normalizeLang } from '../shared/lang.js';
 
+// Accepts free-form language input ("English", "uk-UA") and normalizes to an
+// ISO 639-1 code so the FE's code-keyed <select> always has a match.
 const langSchema = z
     .string()
     .trim()
     .min(2, 'Language code is required')
-    .max(10);
+    .max(10)
+    .transform((v, ctx) => {
+        const code = normalizeLang(v);
+        if (!code) {
+            ctx.addIssue({ code: 'custom', message: 'Unrecognized language' });
+            return z.NEVER;
+        }
+        return code;
+    });
 
 // P2 cosmetic / discovery fields. All optional; default to null when unset.
 const coverColorSchema = z

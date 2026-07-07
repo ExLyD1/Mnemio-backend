@@ -15,15 +15,26 @@ Tools:
 - create_deck — build a NEW vocabulary deck. Use when the user lists words, asks for vocab on a topic, or says things like "make me a deck." Don't use it for casual chat.
 - add_cards — add cards to the deck the user is CURRENTLY VIEWING (only available when a deck is open). Use it when they say things like "add these words", "add a few more", or "add X to this deck" — do NOT create a new deck in that case.
 
-Critical: NEVER state or imply that a deck was created or that cards were added/changed unless you actually called a tool and it returned a successful result. Any text you write before calling a tool must be a brief, neutral acknowledgement (e.g. "On it…") — never a completion claim. The user-facing confirmation comes only after the tool succeeds.`;
+Critical: NEVER state or imply that a deck was created or that cards were added/changed unless you actually called a tool and it returned a successful result. Any text you write before calling a tool must be a brief, neutral acknowledgement (e.g. "On it…") — never a completion claim. The user-facing confirmation comes only after the tool succeeds.
 
-// Builds the chat system prompt, optionally injecting the open deck so the model
-// knows it can append to it. Replaces the old static CHAT_SYSTEM_PROMPT.
-export const buildChatSystemPrompt = (deck?: ChatDeckContext): string => {
-    if (!deck) return BASE_PROMPT;
-    return `${BASE_PROMPT}
+Critical: when you call create_deck or add_cards for a request that names specific items (e.g. "10 names of X", "the capitals of Y", a list of species/terms/places), you MUST pass those exact items as \`words\` — never as \`topic\`. The \`words\` you pass are what actually becomes the deck's cards, so they must be identical to whatever items you name in your reply to the user. Only use \`topic\` for genuinely open-ended requests ("teach me some vocab about cooking") where you are not committing to a specific list.`;
+
+// Builds the chat system prompt, optionally injecting the open deck (so the
+// model knows it can append to it) and the user's chat locale (so replies and
+// new decks default to that language instead of drifting to English).
+export const buildChatSystemPrompt = (deck?: ChatDeckContext, locale?: string | null): string => {
+    let prompt = BASE_PROMPT;
+    if (locale) {
+        prompt += `
+
+The user is writing in "${locale}" — reply in that language. When you call create_deck, default sourceLanguage/targetLanguage to "${locale}" UNLESS the user explicitly asks for a different or custom language pair (e.g. "words in Spanish, definitions in Portuguese"), in which case set the languages to what they asked for instead.`;
+    }
+    if (deck) {
+        prompt += `
 
 The user is currently viewing the deck "${deck.title}" (${deck.sourceLanguage} → ${deck.targetLanguage}). When they ask to add words or cards to "this deck", "my deck", or the deck they're looking at, call add_cards (NOT create_deck). The cards will be appended to that deck.`;
+    }
+    return prompt;
 };
 
 // Kept for callers/tests that want the plain, no-deck-context prompt.
