@@ -138,6 +138,52 @@ describe('chat.tools / runCreateDeck — language defaults', () => {
             targetLanguage: 'ja',
         });
     });
+
+    it('defaults source to the chat locale, and target falls back to it too when prefs are empty', async () => {
+        mPrefs.findOrCreate.mockResolvedValue(fakePref());
+        await runCreateDeck('u1', { words: ['слово'] }, 'uk');
+        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+            words: ['слово'],
+            sourceLanguage: 'uk',
+            targetLanguage: 'uk',
+        });
+    });
+
+    it('locale sets the source but the learning-language preference still wins for target', async () => {
+        mPrefs.findOrCreate.mockResolvedValue(fakePref({ learningLanguages: ['fr'] }));
+        await runCreateDeck('u1', { words: ['слово'] }, 'uk');
+        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+            words: ['слово'],
+            sourceLanguage: 'uk',
+            targetLanguage: 'fr',
+        });
+    });
+
+    it('an explicit model-provided language pair overrides the locale', async () => {
+        mPrefs.findOrCreate.mockResolvedValue(fakePref());
+        await runCreateDeck(
+            'u1',
+            { words: ['palavra'], sourceLanguage: 'es', targetLanguage: 'pt' },
+            'uk',
+        );
+        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+            words: ['palavra'],
+            sourceLanguage: 'es',
+            targetLanguage: 'pt',
+        });
+    });
+
+    it('normalizes full language names / region tags to ISO codes', async () => {
+        mPrefs.findOrCreate.mockResolvedValue(
+            fakePref({ nativeLanguage: 'English', learningLanguages: ['uk-UA'] }),
+        );
+        await runCreateDeck('u1', { words: ['agua'] });
+        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+            words: ['agua'],
+            sourceLanguage: 'en',
+            targetLanguage: 'uk',
+        });
+    });
 });
 
 describe('chat.tools / runCreateDeck — words branch', () => {
@@ -179,6 +225,7 @@ describe('chat.tools / runCreateDeck — words branch', () => {
                 ]),
             }),
         );
+        expect((r as { ok: true; words: string[] }).words).toEqual(['agua', 'pan']);
     });
 
     it('prefers the explicit input.title when given', async () => {
@@ -228,6 +275,35 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
             cardCount: 2,
             action: 'created',
         });
+        expect((r as { ok: true; words: string[] }).words).toEqual(['café', 'leche']);
+    });
+
+    it('retries once when the first draft fails the count sanity check, then persists the retry', async () => {
+        mAi.generateDeck
+            .mockResolvedValueOnce({
+                title: 'Rivers',
+                description: '',
+                sourceLanguage: 'en',
+                targetLanguage: 'es',
+                cards: [],
+            } as never)
+            .mockResolvedValueOnce({
+                title: 'Rivers',
+                description: '',
+                sourceLanguage: 'en',
+                targetLanguage: 'es',
+                cards: [
+                    { word: 'a', definition: '1' },
+                    { word: 'b', definition: '2' },
+                ],
+            } as never);
+        mDecks.create.mockResolvedValue(fakeDeck({ id: 'deck-8', title: 'Rivers' }));
+
+        const r = await runCreateDeck('u1', { topic: 'river parrots', count: 2 });
+
+        expect(mAi.generateDeck).toHaveBeenCalledTimes(2);
+        expect(r.ok).toBe(true);
+        expect((r as { ok: true; words: string[] }).words).toEqual(['a', 'b']);
     });
 });
 
