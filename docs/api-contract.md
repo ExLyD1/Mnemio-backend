@@ -1315,6 +1315,11 @@ Append a user message and stream the assistant reply.
                                     // When present (and owned), unlocks the
                                     // add_cards tool so "add these words to this
                                     // deck" appends instead of creating a new deck.
+  locale?: string;                  // the chat/UI language, e.g. "uk", "en-US".
+                                    // Normalized to an ISO 639-1 code server-side.
+                                    // Drives the reply language and the default
+                                    // create_deck/add_cards language pair when the
+                                    // user doesn't ask for a specific one.
 }
 ```
 
@@ -1375,6 +1380,26 @@ data: { code: string, message: string, details?: object }
 Both run via the existing `enrich-words` / `generate-deck` pipeline. The final
 `assistantMessage.attachments` carries the affected deck so the FE can render a
 link card and refresh the open deck.
+
+**Content matching the chat text:** the model is instructed to pass `words` —
+the exact items it names in its reply — for any enumerable request ("10 names
+of X", a specific list/category); `topic` is reserved for genuinely open-ended
+requests. This keeps the persisted cards in sync with what Mimi told the user.
+The `tool_result` JSON the model sees (not the FE-facing attachment) also
+includes the first ~10 persisted `words`, so the model's post-tool reply is
+grounded in what was actually saved rather than re-deriving it from memory.
+The `topic` branch (`generateDeck`) additionally gets one deterministic retry
+if the draft comes back empty or well short of the requested `count`.
+
+**Language:** `create_deck`/`add_cards` resolve source/target languages with
+this precedence: an explicit pair the model passes (honoring a custom request
+like "words in Spanish, definitions in Portuguese") wins; otherwise the
+request's `locale` is the default; otherwise the user's saved preferences;
+otherwise a hardcoded fallback. Every language value (`locale`, model output,
+and `Deck.sourceLanguage`/`targetLanguage`/`Preference` fields) is normalized
+to an ISO 639-1 code (`src/shared/lang.ts`) before persisting — full names like
+"English" are mapped to `en` — so the FE's code-keyed language `<select>`
+always has a match.
 
 If the tool fails (`ok: false`), no attachment is persisted, the model writes a
 text apology (post-tool), and `assistantMessage.attachments` is omitted. The
