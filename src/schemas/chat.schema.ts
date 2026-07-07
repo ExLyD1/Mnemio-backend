@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeLang } from '../shared/lang.js';
 
 export const createConversationSchema = z.object({
     title: z.string().trim().min(1).max(120).optional(),
@@ -16,6 +17,16 @@ export const sendMessageSchema = z.object({
     // The deck the user currently has open, if any. Unlocks the add_cards tool
     // so "add these words to this deck" appends instead of creating a new deck.
     deckId: z.string().uuid().optional(),
+    // The UI/chat language (e.g. "uk", "en-US"), normalized to an ISO 639-1
+    // code. Drives the reply language and the default deck language for
+    // create_deck/add_cards when the user doesn't ask for a specific pair.
+    locale: z
+        .string()
+        .trim()
+        .min(2)
+        .max(10)
+        .transform((v) => normalizeLang(v))
+        .optional(),
 });
 
 export const listConversationsQuerySchema = z.object({
