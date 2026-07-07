@@ -19,6 +19,7 @@ import type { AiCardDraft } from './ai.provider.js';
 import type { ChatAttachment } from '../shared/mappers.chat.js';
 import { AppError } from '../shared/errors.js';
 import type { CreateCardInput } from '../schemas/card.schema.js';
+import { normalizeLang } from '../shared/lang.js';
 
 // ---------- Public types ----------
 
@@ -40,7 +41,11 @@ export type AddCardsToolInput = {
 };
 
 export type ToolResult =
-    | { ok: true; attachment: ChatAttachment }
+    // `words` is the final, persisted card list — carried alongside the
+    // attachment (not inside it) so chat.service can ground the model's
+    // round-2 reply in exactly what was saved, without changing the FE-facing
+    // attachment shape.
+    | { ok: true; attachment: ChatAttachment; words: string[] }
     | { ok: false; reason: string };
 
 // ---------- Tool definition advertised to the model ----------
@@ -50,9 +55,15 @@ export const CREATE_DECK_TOOL_DEF = {
     description:
         'Create a study-ready vocabulary deck for the user when they ' +
         'explicitly ask to build one, paste a list of words to learn, or ' +
-        'ask for vocab on a topic. Pass `words` when the user listed them; ' +
-        'pass `topic` otherwise. Languages default to the user\'s ' +
-        'preferences when omitted. Do NOT call for casual chat.',
+        'ask for vocab on a topic. Pass `words` — the exact items you will ' +
+        'name in your reply — for any enumerable request (a specific count ' +
+        'of items, a named list, "the X of Y", specific species/terms/' +
+        'places). Only pass `topic` for genuinely open-ended requests where ' +
+        'you are not committing to a specific list (e.g. "some vocab about ' +
+        'cooking"). The `words` you pass become the deck\'s cards verbatim, ' +
+        'so they MUST match what you tell the user. Languages default to ' +
+        'the user\'s chat language, or preferences, when omitted. Do NOT ' +
+        'call for casual chat.',
     input_schema: {
         type: 'object' as const,
         properties: {
@@ -95,19 +106,27 @@ const DEFAULT_SOURCE = 'en';
 const DEFAULT_TARGET = 'es';
 const DEFAULT_TITLE_FALLBACK = 'Vocabulary deck';
 
-// Pulls languages out of Preference rows. If the user hasn't filled in a
-// preference yet (anonymous-feeling defaults), we pick the safest pair —
-// en→es is what most users will want first anyway.
+// Resolves the source/target language pair. Precedence: what the model
+// explicitly passed (it may honor a custom pair the user asked for) wins;
+// otherwise the chat's locale is the default (so a Ukrainian chat gets a
+// Ukrainian deck instead of silently falling back to en/es); otherwise the
+// user's saved preferences; otherwise the hardcoded fallback. Every source is
+// normalized to an ISO 639-1 code so decks never persist "English"/"Ukrainian".
 const resolveDefaults = async (
     userId: string,
     input: CreateDeckToolInput,
+    locale?: string | null,
 ): Promise<{ sourceLanguage: string; targetLanguage: string }> => {
     const pref = await prefsRepo.findOrCreate(userId);
     const sourceLanguage =
-        input.sourceLanguage ?? pref.nativeLanguage ?? DEFAULT_SOURCE;
+        normalizeLang(input.sourceLanguage) ??
+        normalizeLang(locale) ??
+        normalizeLang(pref.nativeLanguage) ??
+        DEFAULT_SOURCE;
     const targetLanguage =
-        input.targetLanguage ??
-        pref.learningLanguages[0] ??
+        normalizeLang(input.targetLanguage) ??
+        normalizeLang(pref.learningLanguages[0]) ??
+        normalizeLang(locale) ??
         DEFAULT_TARGET;
     return { sourceLanguage, targetLanguage };
 };
@@ -129,22 +148,25 @@ const persistDeck = async (
     userId: string,
     meta: { title: string; description?: string; sourceLanguage: string; targetLanguage: string },
     cards: AiCardDraft[],
-): Promise<ChatAttachment> => {
+): Promise<{ attachment: ChatAttachment; words: string[] }> => {
     const deck = await decksService.create(userId, {
         title: meta.title,
         description: meta.description ?? '',
-        sourceLanguage: meta.sourceLanguage,
-        targetLanguage: meta.targetLanguage,
+        sourceLanguage: normalizeLang(meta.sourceLanguage) ?? meta.sourceLanguage,
+        targetLanguage: normalizeLang(meta.targetLanguage) ?? meta.targetLanguage,
     });
     await cardsService.bulkCreate(userId, deck.id, {
         cards: cards.map(cardFromDraft),
     });
     return {
-        type: 'deck',
-        deckId: deck.id,
-        title: deck.title,
-        cardCount: cards.length,
-        action: 'created',
+        attachment: {
+            type: 'deck',
+            deckId: deck.id,
+            title: deck.title,
+            cardCount: cards.length,
+            action: 'created',
+        },
+        words: cards.map((c) => c.word),
     };
 };
 
@@ -157,9 +179,37 @@ const titleForWordList = (input: CreateDeckToolInput, targetLanguage: string): s
     return `${targetLanguage.toUpperCase()} vocabulary`;
 };
 
+// Deterministic sanity check on a topic-branch draft: non-empty, and (when a
+// count was requested) not wildly off from it. Catches a provider glitch that
+// returns an empty or near-empty deck without needing an LLM judge.
+const isDraftAcceptable = (cards: AiCardDraft[], requestedCount?: number): boolean => {
+    if (cards.length === 0) return false;
+    if (!requestedCount) return true;
+    const min = Math.max(1, Math.ceil(requestedCount / 2));
+    return cards.length >= min;
+};
+
+// Wraps aiService.generateDeck with one deterministic retry if the draft
+// fails the sanity check above (e.g. the provider returned zero cards).
+const generateDeckWithRetry = async (
+    userId: string,
+    params: Parameters<typeof aiService.generateDeck>[1],
+) => {
+    const first = await aiService.generateDeck(userId, params);
+    if (isDraftAcceptable(first.cards, params.count)) return first;
+    console.warn('[chat.tools] generateDeck draft failed sanity check, retrying', {
+        topic: params.topic,
+        requestedCount: params.count,
+        got: first.cards.length,
+    });
+    const retry = await aiService.generateDeck(userId, params);
+    return isDraftAcceptable(retry.cards, params.count) ? retry : first;
+};
+
 export const runCreateDeck = async (
     userId: string,
     input: CreateDeckToolInput,
+    locale?: string | null,
 ): Promise<ToolResult> => {
     // Require at least one of words/topic — the JSON schema is loose so the
     // model doesn't get confused by oneOf, but we tighten here.
@@ -173,7 +223,17 @@ export const runCreateDeck = async (
     }
 
     try {
-        const { sourceLanguage, targetLanguage } = await resolveDefaults(userId, input);
+        const { sourceLanguage, targetLanguage } = await resolveDefaults(userId, input, locale);
+        console.log('[chat.tools] create_deck', {
+            hasWords,
+            hasTopic,
+            wordsCount: input.words?.length ?? 0,
+            topic: input.topic,
+            locale,
+            sourceLanguage,
+            targetLanguage,
+            requestedCount: input.count,
+        });
 
         if (hasWords) {
             const enriched = await aiService.enrichWords(userId, {
@@ -182,22 +242,27 @@ export const runCreateDeck = async (
                 targetLanguage,
             });
             const title = titleForWordList(input, targetLanguage);
-            const attachment = await persistDeck(
+            const { attachment, words } = await persistDeck(
                 userId,
                 { title, sourceLanguage, targetLanguage },
                 enriched.cards,
             );
-            return { ok: true, attachment };
+            console.log('[chat.tools] create_deck persisted', {
+                deckId: attachment.deckId,
+                cardCount: words.length,
+                firstWords: words.slice(0, 10),
+            });
+            return { ok: true, attachment, words };
         }
 
         // topic branch
-        const draft = await aiService.generateDeck(userId, {
+        const draft = await generateDeckWithRetry(userId, {
             topic: input.topic!,
             sourceLanguage,
             targetLanguage,
             ...(input.count ? { count: input.count } : {}),
         });
-        const attachment = await persistDeck(
+        const { attachment, words } = await persistDeck(
             userId,
             {
                 title: input.title ?? draft.title ?? DEFAULT_TITLE_FALLBACK,
@@ -207,7 +272,12 @@ export const runCreateDeck = async (
             },
             draft.cards,
         );
-        return { ok: true, attachment };
+        console.log('[chat.tools] create_deck persisted', {
+            deckId: attachment.deckId,
+            cardCount: words.length,
+            firstWords: words.slice(0, 10),
+        });
+        return { ok: true, attachment, words };
     } catch (err) {
         // AppError → keep the original `code` so the FE error catalog still
         // maps it (AI_BUDGET_EXCEEDED, AI_PROVIDER_ERROR, etc.). Unknown
@@ -252,7 +322,7 @@ export const runAddCards = async (
                   })
               ).cards
             : (
-                  await aiService.generateDeck(userId, {
+                  await generateDeckWithRetry(userId, {
                       topic: input.topic!,
                       sourceLanguage,
                       targetLanguage,
@@ -276,6 +346,7 @@ export const runAddCards = async (
                 action: 'appended',
                 addedCount: cards.length,
             },
+            words: cards.map((c) => c.word),
         };
     } catch (err) {
         if (err instanceof AppError) {
