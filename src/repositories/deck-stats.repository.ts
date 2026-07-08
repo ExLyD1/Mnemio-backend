@@ -13,6 +13,14 @@ export type DeckStatsRow = {
  * with zeros (LEFT JOIN). `mastered`/`learning`/`due` derive from
  * CardProgress rows scoped to {userId, deckId}; `new` is computed in the
  * service layer as `cardCount - (mastered + learning)`.
+ *
+ * Mastery is keyed on `repetitions >= 3` — the same threshold the frontend uses
+ * for the per-card status dot (`useSpacedRepetition` / CardRow), so the deck's
+ * mastered-% and its individual card markers always agree. (Previously this used
+ * `interval >= 21`, which disagreed with the card dots and left decks showing 0%
+ * mastered even after several successful passes — BUG-0706-12 / -21.)
+ * Since this INNER JOINs card_progresses, every counted card already has a
+ * progress row, so `learning` is simply "has progress but not yet mastered".
  */
 export const aggregateDeckStats = async (
     userId: string,
@@ -25,8 +33,8 @@ export const aggregateDeckStats = async (
     >`
         SELECT
             c."deckId" AS "deckId",
-            COUNT(*) FILTER (WHERE cp."interval" >= 21)                              AS mastered,
-            COUNT(*) FILTER (WHERE cp."interval" > 0 AND cp."interval" < 21)         AS learning,
+            COUNT(*) FILTER (WHERE cp."repetitions" >= 3)                            AS mastered,
+            COUNT(*) FILTER (WHERE cp."repetitions" < 3)                             AS learning,
             COUNT(*) FILTER (WHERE cp."nextReviewAt" <= now())                       AS due
           FROM cards c
           JOIN card_progresses cp

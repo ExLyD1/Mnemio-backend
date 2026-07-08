@@ -173,8 +173,8 @@ type User = {
 
 type DeckStats = {
   total: number;          // = cardCount
-  mastered: number;       // cards with interval ≥ 21 days
-  learning: number;       // has progress but interval < 21
+  mastered: number;       // cards reviewed to mastery (repetitions ≥ 3) — matches the FE card dot
+  learning: number;       // has a progress row but not yet mastered (repetitions < 3)
   new: number;            // cards without a CardProgress row
   due: number;            // cards due now (nextReviewAt ≤ now)
   masteredPct: number;    // 0..100, rounded
