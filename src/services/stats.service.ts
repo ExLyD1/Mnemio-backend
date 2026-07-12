@@ -2,8 +2,14 @@ import { prisma } from '../db/prisma.js';
 import * as activityRepo from '../repositories/activity.repository.js';
 import * as srsRepo from '../repositories/srs.repository.js';
 import * as deckStatsRepo from '../repositories/deck-stats.repository.js';
+import * as sessionsRepo from '../repositories/sessions.repository.js';
 import { buildStats } from '../shared/mappers.deck.js';
+import { tzDayKey, tzDayKeysEndingOn, tzWindowLowerBoundUtc } from './tz.js';
 import type { StatsRange } from '../schemas/stats.schema.js';
+
+// 'all' has no fixed window; per-day series mirror getSeries and cap 'all' at
+// 365 points so the x-axis stays bounded.
+const ALL_RANGE_SERIES_DAYS = 365;
 
 const utcMidnight = (d: Date) => {
     const x = new Date(d);
@@ -260,3 +266,142 @@ export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
 
 // helper exported for tests/sessions; daysBetween kept for future use
 export const _daysBetween = daysBetween;
+
+// ---------- Study-time series (item 2) ----------
+//
+// Per-day total study time, summing *completed* session durations bucketed by
+// the user's local calendar day. Same shape/range handling as getSeries (one
+// point per day incl. zeros, oldest → today), with `value` in milliseconds.
+
+export type StatsSeries = { range: StatsRange; unit: 'ms'; points: StatsSeriesPoint[] };
+
+// Pure: sum durationMs into local-day buckets, keeping only days on the scaffold.
+export const bucketDurationByTzDay = (
+    rows: { durationMs: number; completedAt: Date }[],
+    tz: string,
+    labels: string[],
+): StatsSeriesPoint[] => {
+    const allowed = new Set(labels);
+    const sums = new Map<string, number>();
+    for (const r of rows) {
+        const key = tzDayKey(r.completedAt, tz);
+        if (!allowed.has(key)) continue;
+        sums.set(key, (sums.get(key) ?? 0) + Math.max(0, r.durationMs));
+    }
+    return labels.map((label) => ({ label, value: sums.get(label) ?? 0 }));
+};
+
+export const studyTime = async (
+    userId: string,
+    range: StatsRange,
+    tz: string,
+): Promise<StatsSeries> => {
+    const now = new Date();
+    const days = rangeDays(range) ?? ALL_RANGE_SERIES_DAYS;
+    const labels = tzDayKeysEndingOn(now, tz, days);
+    const fromUtc = tzWindowLowerBoundUtc(now, tz, days);
+
+    const rows = await sessionsRepo.findCompletedSessionsForStats(userId, fromUtc);
+    return { range, unit: 'ms', points: bucketDurationByTzDay(rows, tz, labels) };
+};
+
+// ---------- Decks studied in range (item 4) ----------
+//
+// For the range, the decks that had a completed session: title, session count,
+// cards reviewed (sum of cardsStudied), and last-studied time. Sorted by
+// lastStudiedAt DESC. Same `{ items }` envelope as getDecks (plus `range`).
+
+export type StatsDeckStudied = {
+    deckId: string;
+    title: string;
+    sessionCount: number;
+    cardsReviewed: number;
+    lastStudiedAt: string; // ISO 8601 UTC
+};
+
+// Pure: group completed sessions by deck. `labelSet === null` means the 'all'
+// range (no local-day filter — every completed session counts).
+export const aggregateDecksStudied = (
+    rows: { deckId: string; title: string; cardsStudied: number; completedAt: Date }[],
+    tz: string,
+    labelSet: Set<string> | null,
+): StatsDeckStudied[] => {
+    const byDeck = new Map<
+        string,
+        { title: string; sessionCount: number; cardsReviewed: number; lastMs: number }
+    >();
+    for (const r of rows) {
+        if (labelSet && !labelSet.has(tzDayKey(r.completedAt, tz))) continue;
+        const cur = byDeck.get(r.deckId) ?? {
+            title: r.title,
+            sessionCount: 0,
+            cardsReviewed: 0,
+            lastMs: 0,
+        };
+        cur.title = r.title;
+        cur.sessionCount += 1;
+        cur.cardsReviewed += Math.max(0, r.cardsStudied);
+        cur.lastMs = Math.max(cur.lastMs, r.completedAt.getTime());
+        byDeck.set(r.deckId, cur);
+    }
+    return [...byDeck.entries()]
+        .map(([deckId, v]) => ({
+            deckId,
+            title: v.title,
+            sessionCount: v.sessionCount,
+            cardsReviewed: v.cardsReviewed,
+            lastStudiedAt: new Date(v.lastMs).toISOString(),
+        }))
+        .sort((a, b) => b.lastStudiedAt.localeCompare(a.lastStudiedAt));
+};
+
+export const decksStudied = async (
+    userId: string,
+    range: StatsRange,
+    tz: string,
+): Promise<{ range: StatsRange; items: StatsDeckStudied[] }> => {
+    const now = new Date();
+    const days = rangeDays(range);
+
+    let fromUtc: Date | null = null;
+    let labelSet: Set<string> | null = null;
+    if (days !== null) {
+        labelSet = new Set(tzDayKeysEndingOn(now, tz, days));
+        fromUtc = tzWindowLowerBoundUtc(now, tz, days);
+    }
+
+    const rows = await sessionsRepo.findCompletedSessionsForStats(userId, fromUtc);
+    return { range, items: aggregateDecksStudied(rows, tz, labelSet) };
+};
+
+// ---------- Card-count series (item 3) — STUB ----------
+//
+// TODO(item-3): the metric is undecided — "cards reviewed per day" already
+// exists as getSeries; item 3 is a *different* series (candidates: total cards
+// studied/day, cumulative mastered over time, or new cards added/day). The
+// endpoint + response shape are final so the FE can wire the chart now; until
+// the metric is chosen this returns the day scaffold at value 0 with
+// `pending: true` and `metric: null`. When implementing, drop `pending`, set
+// `metric`, and fill `value` — the shape already matches getSeries/studyTime.
+export type StatsCardSeries = {
+    range: StatsRange;
+    pending: boolean;
+    metric: string | null;
+    points: StatsSeriesPoint[];
+};
+
+export const cardSeries = async (
+    _userId: string,
+    range: StatsRange,
+    tz: string,
+): Promise<StatsCardSeries> => {
+    const now = new Date();
+    const days = rangeDays(range) ?? ALL_RANGE_SERIES_DAYS;
+    const labels = tzDayKeysEndingOn(now, tz, days);
+    return {
+        range,
+        pending: true,
+        metric: null,
+        points: labels.map((label) => ({ label, value: 0 })),
+    };
+};

@@ -8,6 +8,9 @@ const statsRoutes = async (fastify: FastifyInstance) => {
     fastify.get('/stats/series', statsController.series);
     fastify.get('/stats/activity', statsController.activity);
     fastify.get('/stats/decks', statsController.decks);
+    fastify.get('/stats/study-time', statsController.studyTime);
+    fastify.get('/stats/decks-studied', statsController.decksStudied);
+    fastify.get('/stats/card-series', statsController.cardSeries);
 };
 
 export default statsRoutes;

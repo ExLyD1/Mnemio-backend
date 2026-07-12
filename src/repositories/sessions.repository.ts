@@ -61,6 +61,7 @@ export const completeSession = (
         correctAnswers: number;
         cardIndex: number;
         correct: number;
+        durationMs: number;
     },
 ) =>
     prisma.studySession.updateMany({
@@ -72,6 +73,7 @@ export const completeSession = (
             correctAnswers: data.correctAnswers,
             cardIndex: data.cardIndex,
             correct: data.correct,
+            durationMs: data.durationMs,
             endedAt: new Date(),
             completedAt: new Date(),
         },
@@ -112,3 +114,44 @@ export const incrementUserXp = (userId: string, xp: number) =>
         where: { id: userId },
         data: { xp: { increment: xp } },
     });
+
+// One row per *completed* session, for the session-based stats aggregations
+// (study-time series + decks-studied). Only completed sessions carry a
+// meaningful durationMs / cardsStudied and a real completedAt, and each session
+// completes exactly once, so grouping these rows can never double-count.
+// `fromUtc` is a loose lower bound on completedAt to narrow the scan; the caller
+// decides final range membership by local day key.
+export type CompletedSessionStatRow = {
+    deckId: string;
+    title: string;
+    durationMs: number;
+    cardsStudied: number;
+    completedAt: Date;
+};
+
+export const findCompletedSessionsForStats = async (
+    userId: string,
+    fromUtc: Date | null,
+): Promise<CompletedSessionStatRow[]> => {
+    const rows = await prisma.studySession.findMany({
+        where: {
+            userId,
+            status: 'complete',
+            ...(fromUtc ? { completedAt: { gte: fromUtc } } : {}),
+        },
+        select: {
+            deckId: true,
+            durationMs: true,
+            cardsStudied: true,
+            completedAt: true,
+            deck: { select: { title: true } },
+        },
+    });
+    return rows.map((r) => ({
+        deckId: r.deckId,
+        title: r.deck.title,
+        durationMs: r.durationMs,
+        cardsStudied: r.cardsStudied,
+        completedAt: r.completedAt,
+    }));
+};
