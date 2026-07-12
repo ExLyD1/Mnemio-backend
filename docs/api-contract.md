@@ -23,7 +23,7 @@ integrate every endpoint below today.
 | SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
 | Dashboard | `GET /dashboard` |
 | Achievements | `GET /achievements` |
-| Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` |
+| Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
 | AI | `POST /ai/generate-deck` · `POST /ai/suggest` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
@@ -760,6 +760,67 @@ Per-deck performance for the Statistics screen.
 > Note: until a per-rating event log lands (post-P1), `retention` and
 > `reviewed` come from `CardProgress.repetitions` as a proxy. Matches the FE's
 > current `useDeckStats` heuristic — same numbers either way.
+
+#### Session-based stats — timezone note
+`/stats/study-time`, `/stats/decks-studied`, and `/stats/card-series` aggregate
+**completed study sessions** (not the DailyActivity rollup) and bucket by the
+user's **local calendar day**. Pass `tz` as an IANA zone (e.g. `Europe/Kyiv`);
+omitted → `UTC`; an unknown zone → `400 VALIDATION_ERROR`. `range` handling
+matches the other stats endpoints (`7 | 30 | 90 | all`, default `30`); per-day
+series cap `all` at 365 points. Only completed sessions are counted and each
+session completes once, so nothing is double-counted. Session `durationMs` is
+persisted on `POST /sessions/:id/complete` (the client's PATCHed active duration
+if any, else wall-clock since `startedAt`).
+
+#### `GET /stats/study-time`  *(auth)*  — item 2
+Per-day total study time (sum of completed-session durations), local-day
+bucketed. Same shape/range handling as `/stats/series`; one point per day
+including zeros, oldest → today. `value` is **milliseconds**.
+```ts
+// Query: ?range?=7|30|90|all (default 30) &tz?=<IANA> (default UTC)
+// 200 Response
+{
+  range: '7' | '30' | '90' | 'all';
+  unit: 'ms';
+  points: { label: string; value: number }[];  // label='YYYY-MM-DD' local; value=ms
+}
+```
+
+#### `GET /stats/decks-studied`  *(auth)*  — item 4
+Decks with at least one completed session in the range. Sorted by
+`lastStudiedAt` DESC. `cardsReviewed` = sum of `cardsStudied` across the deck's
+sessions in range.
+```ts
+// Query: ?range?=7|30|90|all (default 30) &tz?=<IANA> (default UTC)
+// 200 Response
+{
+  range: '7' | '30' | '90' | 'all';
+  items: {
+    deckId: string;
+    title: string;
+    sessionCount: number;
+    cardsReviewed: number;
+    lastStudiedAt: string;   // ISO 8601 UTC
+  }[];
+}
+```
+
+#### `GET /stats/card-series`  *(auth)*  — item 3 (STUB)
+Placeholder for the second card chart — the metric is undecided (cards
+studied/day vs cumulative mastered vs new added). Shape is final so the FE can
+wire the chart now; until the metric is chosen, `pending: true`, `metric: null`,
+and every `value` is `0`. When it lands, `pending`/`metric` update and `value`
+fills — no shape change.
+```ts
+// Query: ?range?=7|30|90|all (default 30) &tz?=<IANA> (default UTC)
+// 200 Response
+{
+  range: '7' | '30' | '90' | 'all';
+  pending: boolean;                 // true until the metric is implemented
+  metric: string | null;           // null now; e.g. 'mastered_cumulative' later
+  points: { label: string; value: number }[];  // day scaffold; value 0 for now
+}
+```
 
 ### Discover  *(P2)*
 

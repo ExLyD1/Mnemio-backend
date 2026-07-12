@@ -10,6 +10,17 @@ import type { CreateSessionInput, UpdateSessionInput } from '../schemas/session.
 export const computeXp = (correct: number, completed: boolean): number =>
     correct * 10 + (completed ? 25 : 0);
 
+// Session duration persisted on completion (powers /stats/study-time). Prefer a
+// duration the client already reported via PATCH /sessions/:id (it reflects real
+// active study time, excluding pauses); otherwise fall back to wall-clock
+// elapsed since the session started. Never negative.
+export const resolveDurationMs = (
+    reportedDurationMs: number,
+    startedAt: Date,
+    now: Date,
+): number =>
+    reportedDurationMs > 0 ? reportedDurationMs : Math.max(0, now.getTime() - startedAt.getTime());
+
 export const start = async (
     ownerId: string,
     input: CreateSessionInput,
@@ -70,6 +81,7 @@ export const complete = async (
     const xp = computeXp(session.correct, true);
     const cardsStudied = session.cardIds.length;
     const correctAnswers = session.correct;
+    const durationMs = resolveDurationMs(session.durationMs, session.startedAt, new Date());
 
     const { count } = await sessionsRepo.completeSession(sessionId, ownerId, {
         xpAwarded: xp,
@@ -77,6 +89,7 @@ export const complete = async (
         correctAnswers,
         cardIndex: cardsStudied,
         correct: correctAnswers,
+        durationMs,
     });
     if (count === 0) {
         throw new BadRequestError('SESSION_NOT_ACTIVE', 'Session was no longer active');
