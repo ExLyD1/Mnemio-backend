@@ -7,7 +7,7 @@ import {
     parseLimit,
     type PageWithTotal,
 } from '../shared/pagination.js';
-import { NotFoundError } from '../shared/errors.js';
+import { assertDeckAccessible } from './deck-visibility.js';
 import {
     toPublicDeckWithAuthor,
     buildStats,
@@ -82,8 +82,9 @@ export const categories = async (): Promise<{ items: { subject: string; count: n
 };
 
 export const copy = async (viewerId: string, sourceDeckId: string): Promise<PublicDeck> => {
-    const source = await discoverRepo.findPublicDeckById(sourceDeckId);
-    if (!source) throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
+    // Same access rule as deck-detail: a non-owner can copy a public deck; a
+    // private deck they don't own 404s (not 403) so it isn't enumerable.
+    const source = assertDeckAccessible(await discoverRepo.findDeckById(sourceDeckId), viewerId);
 
     // Atomic: clone deck + cards + bump source copyCount.
     const newDeckId = await prisma.$transaction(async (tx) => {

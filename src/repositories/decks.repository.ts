@@ -50,6 +50,11 @@ export const countDecks = ({ ownerId, q }: Pick<ListDecksParams, 'ownerId' | 'q'
 export const findDeckById = (id: string, ownerId: string) =>
     prisma.deck.findFirst({ where: { id, authorId: ownerId } });
 
+// Viewer-agnostic lookup by id. Access control (owner-or-public) is applied in
+// the service via assertDeckAccessible — this must NOT filter by owner, or
+// public decks would 404 for non-owners.
+export const findDeckByIdAny = (id: string) => prisma.deck.findUnique({ where: { id } });
+
 export type DeckCreateData = {
     title: string;
     description: string;
@@ -81,7 +86,7 @@ export const createDeck = (ownerId: string, data: DeckCreateData) =>
             description: data.description,
             sourceLanguage: data.sourceLanguage,
             targetLanguage: data.targetLanguage,
-            isPublic: data.isPublic ?? false,
+            isPublic: data.isPublic ?? true, // public-by-default (see DEFAULT_IS_PUBLIC)
             coverColor: data.coverColor ?? null,
             glyph: data.glyph ?? null,
             subject: data.subject ?? null,

@@ -8,6 +8,7 @@ import {
     type PageWithTotal,
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
+import { DEFAULT_IS_PUBLIC, assertDeckAccessible } from './deck-visibility.js';
 import {
     toPublicDeck,
     toPublicCard,
@@ -73,7 +74,7 @@ export const create = async (ownerId: string, input: CreateDeckInput): Promise<P
         description: input.description ?? '',
         sourceLanguage: input.sourceLanguage,
         targetLanguage: input.targetLanguage,
-        isPublic: input.isPublic ?? false,
+        isPublic: input.isPublic ?? DEFAULT_IS_PUBLIC,
         coverColor: input.coverColor ?? null,
         glyph: input.glyph ?? null,
         subject: input.subject ?? null,
@@ -88,17 +89,20 @@ export const create = async (ownerId: string, input: CreateDeckInput): Promise<P
 const MAX_INLINE_CARDS = 1000;
 
 export const getOne = async (
-    ownerId: string,
+    viewerId: string,
     deckId: string,
     query: DeckDetailQuery,
 ): Promise<{ deck: PublicDeck; cards: PublicCard[] }> => {
-    const deck = await decksRepo.findDeckById(deckId, ownerId);
-    if (!deck) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    // Owner-or-public access: a private deck the viewer doesn't own 404s (not
+    // 403), so it isn't enumerable. Fetch viewer-agnostically, then guard.
+    const deck = assertDeckAccessible(await decksRepo.findDeckByIdAny(deckId), viewerId);
 
     const cap = query.cardsLimit ?? MAX_INLINE_CARDS;
     const [rows, statsRows] = await Promise.all([
         cardsRepo.listAllCardsForDeck(deckId, cap),
-        deckStatsRepo.aggregateDeckStats(ownerId, [deckId]),
+        // Stats are viewer-scoped: a non-owner viewing a public deck has no
+        // CardProgress rows, so they see neutral (all-new) stats.
+        deckStatsRepo.aggregateDeckStats(viewerId, [deckId]),
     ]);
     const stats = buildStats(deck.cardCount, statsRows[0]);
 

@@ -41,7 +41,7 @@ integrate every endpoint below today.
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
 | 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
-| 9 | Ownership is checked at the repo layer — listing/getting/modifying someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. |
+| 9 | Ownership is checked at the repo layer — listing/modifying someone else's deck/card/session returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. **Exception:** `GET /decks/:id` and `POST /decks/:id/copy` serve **public** decks to any authenticated user; a **private** deck accessed by a non-owner returns `404 DECK_NOT_FOUND` (never 403 — private decks aren't enumerable). |
 | 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
 
 ### Demo data
@@ -426,13 +426,19 @@ Example (after `npm run seed`):
   description?: string;       // ≤ 500 chars, default ''
   sourceLanguage: string;     // 2–10 chars
   targetLanguage: string;
-  isPublic?: boolean;         // P2; default false
+  isPublic?: boolean;         // privacy toggle; **default true** (public)
   coverColor?: string | null; // P2: '#RRGGBB' hex
   glyph?: string | null;      // P2: 1–8 chars (emoji ok)
   subject?: string | null;    // P2: 1–40 chars
 }
 // 201 Response: Deck
 ```
+> **Privacy:** `isPublic` is enforced server-side. A **public** deck (default) is
+> viewable/copyable by anyone; a **private** deck (`isPublic:false`) is visible
+> only to its owner. `isPublic` is owner-settable on create and `PATCH` and is
+> returned on every `Deck`. Discovery surfaces (`GET /discover/*`,
+> `/discover/categories` counts, featured) already exclude private decks — they
+> never appear in results or counts.
 
 #### `GET /decks/:id`  *(auth)*
 The FE's Deck Detail page, study queue, and Add Card flow all assume the entire
@@ -448,6 +454,11 @@ paged. Hard cap is 1000 (matches the FE per-deck limit).
 }
 // Errors: 404 DECK_NOT_FOUND
 ```
+**Access:** owner always sees their own deck; a public deck is viewable by
+anyone. A **private deck requested by a non-owner returns `404 DECK_NOT_FOUND`**
+(intentionally not `403` — so private decks aren't enumerable). For a non-owner
+viewing a public deck, `deck.stats` is viewer-scoped and therefore neutral
+(all cards `new`).
 Example:
 ```json
 {
@@ -873,11 +884,14 @@ by count.
 Clone a public deck (cards + cosmetics) into the viewer's account. Atomic:
 the source's `copyCount` is incremented in the same transaction. The clone
 starts **private** (`isPublic: false`) and carries `sourceDeckId = <original>`.
+Same access rule as `GET /decks/:id`: anyone may copy a public deck; the owner
+may copy their own (public or private); a **private deck copied by a non-owner
+returns `404 DECK_NOT_FOUND`** (not enumerable).
 ```ts
 // Request: (empty body)
 // 201 Response: Deck                          // the freshly-created copy
 // Errors:
-// 404 DECK_NOT_FOUND  (no such public deck)
+// 404 DECK_NOT_FOUND  (no such deck, or a private deck the caller doesn't own)
 ```
 
 ### AI  *(P2)*

@@ -5,7 +5,7 @@ model Deck {
   description    String   @default("")
   sourceLanguage String
   targetLanguage String
-  isPublic       Boolean  @default(false)
+  isPublic       Boolean  @default(true)
   cardCount      Int      @default(0)
   // Cosmetic / discovery fields (P2)
   coverColor     String?
