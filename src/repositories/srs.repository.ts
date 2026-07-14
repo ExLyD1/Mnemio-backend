@@ -11,6 +11,9 @@ export const upsertProgress = (data: {
     easeFactor: number;
     lastReviewedAt: Date | null;
     nextReviewAt: Date;
+    // Set-once: the caller passes the preserved existing value (or the new
+    // first-crossing time). Written verbatim so it is never cleared on lapse.
+    masteredAt: Date | null;
 }) =>
     prisma.cardProgress.upsert({
         where: { userId_cardId: { userId: data.userId, cardId: data.cardId } },
@@ -20,6 +23,7 @@ export const upsertProgress = (data: {
             easeFactor: data.easeFactor,
             lastReviewedAt: data.lastReviewedAt,
             nextReviewAt: data.nextReviewAt,
+            masteredAt: data.masteredAt,
         },
         create: {
             userId: data.userId,
@@ -29,6 +33,7 @@ export const upsertProgress = (data: {
             easeFactor: data.easeFactor,
             lastReviewedAt: data.lastReviewedAt,
             nextReviewAt: data.nextReviewAt,
+            masteredAt: data.masteredAt,
         },
     });
 
@@ -76,6 +81,18 @@ export const findAllProgress = (userId: string, limit: number) =>
         orderBy: { nextReviewAt: 'asc' },
         take: limit,
     });
+
+// Every set masteredAt for the user, powering the cumulative mastery curve
+// (GET /stats/card-series). No lower bound — the curve's baseline needs
+// masteries from *before* the requested window. The caller buckets these by the
+// viewer's local day.
+export const findMasteredAtTimestamps = async (userId: string): Promise<Date[]> => {
+    const rows = await prisma.cardProgress.findMany({
+        where: { userId, masteredAt: { not: null } },
+        select: { masteredAt: true },
+    });
+    return rows.map((r) => r.masteredAt).filter((d): d is Date => d !== null);
+};
 
 export const countDueCards = async (userId: string): Promise<number> => {
     const result = await prisma.$queryRaw<{ count: bigint }[]>`

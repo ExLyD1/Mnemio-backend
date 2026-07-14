@@ -828,22 +828,27 @@ sessions in range.
 }
 ```
 
-#### `GET /stats/card-series`  *(auth)*  — item 3 (STUB)
-Placeholder for the second card chart — the metric is undecided (cards
-studied/day vs cumulative mastered vs new added). Shape is final so the FE can
-wire the chart now; until the metric is chosen, `pending: true`, `metric: null`,
-and every `value` is `0`. When it lands, `pending`/`metric` update and `value`
-fills — no shape change.
+#### `GET /stats/card-series`  *(auth)*  — item 3 (mastery curve)
+Cumulative count of cards **ever mastered** (`repetitions >= 3`) over time — a
+monotonic non-decreasing growth curve, local-day bucketed. `pending` is now
+`false` and `metric` is `'cumulative_mastered'`. `point[0]` includes every card
+mastered on or before the first day of the range (a baseline), so the curve
+never restarts at 0 for a user who already had mastered cards.
 ```ts
 // Query: ?range?=7|30|90|all (default 30) &tz?=<IANA> (default UTC)
 // 200 Response
 {
   range: '7' | '30' | '90' | 'all';
-  pending: boolean;                 // true until the metric is implemented
-  metric: string | null;           // null now; e.g. 'mastered_cumulative' later
-  points: { label: string; value: number }[];  // day scaffold; value 0 for now
+  pending: false;                              // implemented
+  metric: 'cumulative_mastered';
+  points: { label: string; value: number }[]; // label='YYYY-MM-DD' local; value=running total
 }
 ```
+> Backed by a set-once `CardProgress.masteredAt` (first time a card reached
+> `repetitions >= 3`; never cleared on lapse). Because it's "ever mastered", the
+> final value can sit slightly above a deck's *current* `stats.mastered` when
+> cards have lapsed — intended. Historical `masteredAt` (backfilled) is
+> approximate; masteries recorded from the migration onward are exact.
 
 ### Discover  *(P2)*
 

@@ -34,6 +34,11 @@ model CardProgress {
   repetitions    Int       @default(0)
   nextReviewAt   DateTime  @default(now())
   lastReviewedAt DateTime?
+  // Set-once when the card first reaches mastery (repetitions >= 3). Never
+  // overwritten, never cleared on lapse — powers the cumulative "mastery curve"
+  // (GET /stats/card-series). CardProgress is upsert-only with no history, so
+  // this is the only record of *when* mastery was first achieved.
+  masteredAt     DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 

@@ -374,15 +374,15 @@ export const decksStudied = async (
     return { range, items: aggregateDecksStudied(rows, tz, labelSet) };
 };
 
-// ---------- Card-count series (item 3) — STUB ----------
+// ---------- Card-count series (item 3) — cumulative mastery curve ----------
 //
-// TODO(item-3): the metric is undecided — "cards reviewed per day" already
-// exists as getSeries; item 3 is a *different* series (candidates: total cards
-// studied/day, cumulative mastered over time, or new cards added/day). The
-// endpoint + response shape are final so the FE can wire the chart now; until
-// the metric is chosen this returns the day scaffold at value 0 with
-// `pending: true` and `metric: null`. When implementing, drop `pending`, set
-// `metric`, and fill `value` — the shape already matches getSeries/studyTime.
+// Cumulative count of cards ever mastered (repetitions >= 3) over time — a
+// monotonic growth curve. Bucketed by the viewer's local day off the set-once
+// CardProgress.masteredAt (see srsRepo.findMasteredAtTimestamps). Because
+// masteredAt is never cleared on lapse, this can drift slightly above the
+// current-mastered deck count — that's the intended "ever mastered" story.
+export const CARD_SERIES_METRIC = 'cumulative_mastered' as const;
+
 export type StatsCardSeries = {
     range: StatsRange;
     pending: boolean;
@@ -390,18 +390,53 @@ export type StatsCardSeries = {
     points: StatsSeriesPoint[];
 };
 
+// Pure: turn set-once mastery timestamps into a per-day cumulative series over
+// `labels` (oldest → today, local-day keys). `point[0]` includes every card
+// mastered on or before the first day in range (the baseline), so the curve
+// never restarts at 0 when the user already had mastered cards. Monotonic
+// non-decreasing by construction.
+export const buildCumulativeMasteredSeries = (
+    masteredAt: Date[],
+    tz: string,
+    labels: string[],
+): StatsSeriesPoint[] => {
+    if (labels.length === 0) return [];
+    const firstDay = labels[0]!;
+    const inWindow = new Set(labels);
+
+    let baseline = 0; // mastered strictly before the window's first day
+    const perDay = new Map<string, number>();
+    for (const at of masteredAt) {
+        const key = tzDayKey(at, tz);
+        if (key < firstDay) {
+            baseline += 1; // ISO 'YYYY-MM-DD' compares lexicographically
+        } else if (inWindow.has(key)) {
+            perDay.set(key, (perDay.get(key) ?? 0) + 1);
+        }
+        // keys after the last label (future) can't occur: masteredAt <= now.
+    }
+
+    let running = baseline;
+    return labels.map((label) => {
+        running += perDay.get(label) ?? 0;
+        return { label, value: running };
+    });
+};
+
 export const cardSeries = async (
-    _userId: string,
+    userId: string,
     range: StatsRange,
     tz: string,
 ): Promise<StatsCardSeries> => {
     const now = new Date();
     const days = rangeDays(range) ?? ALL_RANGE_SERIES_DAYS;
     const labels = tzDayKeysEndingOn(now, tz, days);
+
+    const timestamps = await srsRepo.findMasteredAtTimestamps(userId);
     return {
         range,
-        pending: true,
-        metric: null,
-        points: labels.map((label) => ({ label, value: 0 })),
+        pending: false,
+        metric: CARD_SERIES_METRIC,
+        points: buildCumulativeMasteredSeries(timestamps, tz, labels),
     };
 };

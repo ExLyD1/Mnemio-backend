@@ -6,6 +6,18 @@ import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
 import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
 
+export const MASTERY_THRESHOLD = 3; // repetitions >= 3 (canonical, deck-stats.repository.ts)
+
+// Set-once mastery timestamp. Once set it is preserved forever — never
+// overwritten and never cleared when the card lapses below the threshold — so
+// the cumulative mastery curve stays monotonic ("ever mastered").
+export const resolveMasteredAt = (
+    existingMasteredAt: Date | null,
+    nextRepetitions: number,
+    now: Date,
+): Date | null =>
+    existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
+
 export type PublicCardProgress = {
     cardId: string;
     repetitions: number;
@@ -39,6 +51,7 @@ export const rate = async (
         : initialState(now);
 
     const next = review(prev, RATING_TO_QUALITY[input.rating], now);
+    const masteredAt = resolveMasteredAt(existing?.masteredAt ?? null, next.repetitions, now);
     const saved = await srsRepo.upsertProgress({
         userId: ownerId,
         cardId: input.cardId,
@@ -47,6 +60,7 @@ export const rate = async (
         easeFactor: next.easeFactor,
         lastReviewedAt: next.lastReviewedAt,
         nextReviewAt: next.nextReviewAt,
+        masteredAt,
     });
 
     // Roll the day's activity counters. 'good' and 'easy' count as correct,
