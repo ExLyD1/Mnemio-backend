@@ -1,15 +1,22 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import * as authService from '../services/auth.service.js';
+import * as googleOAuth from '../services/oauth.google.js';
+import * as oauthExchange from '../services/oauth.exchange.js';
+import { env } from '../config/env.js';
 import {
     registerSchema,
     loginSchema,
     verifyEmailSchema,
     resendOtpSchema,
 } from '../schemas/auth.schema.js';
+import { AppError, BadRequestError } from '../shared/errors.js';
 import {
     setRefreshCookie,
     clearRefreshCookie,
     readRefreshCookie,
+    setOAuthCookies,
+    readOAuthCookies,
+    clearOAuthCookies,
 } from '../plugins/cookies.js';
 
 const ctxOf = (request: FastifyRequest) => ({
@@ -69,4 +76,101 @@ export const logout = async (request: FastifyRequest, reply: FastifyReply) => {
 export const me = async (request: FastifyRequest, reply: FastifyReply) => {
     const result = await authService.me(request.currentUser.sub);
     reply.send(result);
+};
+
+// ---------- Google OAuth ----------
+
+export const googleAuthStart = async (_request: FastifyRequest, reply: FastifyReply) => {
+    // Mirror the callback's redirect-on-failure pattern. The FE renders the
+    // same /auth/oauth/error page either way; a 302 keeps the user inside
+    // the browser flow instead of dumping a raw JSON error mid-redirect.
+    try {
+        googleOAuth.assertGoogleConfigured();
+    } catch (err) {
+        const reason = err instanceof AppError ? err.code : 'OAUTH_NOT_CONFIGURED';
+        const target = new URL('/auth/oauth/error', env.WEB_URL);
+        target.searchParams.set('reason', reason);
+        return reply.redirect(target.toString(), 302);
+    }
+    const { state, codeVerifier } = googleOAuth.newStateAndVerifier();
+    setOAuthCookies(reply, state, codeVerifier);
+    const url = googleOAuth.buildAuthorizationUrl(state, codeVerifier);
+    reply.redirect(url.toString(), 302);
+};
+
+type GoogleCallbackQuery = { code?: string; state?: string; error?: string };
+
+export const googleAuthCallback = async (
+    request: FastifyRequest<{ Querystring: GoogleCallbackQuery }>,
+    reply: FastifyReply,
+) => {
+    const fail = (msg: string) => {
+        const target = new URL('/auth/oauth/error', env.WEB_URL);
+        target.searchParams.set('reason', msg);
+        clearOAuthCookies(reply);
+        return reply.redirect(target.toString(), 302);
+    };
+
+    if (request.query.error) return fail(request.query.error);
+
+    const cookies = readOAuthCookies(request);
+    if (!cookies) return fail('missing_state');
+    if (!request.query.state || request.query.state !== cookies.state) {
+        return fail('bad_state');
+    }
+    if (!request.query.code) return fail('missing_code');
+
+    let profile: googleOAuth.GoogleProfile;
+    try {
+        profile = await googleOAuth.exchangeCodeAndFetchProfile(
+            request.query.code,
+            cookies.codeVerifier,
+        );
+    } catch (err) {
+        request.log.warn({ err }, 'oauth google exchange failed');
+        return fail('exchange_failed');
+    }
+
+    const result = await authService.signInWithProvider(
+        request.server,
+        {
+            provider: 'google',
+            providerUserId: profile.sub,
+            email: profile.email,
+            fullName: profile.name ?? null,
+            emailVerifiedByProvider: profile.emailVerified,
+        },
+        { ip: request.ip ?? null, userAgent: request.headers['user-agent'] ?? null },
+    );
+    // Set the refresh cookie immediately — the FE just needs to swap the
+    // exchange code for the access token + user payload, the cookie comes
+    // along automatically on the next request.
+    setRefreshCookie(reply, result.refreshToken);
+    clearOAuthCookies(reply);
+
+    const exchangeCode = oauthExchange.stash(result);
+    const target = new URL('/auth/oauth/callback', env.WEB_URL);
+    target.searchParams.set('code', exchangeCode);
+    reply.redirect(target.toString(), 302);
+};
+
+type ExchangeBody = { code?: unknown };
+
+export const oauthExchangeCode = async (request: FastifyRequest, reply: FastifyReply) => {
+    const code = (request.body as ExchangeBody)?.code;
+    if (typeof code !== 'string' || code.length === 0) {
+        throw new BadRequestError('OAUTH_BAD_EXCHANGE_CODE', 'Missing or invalid exchange code');
+    }
+    const result = oauthExchange.consume(code);
+    if (!result) {
+        throw new BadRequestError(
+            'OAUTH_EXCHANGE_EXPIRED',
+            'Exchange code expired or already used',
+        );
+    }
+    // The cookie was already set at the callback step; only need to mirror
+    // the JSON body so the FE can stash the access token.
+    const { refreshToken: _ignored, ...body } = result;
+    void _ignored;
+    reply.send(body);
 };

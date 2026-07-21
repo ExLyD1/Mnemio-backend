@@ -93,6 +93,38 @@ export const revokeAllUserRefreshTokens = (userId: string) =>
         data: { revokedAt: new Date() },
     });
 
+// ---------- OAuth identities ----------
+
+export const findOAuthIdentity = (provider: string, providerUserId: string) =>
+    prisma.oAuthIdentity.findUnique({
+        where: { provider_providerUserId: { provider, providerUserId } },
+    });
+
+export const createOAuthIdentity = (data: {
+    userId: string;
+    provider: string;
+    providerUserId: string;
+}) =>
+    prisma.oAuthIdentity.create({
+        data: {
+            userId: data.userId,
+            provider: data.provider,
+            providerUserId: data.providerUserId,
+        },
+    });
+
+// Creates an OAuth-origin user — email pre-verified (Google already confirmed
+// it), no password hash (they'll sign in via Google going forward).
+export const createOAuthUser = (data: { email: string; fullName?: string | null }) =>
+    prisma.user.create({
+        data: {
+            email: data.email.toLowerCase(),
+            passwordHash: null,
+            emailVerifiedAt: new Date(),
+            fullName: data.fullName ?? null,
+        },
+    });
+
 // ---------- Audit log ----------
 
 export const writeAuditLog = (data: {

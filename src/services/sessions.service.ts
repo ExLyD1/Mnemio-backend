@@ -1,6 +1,7 @@
 import * as sessionsRepo from '../repositories/sessions.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as achievementsService from './achievements.service.js';
+import * as milestone from './milestone.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import { toPublicSession, type PublicSession } from '../shared/mappers.session.js';
 import type { CreateSessionInput, UpdateSessionInput } from '../schemas/session.schema.js';
@@ -25,8 +26,13 @@ export const start = async (
     ownerId: string,
     input: CreateSessionInput,
 ): Promise<PublicSession> => {
-    const deck = await decksRepo.findDeckById(input.deckId, ownerId);
-    if (!deck) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    // Owners study their own decks; anyone may study a public deck. The session
+    // row itself belongs to the requester (userId = ownerId), so a viewer's
+    // session never touches the owner's data. Private decks 404 for non-owners.
+    const deck = await decksRepo.findDeckByIdUnscoped(input.deckId);
+    if (!deck || (deck.authorId !== ownerId && !deck.isPublic)) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
 
     const cards = await sessionsRepo.listDeckCardIds(input.deckId);
     if (cards.length === 0) {
@@ -101,6 +107,8 @@ export const complete = async (
     achievementsService.evaluate(ownerId, 'session_complete').catch(() => {
         // Swallow: achievement-system errors must not break session completion.
     });
+
+    void milestone.checkFirstSession(ownerId);
 
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
     return toPublicSession(fresh!);

@@ -2,6 +2,9 @@ import argon2 from 'argon2';
 import type { FastifyInstance } from 'fastify';
 import type { UserModel as User } from '../../generated/prisma/models/User.js';
 import * as authRepo from '../repositories/auth.repository.js';
+import { getWelcomeState, type WelcomeState } from '../repositories/welcome.repository.js';
+import * as entitlementService from './entitlement.service.js';
+import * as analytics from './analytics.service.js';
 import { toPublicUser, needsProfile, type PublicUser } from '../shared/mappers.js';
 import { BadRequestError, ConflictError, UnauthorizedError, RateLimitedError } from '../shared/errors.js';
 import {
@@ -35,6 +38,7 @@ export type AuthTokens = {
 export type AuthResult = AuthTokens & {
     user: PublicUser;
     needsProfile: boolean;
+    welcome: WelcomeState;
 };
 
 const signAccessToken = (fastify: FastifyInstance, user: User): string =>
@@ -66,12 +70,28 @@ const buildAuthResult = async (
     user: User,
     ctx: RequestContext,
 ): Promise<AuthResult> => {
-    const tokens = await issueTokens(fastify, user, ctx);
+    const [tokens, welcome] = await Promise.all([
+        issueTokens(fastify, user, ctx),
+        getWelcomeState(user.id),
+    ]);
     return {
         ...tokens,
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
+        welcome,
     };
+};
+
+// Fire-and-forget analytics for a brand-new account. Called only at the genuine
+// creation sites (first email verification / new OAuth user) so it never fires
+// for returning logins. The backend is the only reliable source of new-vs-
+// returning, especially for OAuth.
+const emitAccountCreated = (user: User, method: 'email' | 'google'): void => {
+    analytics.track(user.id, 'account_created', { method });
+    analytics.setUserProps(user.id, {
+        plan: 'free',
+        signup_date: (user.createdAt ?? new Date()).toISOString(),
+    });
 };
 
 // ---------- Public OTP issuance ----------
@@ -161,6 +181,9 @@ export const verifyEmail = async (
         event: 'otp.verify.success',
         ip: ctx.ip ?? null,
     });
+    // First successful verification = the account is now real. The early-return
+    // above means re-verifying an already-verified account won't re-fire this.
+    emitAccountCreated(verifiedUser, 'email');
     return buildAuthResult(fastify, verifiedUser, ctx);
 };
 
@@ -273,7 +296,10 @@ export const refresh = async (
     const user = await authRepo.findUserById(record.userId);
     if (!user) throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid refresh token');
 
-    const tokens = await issueTokens(fastify, user, ctx);
+    const [tokens, welcome] = await Promise.all([
+        issueTokens(fastify, user, ctx),
+        getWelcomeState(user.id),
+    ]);
     await authRepo.revokeRefreshToken(
         record.id,
         (await authRepo.findRefreshTokenByHash(hashToken(tokens.refreshToken)))?.id,
@@ -282,6 +308,7 @@ export const refresh = async (
         ...tokens,
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
+        welcome,
     };
 };
 
@@ -295,10 +322,106 @@ export const logout = async (refreshToken: string | null): Promise<void> => {
     }
 };
 
+// ---------- OAuth sign-in (Google) ----------
+
+// Link-or-create. Order of attempts (matches plan §3.1 + Open question #6):
+//   1. If we already have an OAuthIdentity for (provider, providerUserId),
+//      sign in that user.
+//   2. Else if there's a user with this email AND they're already verified
+//      (password account), link the OAuth identity to them.
+//   3. Else create a brand-new user with the OAuth email (pre-verified).
+export const signInWithProvider = async (
+    fastify: FastifyInstance,
+    params: {
+        provider: 'google';
+        providerUserId: string;
+        email: string;
+        fullName?: string | null;
+        emailVerifiedByProvider: boolean;
+    },
+    ctx: RequestContext,
+): Promise<AuthResult> => {
+    const existingIdentity = await authRepo.findOAuthIdentity(
+        params.provider,
+        params.providerUserId,
+    );
+    if (existingIdentity) {
+        const user = await authRepo.findUserById(existingIdentity.userId);
+        if (!user) {
+            // Identity row points at a deleted user — defensive recovery.
+            throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'OAuth identity is stale');
+        }
+        await authRepo.writeAuditLog({
+            userId: user.id,
+            event: 'oauth.signin',
+            ip: ctx.ip ?? null,
+            details: { provider: params.provider },
+        });
+        return buildAuthResult(fastify, user, ctx);
+    }
+
+    const existingByEmail = await authRepo.findUserByEmail(params.email);
+    if (existingByEmail) {
+        // Only auto-link if the password account is verified (otherwise an
+        // attacker who pre-registered the email could hijack the Google flow).
+        if (!existingByEmail.emailVerifiedAt) {
+            throw new BadRequestError(
+                'AUTH_EMAIL_UNVERIFIED_LINK',
+                'An unverified account already exists for this email. Verify it first or use a different Google account.',
+            );
+        }
+        await authRepo.createOAuthIdentity({
+            userId: existingByEmail.id,
+            provider: params.provider,
+            providerUserId: params.providerUserId,
+        });
+        await authRepo.writeAuditLog({
+            userId: existingByEmail.id,
+            event: 'oauth.linked',
+            ip: ctx.ip ?? null,
+            details: { provider: params.provider },
+        });
+        return buildAuthResult(fastify, existingByEmail, ctx);
+    }
+
+    // Brand-new user.
+    if (!params.emailVerifiedByProvider) {
+        throw new BadRequestError(
+            'OAUTH_EMAIL_UNVERIFIED',
+            'Google has not verified this email; cannot create an account from it',
+        );
+    }
+    const created = await authRepo.createOAuthUser({
+        email: params.email,
+        fullName: params.fullName ?? null,
+    });
+    await authRepo.createOAuthIdentity({
+        userId: created.id,
+        provider: params.provider,
+        providerUserId: params.providerUserId,
+    });
+    await authRepo.writeAuditLog({
+        userId: created.id,
+        event: 'oauth.register',
+        ip: ctx.ip ?? null,
+        details: { provider: params.provider },
+    });
+    // Brand-new OAuth user only — the two branches above (existing identity /
+    // link to existing account) are returning users and must not fire this.
+    emitAccountCreated(created, 'google');
+    return buildAuthResult(fastify, created, ctx);
+};
+
 // ---------- Me ----------
 
-export const me = async (userId: string): Promise<{ user: PublicUser; needsProfile: boolean }> => {
-    const user = await authRepo.findUserById(userId);
+export const me = async (
+    userId: string,
+): Promise<{ user: PublicUser; needsProfile: boolean; welcome: WelcomeState; plan: 'free' | 'premium' }> => {
+    const [user, welcome, plan] = await Promise.all([
+        authRepo.findUserById(userId),
+        getWelcomeState(userId),
+        entitlementService.getPlan(userId),
+    ]);
     if (!user) throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'User no longer exists');
-    return { user: toPublicUser(user), needsProfile: needsProfile(user) };
+    return { user: toPublicUser(user), needsProfile: needsProfile(user), welcome, plan };
 };

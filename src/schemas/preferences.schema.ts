@@ -1,8 +1,22 @@
 import { z } from 'zod';
+import { normalizeLang } from '../shared/lang.js';
 
 export const MIMI_PLACEMENTS = ['left', 'right'] as const;
 
-const lang = z.string().trim().min(2).max(10);
+// Normalizes free-form language input to an ISO 639-1 code (see deck.schema.ts).
+const lang = z
+    .string()
+    .trim()
+    .min(2)
+    .max(10)
+    .transform((v, ctx) => {
+        const code = normalizeLang(v);
+        if (!code) {
+            ctx.addIssue({ code: 'custom', message: 'Unrecognized language' });
+            return z.NEVER;
+        }
+        return code;
+    });
 
 export const updatePreferencesSchema = z
     .object({

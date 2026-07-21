@@ -2,6 +2,7 @@ import * as srsRepo from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as activityRepo from '../repositories/activity.repository.js';
 import * as achievementsService from './achievements.service.js';
+import * as milestone from './milestone.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
 import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
@@ -31,10 +32,14 @@ export const rate = async (
     ownerId: string,
     input: { cardId: string; rating: Rating },
 ): Promise<PublicCardProgress> => {
-    // Ownership: user must own the deck the card belongs to.
+    // Access: the rater must own the card's deck OR the deck must be public.
+    // The progress row is keyed by (ownerId = rater, cardId), so two users
+    // studying the same shared deck keep fully independent SRS — a viewer's
+    // ratings never touch the owner's progress. Private decks stay 403 for
+    // non-owners, which also re-locks the moment isPublic flips to false.
     const card = await cardsRepo.findCardWithOwner(input.cardId);
     if (!card) throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
-    if (card.deck.authorId !== ownerId) {
+    if (card.deck.authorId !== ownerId && !card.deck.isPublic) {
         throw new ForbiddenError('CARD_FORBIDDEN', 'You do not own this card');
     }
 
@@ -72,6 +77,10 @@ export const rate = async (
     });
 
     achievementsService.evaluate(ownerId, 'rate').catch(() => {});
+
+    // Only a brand-new progress row can be the user's first-ever review; skip
+    // the probe on re-reviews of an already-seen card so it can't double-fire.
+    if (!existing) void milestone.checkFirstReview(ownerId);
 
     return {
         cardId: saved.cardId,

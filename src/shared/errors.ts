@@ -65,3 +65,82 @@ export class RateLimitedError extends AppError {
         super(429, code, message, details);
     }
 }
+
+// AI-specific errors (P2 follow-up: real LLM provider wiring).
+export class AiBudgetExceededError extends RateLimitedError {
+    constructor(kind: string, capPerDay: number) {
+        super('AI_BUDGET_EXCEEDED', `Daily AI ${kind} cap of ${capPerDay} reached`, {
+            kind,
+            capPerDay,
+        });
+    }
+}
+
+export class AiProviderError extends AppError {
+    constructor(providerStatus: number | string, message = 'AI provider error') {
+        super(502, 'AI_PROVIDER_ERROR', message, { providerStatus });
+    }
+}
+
+export class AiValidationFailedError extends AppError {
+    constructor(message = 'AI returned an invalid response after retry') {
+        super(502, 'AI_VALIDATION_FAILED', message);
+    }
+}
+
+export class AiTooManyWordsError extends BadRequestError {
+    constructor(max: number, got: number) {
+        super('AI_TOO_MANY_WORDS', `Too many words in batch (max ${max}, got ${got})`, {
+            max,
+            got,
+        });
+    }
+}
+
+// External imports (Quizlet HTML scrape, paste-text, deck CSV/JSON).
+export class ImportBadUrlError extends BadRequestError {
+    constructor(message = "URL must be a quizlet.com set link, e.g. https://quizlet.com/<id>/...") {
+        super('IMPORT_BAD_URL', message);
+    }
+}
+
+export class ImportNotFoundError extends NotFoundError {
+    constructor(message = 'Set is private, removed, or does not exist') {
+        super('IMPORT_NOT_FOUND', message);
+    }
+}
+
+export class ImportParseFailedError extends UnprocessableError {
+    constructor(message = "Couldn't extract cards from the source") {
+        super('IMPORT_PARSE_FAILED', message);
+    }
+}
+
+export class ImportUpstreamError extends AppError {
+    constructor(providerStatus: number, message = 'Upstream returned an error') {
+        super(502, 'IMPORT_UPSTREAM_ERROR', message, { providerStatus });
+    }
+}
+
+export class ImportBudgetExceededError extends RateLimitedError {
+    constructor(capPerDay: number) {
+        super('IMPORT_BUDGET_EXCEEDED', `Daily import cap of ${capPerDay} reached`, {
+            kind: 'import',
+            capPerDay,
+        });
+    }
+}
+
+// Real-time chat — the only chat-specific error class. Budget exhaustion
+// reuses AiBudgetExceededError with kind='chat'.
+export class ChatNotFoundError extends NotFoundError {
+    constructor() {
+        super('CHAT_NOT_FOUND', 'Conversation not found');
+    }
+}
+
+export class PremiumRequiredError extends ForbiddenError {
+    constructor() {
+        super('PREMIUM_REQUIRED', 'This feature requires a premium subscription');
+    }
+}

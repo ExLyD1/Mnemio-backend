@@ -5,7 +5,11 @@ import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { env } from './config/env.js';
+import { prisma } from './db/prisma.js';
+import { registerCleanupJob } from './jobs/cleanup.job.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
+import { initSentry } from './plugins/sentry.js';
+import { initAnalytics } from './services/analytics.service.js';
 import { registerJwt } from './plugins/jwt.js';
 import { registerCookies } from './plugins/cookies.js';
 import authRoutes from './routes/auth.routes.js';
@@ -18,23 +22,49 @@ import dashboardRoutes from './routes/dashboard.routes.js';
 import achievementsRoutes from './routes/achievements.routes.js';
 import statsRoutes from './routes/stats.routes.js';
 import discoverRoutes from './routes/discover.routes.js';
+import publicRoutes from './routes/public.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import importsRoutes from './routes/imports.routes.js';
+import chatRoutes from './routes/chat.routes.js';
 import mediaRoutes from './routes/media.routes.js';
+import billingRoutes from './routes/billing.routes.js';
 
 export const API_PREFIX = '/api/v1';
 
 export const buildApp = async (): Promise<FastifyInstance> => {
+    // Initialize Sentry before Fastify so any boot-time uncaught throws still
+    // get captured. No-op when SENTRY_DSN is unset.
+    initSentry();
+    // Initialize server-side Mixpanel. No-op when MIXPANEL_TOKEN is unset.
+    initAnalytics();
+
     const fastify = Fastify({
         logger: {
             level: env.LOG_LEVEL,
-            redact: ['req.headers.authorization', 'req.body.password', 'req.body.refreshToken', 'req.body.code'],
+            redact: [
+                'req.headers.authorization',
+                'req.body.password',
+                'req.body.refreshToken',
+                'req.body.code',
+            ],
             ...(env.NODE_ENV === 'development' ? { transport: { target: 'pino-pretty' } } : {}),
         },
         trustProxy: true,
     });
 
+    const corsOrigins = env.WEB_URLS.length > 0 ? env.WEB_URLS : [env.WEB_URL];
+
     await fastify.register(cors, {
-        origin: env.WEB_URL,
+        origin: (origin, callback) => {
+            // Requests without Origin (curl, server-to-server, health checks)
+            // are not CORS browser requests and can be accepted.
+            if (!origin) {
+                callback(null, true);
+                return;
+            }
+
+            callback(null, corsOrigins.includes(origin));
+        },
         credentials: true,
         methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization'],
@@ -44,11 +74,24 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         global: false,
         max: 120,
         timeWindow: '1 minute',
+        // Match our standard { code, message, details } envelope so the FE
+        // doesn't need to special-case 429s from @fastify/rate-limit.
+        errorResponseBuilder: (_req, context) => ({
+            code: 'RATE_LIMITED',
+            message: `Rate limit exceeded, retry in ${context.after}.`,
+            details: { retryAfter: context.after, max: context.max },
+        }),
     });
 
     await fastify.register(multipart, {
         // Hard ceiling for any upload; per-kind enforcement is in media.service.ts.
-        limits: { fileSize: Math.max(env.MEDIA_MAX_AVATAR_BYTES, env.MEDIA_MAX_IMAGE_BYTES, env.MEDIA_MAX_AUDIO_BYTES) },
+        limits: {
+            fileSize: Math.max(
+                env.MEDIA_MAX_AVATAR_BYTES,
+                env.MEDIA_MAX_IMAGE_BYTES,
+                env.MEDIA_MAX_AUDIO_BYTES,
+            ),
+        },
     });
 
     // Serve uploaded files from MEDIA_DIR under MEDIA_PUBLIC_BASE. Production
@@ -65,7 +108,23 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     await registerJwt(fastify);
     registerErrorHandler(fastify);
 
+    // Liveness — cheap, no I/O. Uptime monitors target this.
     fastify.get('/health', async () => ({ status: 'ok' }));
+
+    // Readiness — touches the DB. Container orchestrators (Railway, k8s)
+    // target this; a 503 here means "don't route traffic yet."
+    fastify.get('/ready', async (_req, reply) => {
+        try {
+            await prisma.$queryRaw`SELECT 1`;
+            return { status: 'ready' };
+        } catch (err) {
+            fastify.log.warn({ err }, 'readiness probe failed');
+            return reply.code(503).send({
+                code: 'NOT_READY',
+                message: 'Database is not reachable.',
+            });
+        }
+    });
 
     await fastify.register(
         async (api) => {
@@ -79,11 +138,22 @@ export const buildApp = async (): Promise<FastifyInstance> => {
             await api.register(achievementsRoutes);
             await api.register(statsRoutes);
             await api.register(discoverRoutes);
+            await api.register(publicRoutes);
             await api.register(aiRoutes);
+            await api.register(importsRoutes);
+            await api.register(chatRoutes);
             await api.register(mediaRoutes);
+            await api.register(billingRoutes);
         },
         { prefix: API_PREFIX },
     );
+
+    const stopCleanup = registerCleanupJob(fastify.log);
+    if (stopCleanup) {
+        fastify.addHook('onClose', async () => {
+            stopCleanup();
+        });
+    }
 
     return fastify;
 };

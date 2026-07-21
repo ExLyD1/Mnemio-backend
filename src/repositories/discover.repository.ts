@@ -109,15 +109,25 @@ export const categories = async (): Promise<{ subject: string; count: number }[]
     return rows.map((r) => ({ subject: r.subject, count: Number(r.count) }));
 };
 
-// Viewer-agnostic lookup for the copy flow. Access control (owner-or-public) is
-// applied in the service via assertDeckAccessible, so this must NOT filter by
-// isPublic — otherwise an owner couldn't copy their own private deck and the
-// 404-vs-visible decision would live in two places.
-export const findDeckById = (deckId: string) =>
-    prisma.deck.findUnique({ where: { id: deckId } });
+export const findPublicDeckById = (deckId: string) =>
+    prisma.deck.findFirst({
+        where: { id: deckId, isPublic: true },
+        include: { author: AUTHOR_SELECT },
+    });
 
 export const bumpCopyCount = (deckId: string) =>
     prisma.deck.update({
         where: { id: deckId },
         data: { copyCount: { increment: 1 } },
+    });
+
+// Sitemap projection: id + updatedAt only, ordered for stable diffs. Hard cap
+// of 50k matches the sitemap.xml protocol limit; FE should split into multiple
+// sitemaps before then anyway.
+export const listAllPublicDeckIds = () =>
+    prisma.deck.findMany({
+        where: { isPublic: true },
+        select: { id: true, updatedAt: true },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        take: 50_000,
     });

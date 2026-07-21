@@ -1,0 +1,49 @@
+// Real-time AI chat persistence.
+//
+// Two tables:
+//   conversations  — one per chat thread; ordered in the sidebar by
+//                    lastMessageAt DESC. Title auto-set from the first user
+//                    message (truncated to 60 chars); user can rename.
+//   chat_messages  — append-only message log; role is 'user' | 'assistant'.
+//                    Assistant rows track tokens used and a status that
+//                    flips to 'partial' if a stream got cut mid-flight so
+//                    the FE can render half-replies and offer retry.
+//
+// User-cascade keeps DELETE /users/me clean — both rows go away with the
+// user automatically.
+
+model Conversation {
+  id            String   @id @default(uuid())
+  userId        String
+  title         String   @default("New chat")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastMessageAt DateTime @default(now())
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, lastMessageAt])
+  @@map("conversations")
+}
+
+model ChatMessage {
+  id             String   @id @default(uuid())
+  conversationId String
+  role           String                            // 'user' | 'assistant' | 'system'
+  content        String                            // plain text — markdown ok, no HTML
+  tokensInput    Int?                              // assistant rows only
+  tokensOutput   Int?                              // assistant rows only
+  status         String   @default("complete")     // 'complete' | 'partial'
+  // Structured side-effects produced during a tool-use turn (e.g. a deck the
+  // assistant created via the create_deck tool). Null when the assistant
+  // didn't call any tool. JSON shape is the ChatAttachment[] DTO; we keep it
+  // as Json? so adding new attachment kinds doesn't need another migration.
+  attachments    Json?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("chat_messages")
+}

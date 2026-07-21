@@ -2,6 +2,7 @@ import type { FastifyError, FastifyInstance } from 'fastify';
 import { ZodError, z } from 'zod';
 import { AppError } from '../shared/errors.js';
 import { env } from '../config/env.js';
+import { captureUnexpected } from './sentry.js';
 
 export const registerErrorHandler = (fastify: FastifyInstance) => {
     fastify.setErrorHandler((rawError, request, reply) => {
@@ -40,6 +41,9 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
         }
 
         request.log.error({ err: error }, 'Unhandled error');
+        // Only unexpected failures get reported — AppError/Zod/Prisma constraint
+        // errors are domain-expected and would just be noise in Sentry.
+        captureUnexpected(error);
 
         const message = env.NODE_ENV === 'production' ? 'Internal server error' : (error.message ?? 'Internal error');
         return reply.status(500).send({ code: 'INTERNAL', message });

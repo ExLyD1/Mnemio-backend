@@ -2,6 +2,11 @@ import type {
     AiDeckDraft,
     AiProvider,
     AiSuggestion,
+    ChatResult,
+    ChatStreamEvent,
+    EnrichWordsEvent,
+    EnrichWordsResult,
+    GenerateDeckEvent,
     SuggestContext,
 } from './ai.provider.js';
 
@@ -26,7 +31,41 @@ const PLACEHOLDER_DEFS = [
 export const mockProvider: AiProvider = {
     name: 'mock',
 
-    async generateDeck(input) {
+    async enrichWords(input, opts): Promise<EnrichWordsResult> {
+        const start = Date.now();
+        const cards = input.words.map((word) => ({
+            word,
+            // Deterministic placeholder definition so the FE can wire
+            // against the shape without burning real LLM credits.
+            definition: `[mock] ${input.sourceLanguage} definition for "${word}"`,
+            phonetic: `/${word.toLowerCase()}/`,
+            partOfSpeech: 'noun',
+            example: `Example sentence using ${word}.`,
+            exampleTranslation: `Translation of example for ${word}.`,
+            tags: input.context ? [input.context.toLowerCase().split(/\s+/)[0]!] : ['mock'],
+            difficulty: 'medium' as const,
+        }));
+
+        // Fire per-card events so streaming callers can dev against the mock.
+        if (opts?.onCard) {
+            cards.forEach((card, position) => {
+                opts.onCard!({ type: 'card', position, card });
+            });
+        }
+
+        const meta = {
+            requested: input.words.length,
+            enriched: cards.length,
+            durationMs: Date.now() - start,
+            tokensInput: 0,
+            tokensOutput: 0,
+        };
+        opts?.onCard?.({ type: 'done', meta } satisfies EnrichWordsEvent);
+        return { cards, meta };
+    },
+
+    async generateDeck(input, opts) {
+        const start = Date.now();
         const count = input.count ?? 8;
         const cards = Array.from({ length: count }, (_, i) => {
             const word = `${titleCase(input.targetLanguage)} term ${i + 1}`;
@@ -43,16 +82,97 @@ export const mockProvider: AiProvider = {
             };
         });
 
-        const draft: AiDeckDraft = {
+        const header = {
             title: titleCase(input.topic),
             description: `AI-drafted vocabulary deck on "${input.topic}". Edit before saving.`,
             sourceLanguage: input.sourceLanguage,
             targetLanguage: input.targetLanguage,
             subject: 'languages',
             glyph: '✨',
-            cards,
         };
-        return draft;
+        if (opts?.onEvent) {
+            opts.onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
+            cards.forEach((card, position) =>
+                opts.onEvent!({ type: 'card', position, card } satisfies GenerateDeckEvent),
+            );
+            opts.onEvent({
+                type: 'done',
+                meta: { durationMs: Date.now() - start, tokensInput: 0, tokensOutput: 0 },
+            } satisfies GenerateDeckEvent);
+        }
+        return { ...header, cards } satisfies AiDeckDraft;
+    },
+
+    async chat(input, opts): Promise<ChatResult> {
+        // Deterministic reply so the FE can exercise streaming UI without
+        // burning Anthropic credits. Tools-aware: when the caller provides
+        // a tools config AND the last user turn looks like a deck request
+        // ("create", "deck", or "make"), fake the full tool-use loop so the
+        // FE can exercise tool_use/tool_result frames too.
+        const lastUserTurn = [...input.messages].reverse().find((m) => m.role === 'user');
+        const lastUserText = lastUserTurn?.content ?? '';
+        const hasAdd = !!input.tools?.defs.some((d) => d.name === 'add_cards');
+        const hasCreate = !!input.tools?.defs.some((d) => d.name === 'create_deck');
+        // "add" routes to add_cards (only offered when a deck is open); otherwise
+        // a create/deck/make request routes to create_deck.
+        const wantsAdd = hasAdd && /\badd\b/i.test(lastUserText);
+        const wantsDeck = hasCreate && /\b(create|deck|make)\b/i.test(lastUserText);
+
+        if (input.tools && (wantsAdd || wantsDeck)) {
+            const call = wantsAdd
+                ? { name: 'add_cards', input: { words: ['sample'] } }
+                : { name: 'create_deck', input: { topic: 'Sample topic' } };
+
+            // Pre-tool preamble: neutral, never a completion claim, and NOT part
+            // of the authoritative reply (the FE clears it on tool_use).
+            const intro = wantsAdd ? ['On it', '…'] : ['One moment', '…'];
+            for (const delta of intro) {
+                opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+            }
+            opts?.onEvent?.({ type: 'tool_use', call } satisfies ChatStreamEvent);
+            const outcome = await input.tools.run(call);
+            opts?.onEvent?.({
+                type: 'tool_result',
+                name: call.name,
+                ok: outcome.ok,
+                data: outcome.data,
+            } satisfies ChatStreamEvent);
+
+            // Post-tool reply is the AUTHORITATIVE content — only here can it
+            // claim success, and only when the tool actually succeeded.
+            const outro = outcome.ok
+                ? wantsAdd
+                    ? ['Added', ' those cards', ' to your deck.']
+                    : ['Done', ' — created your deck.']
+                : ['Sorry', ', I couldn\'t finish that.'];
+            for (const delta of outro) {
+                opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+            }
+            const meta = { tokensInput: 0, tokensOutput: 0 };
+            opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
+            return {
+                content: outro.join(''),
+                tokensInput: meta.tokensInput,
+                tokensOutput: meta.tokensOutput,
+                ...(outcome.ok ? { attachments: [outcome.data] } : {}),
+            };
+        }
+
+        const tokens =
+            lastUserText.length > 40
+                ? ['Here', ' is a quick', ' answer.']
+                : ['Sure', ', happy to help', '.'];
+
+        for (const delta of tokens) {
+            opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
+        }
+        const meta = { tokensInput: 0, tokensOutput: 0 };
+        opts?.onEvent?.({ type: 'done', meta } satisfies ChatStreamEvent);
+        return {
+            content: tokens.join(''),
+            tokensInput: meta.tokensInput,
+            tokensOutput: meta.tokensOutput,
+        };
     },
 
     async suggest(input) {

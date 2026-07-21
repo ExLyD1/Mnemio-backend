@@ -1,6 +1,7 @@
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as deckStatsRepo from '../repositories/deck-stats.repository.js';
+import * as milestone from './milestone.service.js';
 import {
     decodeCursor,
     encodeCursor,
@@ -8,7 +9,6 @@ import {
     type PageWithTotal,
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
-import { DEFAULT_IS_PUBLIC, assertDeckAccessible } from './deck-visibility.js';
 import {
     toPublicDeck,
     toPublicCard,
@@ -74,11 +74,12 @@ export const create = async (ownerId: string, input: CreateDeckInput): Promise<P
         description: input.description ?? '',
         sourceLanguage: input.sourceLanguage,
         targetLanguage: input.targetLanguage,
-        isPublic: input.isPublic ?? DEFAULT_IS_PUBLIC,
+        isPublic: input.isPublic ?? false,
         coverColor: input.coverColor ?? null,
         glyph: input.glyph ?? null,
         subject: input.subject ?? null,
     });
+    void milestone.checkFirstDeck(ownerId);
     return toPublicDeck(deck);
 };
 
@@ -92,16 +93,20 @@ export const getOne = async (
     viewerId: string,
     deckId: string,
     query: DeckDetailQuery,
-): Promise<{ deck: PublicDeck; cards: PublicCard[] }> => {
-    // Owner-or-public access: a private deck the viewer doesn't own 404s (not
-    // 403), so it isn't enumerable. Fetch viewer-agnostically, then guard.
-    const deck = assertDeckAccessible(await decksRepo.findDeckByIdAny(deckId), viewerId);
+): Promise<{ deck: PublicDeck; cards: PublicCard[]; role: 'owner' | 'viewer'; isOwner: boolean }> => {
+    const deck = await decksRepo.findDeckByIdUnscoped(deckId);
+    // A non-owner may read only a public deck. A private deck looks "not found"
+    // to everyone but its owner, preserving the no-leak guarantee — and this
+    // re-locks automatically the moment a deck is flipped to isPublic = false.
+    const isOwner = deck?.authorId === viewerId;
+    if (!deck || (!isOwner && !deck.isPublic)) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
 
     const cap = query.cardsLimit ?? MAX_INLINE_CARDS;
     const [rows, statsRows] = await Promise.all([
         cardsRepo.listAllCardsForDeck(deckId, cap),
-        // Stats are viewer-scoped: a non-owner viewing a public deck has no
-        // CardProgress rows, so they see neutral (all-new) stats.
+        // Stats always reflect the REQUESTER's SRS progress, never the owner's.
         deckStatsRepo.aggregateDeckStats(viewerId, [deckId]),
     ]);
     const stats = buildStats(deck.cardCount, statsRows[0]);
@@ -109,6 +114,8 @@ export const getOne = async (
     return {
         deck: toPublicDeck(deck, stats),
         cards: rows.map(toPublicCard),
+        role: isOwner ? 'owner' : 'viewer',
+        isOwner,
     };
 };
 

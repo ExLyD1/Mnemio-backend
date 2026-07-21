@@ -9,6 +9,12 @@ const usersRoutes = async (fastify: FastifyInstance) => {
         usersController.updateMe,
     );
 
+    fastify.delete(
+        '/users/me',
+        { preHandler: [fastify.authenticate] },
+        usersController.deleteMe,
+    );
+
     fastify.get(
         '/users/me/preferences',
         { preHandler: [fastify.authenticate] },

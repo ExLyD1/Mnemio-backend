@@ -1,5 +1,6 @@
 import * as discoverRepo from '../repositories/discover.repository.js';
 import * as deckStatsRepo from '../repositories/deck-stats.repository.js';
+import * as milestone from './milestone.service.js';
 import { prisma } from '../db/prisma.js';
 import {
     encodeCursor,
@@ -7,7 +8,7 @@ import {
     parseLimit,
     type PageWithTotal,
 } from '../shared/pagination.js';
-import { assertDeckAccessible } from './deck-visibility.js';
+import { NotFoundError } from '../shared/errors.js';
 import {
     toPublicDeckWithAuthor,
     buildStats,
@@ -82,9 +83,8 @@ export const categories = async (): Promise<{ items: { subject: string; count: n
 };
 
 export const copy = async (viewerId: string, sourceDeckId: string): Promise<PublicDeck> => {
-    // Same access rule as deck-detail: a non-owner can copy a public deck; a
-    // private deck they don't own 404s (not 403) so it isn't enumerable.
-    const source = assertDeckAccessible(await discoverRepo.findDeckById(sourceDeckId), viewerId);
+    const source = await discoverRepo.findPublicDeckById(sourceDeckId);
+    if (!source) throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
 
     // Atomic: clone deck + cards + bump source copyCount.
     const newDeckId = await prisma.$transaction(async (tx) => {
@@ -138,6 +138,9 @@ export const copy = async (viewerId: string, sourceDeckId: string): Promise<Publ
 
         return clone.id;
     });
+
+    // Cloning a public deck is also a "first deck" path — count it as activation.
+    void milestone.checkFirstDeck(viewerId);
 
     const fresh = await prisma.deck.findUnique({ where: { id: newDeckId } });
     const stats = await deckStatsRepo.aggregateDeckStats(viewerId, [newDeckId]);

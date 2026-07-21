@@ -37,6 +37,25 @@ const authRoutes = async (fastify: FastifyInstance) => {
         { preHandler: [fastify.authenticate] },
         authController.me,
     );
+
+    // ---- Google OAuth ----
+    // No auth here — the start endpoint sets state cookies and redirects
+    // unauthenticated visitors to Google.
+    fastify.get(
+        '/auth/oauth/google',
+        { config: { rateLimit: tightLimit } },
+        authController.googleAuthStart,
+    );
+    fastify.get(
+        '/auth/oauth/google/callback',
+        { config: { rateLimit: tightLimit } },
+        authController.googleAuthCallback,
+    );
+    fastify.post(
+        '/auth/oauth/exchange',
+        { config: { rateLimit: tightLimit } },
+        authController.oauthExchangeCode,
+    );
 };
 
 export default authRoutes;

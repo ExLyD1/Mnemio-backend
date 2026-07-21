@@ -28,6 +28,9 @@ model User {
   preference          Preference?
   userAchievements    UserAchievement[]
   dailyActivity       DailyActivity[]
+  aiUsage             AiUsage[]
+  conversations       Conversation[]
+  subscription        Subscription?
 
   @@map("users")
 }
@@ -53,7 +56,7 @@ model StudySession {
   deckId          String
   mode            String
   status          String   @default("active")
-  cardIds         String[]
+  cardIds         String[] @default([])
   cardIndex       Int      @default(0)
   correct         Int      @default(0)
   xpAwarded       Int      @default(0)
@@ -65,7 +68,7 @@ model StudySession {
   countsHard      Int      @default(0)
   countsGood      Int      @default(0)
   countsEasy      Int      @default(0)
-  revisitCardIds  String[]
+  revisitCardIds  String[] @default([])
   durationMs      Int      @default(0)
   startedAt       DateTime @default(now())
   endedAt         DateTime?
