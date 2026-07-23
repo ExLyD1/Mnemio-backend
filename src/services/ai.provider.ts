@@ -5,7 +5,24 @@
  *
  * Selection logic lives in ai.service.ts.
  */
-import type { EnrichWordsInput, GenerateDeckInput, SuggestInput } from '../schemas/ai.schema.js';
+import type {
+    DeckFromImageInput,
+    EnrichWordsInput,
+    GenerateDeckInput,
+    SuggestInput,
+} from '../schemas/ai.schema.js';
+
+// Image MIME types accepted by both the deck-from-image endpoint and
+// image-attached chat turns. Screenshots, textbook photos, subtitle frames.
+export const AI_IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+export type AiImageMime = (typeof AI_IMAGE_MIME)[number];
+
+// A decoded image ready to hand to a vision-capable model call. Never
+// persisted — held in memory for the duration of the request only.
+export type AiImageInput = {
+    mediaType: AiImageMime;
+    dataBase64: string;
+};
 
 export type AiCardDraft = {
     word: string;
@@ -63,6 +80,12 @@ export type AiDeckDraft = {
     cards: AiCardDraft[];
 };
 
+// Input for deckFromImage: the multipart text fields plus the decoded image.
+// An empty `cards` array in the resulting AiDeckDraft means "no readable
+// learnable text" — the service maps that to a `note: 'no_text'` response,
+// not an error.
+export type DeckFromImageProviderInput = DeckFromImageInput & { image: AiImageInput };
+
 export type AiSuggestionAction = {
     label: string;
     href: string;     // relative FE path
@@ -83,7 +106,9 @@ export type ChatRole = 'user' | 'assistant';
 // A single conversational turn. System prompts are kept separate (passed as
 // `systemPrompt` on the input) so providers can hand them to the API's
 // dedicated `system` field instead of stuffing them in the message array.
-export type ChatTurn = { role: ChatRole; content: string };
+// `image` is only ever set on the newest user turn (see chat.service.ts) —
+// images aren't persisted, so turns rebuilt from the DB are always text-only.
+export type ChatTurn = { role: ChatRole; content: string; image?: AiImageInput };
 
 export type ChatDoneMeta = {
     tokensInput: number;
@@ -154,6 +179,19 @@ export type AiProvider = {
         input: GenerateDeckInput,
         opts?: { onEvent?: (event: GenerateDeckEvent) => void },
     ) => Promise<AiDeckDraft>;
+
+    /**
+     * Extract a study-ready deck draft from an image. Implementations MUST
+     * only surface words actually present in the image (never invent) and
+     * should prefer the sentence a word appeared in as its `example`. An
+     * image with no readable learnable text resolves to `cards: []` — this
+     * is a normal (non-error) result.
+     */
+    deckFromImage: (
+        input: DeckFromImageProviderInput,
+        opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+    ) => Promise<AiDeckDraft>;
+
     suggest: (
         input: { context: SuggestContext; deckId?: string; dueCount: number; streak: number },
     ) => Promise<AiSuggestion>;

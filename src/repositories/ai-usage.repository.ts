@@ -8,8 +8,10 @@ const dayUtc = (d: Date = new Date()) => {
 
 // 'import' shares the same per-user-per-day rollup table as the AI kinds
 // (Quizlet / paste-text imports — see imports.service.ts). 'chat' tracks
-// real-time chat-message turns (see chat.service.ts).
-export type AiUsageKind = 'enrich' | 'generate' | 'suggest' | 'import' | 'chat';
+// real-time chat-message turns (see chat.service.ts). 'image' tracks vision
+// calls (deck-from-image endpoint + image-attached chat turns) — metered
+// separately since vision calls cost more than text-only ones.
+export type AiUsageKind = 'enrich' | 'generate' | 'suggest' | 'import' | 'chat' | 'image';
 
 export const findTodayCount = async (
     userId: string,

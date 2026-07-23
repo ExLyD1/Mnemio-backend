@@ -55,6 +55,7 @@ const buildProvider = (
     name: 'test',
     enrichWords: vi.fn() as never,
     generateDeck: vi.fn() as never,
+    deckFromImage: vi.fn() as never,
     suggest: vi.fn() as never,
     chat: chatImpl,
 });
@@ -332,5 +333,42 @@ describe('chat.service / sendMessage', () => {
         await sendMessage('u', 'c', 'Привіт', () => undefined, { locale: 'uk' });
 
         expect(seenPrompt).toContain('"uk"');
+    });
+
+    it('with an attached image: meters under "image" (not "chat"), adds the image clause to the prompt, and attaches the image to only the newest turn', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([
+            { role: 'user', content: 'earlier text turn' },
+        ]);
+        mockedRepo.createMessage
+            .mockResolvedValueOnce(messageRow({ id: 'user-msg', content: '' }) as never)
+            .mockResolvedValueOnce(
+                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
+            );
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'Found 3 words.' }) as never,
+        );
+        const image = { mediaType: 'image/png' as const, dataBase64: 'ZmFrZQ==' };
+        let seenPrompt = '';
+        let seenMessages: unknown[] = [];
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenPrompt = input.systemPrompt;
+                seenMessages = input.messages;
+                return { content: 'Found 3 words.', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', '', () => undefined, { image });
+
+        // Metered as 'image', not 'chat'.
+        expect(mockedBudget.assertWithinBudget).toHaveBeenCalledWith('u', 'image');
+        expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'image');
+        // System prompt gets the image-handling clause.
+        expect(seenPrompt).toContain('attached an image');
+        // Only the newest (last) turn carries the image; the prior DB turn doesn't.
+        expect(seenMessages.at(-1)).toMatchObject({ image });
+        expect(seenMessages[0]).not.toHaveProperty('image');
     });
 });

@@ -90,6 +90,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
                 env.MEDIA_MAX_AVATAR_BYTES,
                 env.MEDIA_MAX_IMAGE_BYTES,
                 env.MEDIA_MAX_AUDIO_BYTES,
+                env.AI_IMAGE_MAX_BYTES,
             ),
         },
     });

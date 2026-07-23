@@ -19,10 +19,19 @@ Critical: NEVER state or imply that a deck was created or that cards were added/
 
 Critical: when you call create_deck or add_cards for a request that names specific items (e.g. "10 names of X", "the capitals of Y", a list of species/terms/places), you MUST pass those exact items as \`words\` — never as \`topic\`. The \`words\` you pass are what actually becomes the deck's cards, so they must be identical to whatever items you name in your reply to the user. Only use \`topic\` for genuinely open-ended requests ("teach me some vocab about cooking") where you are not committing to a specific list.`;
 
+const IMAGE_ATTACHMENT_CLAUSE = `
+
+The user has attached an image (a screenshot, a photo of a page, or a video subtitle frame). Read it, then extract only the unfamiliar words genuinely worth learning that are ACTUALLY PRESENT in it — never invent words that aren't there. Call create_deck with those exact items as \`words\` (not \`topic\`), preferring the sentence each word appeared in on the image as its example. If the image has no readable, learnable text, say so plainly instead of guessing or calling a tool.`;
+
 // Builds the chat system prompt, optionally injecting the open deck (so the
-// model knows it can append to it) and the user's chat locale (so replies and
-// new decks default to that language instead of drifting to English).
-export const buildChatSystemPrompt = (deck?: ChatDeckContext, locale?: string | null): string => {
+// model knows it can append to it), the user's chat locale (so replies and
+// new decks default to that language instead of drifting to English), and an
+// image-handling clause when the current turn has an attached image.
+export const buildChatSystemPrompt = (
+    deck?: ChatDeckContext,
+    locale?: string | null,
+    hasImage?: boolean,
+): string => {
     let prompt = BASE_PROMPT;
     if (locale) {
         prompt += `
@@ -33,6 +42,9 @@ The user is writing in "${locale}" — reply in that language. When you call cre
         prompt += `
 
 The user is currently viewing the deck "${deck.title}" (${deck.sourceLanguage} → ${deck.targetLanguage}). When they ask to add words or cards to "this deck", "my deck", or the deck they're looking at, call add_cards (NOT create_deck). The cards will be appended to that deck.`;
+    }
+    if (hasImage) {
+        prompt += IMAGE_ATTACHMENT_CLAUSE;
     }
     return prompt;
 };

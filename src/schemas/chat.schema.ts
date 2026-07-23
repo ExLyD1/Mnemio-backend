@@ -13,7 +13,10 @@ export const renameConversationSchema = z.object({
 });
 
 export const sendMessageSchema = z.object({
-    content: z.string().trim().min(1).max(4000),
+    // Optional so an image-only multipart message is valid; the controller
+    // enforces "content or image required" since image presence isn't a
+    // schema-visible field (see chat.controller.ts).
+    content: z.string().trim().min(1).max(4000).optional(),
     // The deck the user currently has open, if any. Unlocks the add_cards tool
     // so "add these words to this deck" appends instead of creating a new deck.
     deckId: z.string().uuid().optional(),

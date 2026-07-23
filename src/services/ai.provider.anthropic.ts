@@ -10,6 +10,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type {
     AiCardDraft,
     AiDeckDraft,
+    AiImageInput,
     AiProvider,
     AiSuggestion,
     ChatResult,
@@ -18,6 +19,7 @@ import type {
     ChatToolOutcome,
     ChatToolsConfig,
     ChatTurn,
+    DeckFromImageProviderInput,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -33,6 +35,7 @@ import {
     AiValidationFailedError,
 } from '../shared/errors.js';
 import {
+    buildDeckFromImagePrompt,
     buildEnrichWordsPrompt,
     buildGenerateDeckPrompt,
     buildSuggestPrompt,
@@ -416,6 +419,162 @@ const generateDeck = async (
     return finalData;
 };
 
+// ---------- deckFromImage ----------
+
+const isValidImageDeckDraft = (data: Partial<AiDeckDraft>): boolean =>
+    typeof data.title === 'string' &&
+    typeof data.description === 'string' &&
+    typeof data.sourceLanguage === 'string' &&
+    typeof data.targetLanguage === 'string' &&
+    // Unlike text-driven generateDeck, an empty cards array is a VALID
+    // result here — it's how "no readable text in the image" is encoded.
+    Array.isArray(data.cards);
+
+const imageContentBlock = (image: AiImageInput): Anthropic.ImageBlockParam => ({
+    type: 'image',
+    source: {
+        type: 'base64',
+        media_type: image.mediaType,
+        data: image.dataBase64,
+    },
+});
+
+/** Run one tool-use call with an image + text user message; on validation
+ * failure, retry once with a clarifying text block appended (the image is
+ * only sent once — Anthropic keeps it in context for the retry turn). */
+const callImageToolUse = async (args: {
+    system: ReturnType<typeof buildDeckFromImagePrompt>['system'];
+    content: Anthropic.ContentBlockParam[];
+    maxTokens: number;
+}): Promise<{ data: AiDeckDraft; tokensInput: number; tokensOutput: number }> => {
+    let response;
+    try {
+        response = await client().messages.create({
+            model: env.ANTHROPIC_MODEL,
+            max_tokens: args.maxTokens,
+            system: args.system,
+            messages: [{ role: 'user', content: args.content }],
+            tools: [DECK_TOOL],
+            tool_choice: { type: 'tool', name: DECK_TOOL.name },
+        });
+    } catch (err) {
+        const status =
+            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
+        throw new AiProviderError(status, (err as Error).message);
+    }
+    const toolBlock = response.content.find((b) => b.type === 'tool_use');
+    if (!toolBlock || toolBlock.type !== 'tool_use') {
+        throw new AiValidationFailedError('Provider returned no tool_use block');
+    }
+    return {
+        data: toolBlock.input as AiDeckDraft,
+        tokensInput: response.usage.input_tokens,
+        tokensOutput: response.usage.output_tokens,
+    };
+};
+
+const deckFromImage = async (
+    input: DeckFromImageProviderInput,
+    opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+): Promise<AiDeckDraft> => {
+    const start = Date.now();
+    const { system, user } = buildDeckFromImagePrompt(input);
+    const baseContent: Anthropic.ContentBlockParam[] = [
+        imageContentBlock(input.image),
+        { type: 'text', text: user },
+    ];
+    const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
+
+    if (!opts?.onEvent) {
+        let result = await callImageToolUse({ system, content: baseContent, maxTokens });
+        if (!isValidImageDeckDraft(result.data)) {
+            result = await callImageToolUse({
+                system,
+                content: [
+                    ...baseContent,
+                    {
+                        type: 'text',
+                        text: 'Retry: your previous output failed schema validation. Return only the tool call, fully populated.',
+                    },
+                ],
+                maxTokens,
+            });
+            if (!isValidImageDeckDraft(result.data)) throw new AiValidationFailedError();
+        }
+        return result.data;
+    }
+
+    // Streaming path — mirrors generateDeck's inputJson snapshot parsing.
+    let emittedHeader = false;
+    let emittedCardCount = 0;
+    let finalData: AiDeckDraft | null = null;
+    let tokensInput = 0;
+    let tokensOutput = 0;
+
+    try {
+        const stream = client().messages.stream({
+            model: env.ANTHROPIC_MODEL,
+            max_tokens: maxTokens,
+            system,
+            messages: [{ role: 'user', content: baseContent }],
+            tools: [DECK_TOOL],
+            tool_choice: { type: 'tool', name: DECK_TOOL.name },
+        });
+
+        stream.on('inputJson', (_delta, snapshot) => {
+            if (!snapshot || typeof snapshot !== 'object') return;
+            const parsed = snapshot as Partial<AiDeckDraft>;
+            if (
+                !emittedHeader &&
+                typeof parsed.title === 'string' &&
+                typeof parsed.description === 'string' &&
+                typeof parsed.sourceLanguage === 'string' &&
+                typeof parsed.targetLanguage === 'string'
+            ) {
+                const { cards: _ignored, ...header } = parsed as AiDeckDraft;
+                void _ignored;
+                opts.onEvent!({ type: 'header', deck: header });
+                emittedHeader = true;
+            }
+            if (Array.isArray(parsed.cards)) {
+                const complete = parsed.cards.length - 1;
+                for (let i = emittedCardCount; i < complete; i++) {
+                    const c = parsed.cards[i]!;
+                    if (typeof c.word === 'string' && typeof c.definition === 'string') {
+                        opts.onEvent!({ type: 'card', position: i, card: c });
+                        emittedCardCount = i + 1;
+                    }
+                }
+            }
+        });
+
+        const finalMessage = await stream.finalMessage();
+        tokensInput = finalMessage.usage.input_tokens;
+        tokensOutput = finalMessage.usage.output_tokens;
+        const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
+        if (toolBlock?.type === 'tool_use') {
+            finalData = toolBlock.input as AiDeckDraft;
+        }
+    } catch (err) {
+        const status =
+            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
+        throw new AiProviderError(status, (err as Error).message);
+    }
+
+    if (!finalData || !isValidImageDeckDraft(finalData)) {
+        throw new AiValidationFailedError();
+    }
+    // Drain any trailing cards (may be zero — the "no readable text" case).
+    for (let i = emittedCardCount; i < finalData.cards.length; i++) {
+        opts.onEvent({ type: 'card', position: i, card: finalData.cards[i]! });
+    }
+    opts.onEvent({
+        type: 'done',
+        meta: { durationMs: Date.now() - start, tokensInput, tokensOutput },
+    });
+    return finalData;
+};
+
 // ---------- suggest ----------
 
 const isValidSuggestion = (data: Partial<AiSuggestion>): boolean =>
@@ -521,6 +680,21 @@ const runChatRound = async (params: {
     }
 };
 
+/**
+ * Maps a single ChatTurn to the content Anthropic expects. Prior turns are
+ * always plain text (images aren't persisted — see ChatTurn.image doc
+ * comment); only the newest user turn may carry an image, in which case it's
+ * sent as an image block + (optional) text block instead of a bare string.
+ * Exported as a pure function so the multimodal mapping is unit-testable
+ * without going through the SDK.
+ */
+export const chatTurnContent = (m: ChatTurn): Anthropic.MessageParam['content'] => {
+    if (!m.image) return m.content;
+    return m.content
+        ? [imageContentBlock(m.image), { type: 'text', text: m.content }]
+        : [imageContentBlock(m.image)];
+};
+
 const chat = async (
     input: {
         messages: ChatTurn[];
@@ -536,7 +710,7 @@ const chat = async (
 
     const initialMessages: Anthropic.MessageParam[] = input.messages.map((m) => ({
         role: m.role,
-        content: m.content,
+        content: chatTurnContent(m),
     }));
 
     const round1 = await runChatRound({
@@ -638,6 +812,7 @@ export const anthropicProvider: AiProvider = {
     name: 'anthropic',
     enrichWords,
     generateDeck,
+    deckFromImage,
     suggest,
     chat,
 };

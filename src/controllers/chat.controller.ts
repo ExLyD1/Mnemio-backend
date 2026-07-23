@@ -4,10 +4,13 @@ import {
     listConversationsQuerySchema,
     renameConversationSchema,
     sendMessageSchema,
+    type SendMessageInput,
 } from '../schemas/chat.schema.js';
 import * as chatService from '../services/chat.service.js';
 import { startSse, wantsSse } from '../shared/sse.js';
-import { AppError } from '../shared/errors.js';
+import { AppError, BadRequestError } from '../shared/errors.js';
+import { multipartTextFields, readAiImage } from '../shared/ai-image.js';
+import type { AiImageInput } from '../services/ai.provider.js';
 import {
     DEFAULT_LIMIT,
     decodeCursor,
@@ -73,11 +76,34 @@ export const sendMessage = async (
     request: FastifyRequest<{ Params: IdParams }>,
     reply: FastifyReply,
 ) => {
-    const input = sendMessageSchema.parse(request.body);
+    let image: AiImageInput | undefined;
+    let input: SendMessageInput;
+
+    if (request.isMultipart()) {
+        // Image-attached turn. The image is read into memory, base64'd for
+        // the model, and never persisted — see chat.service.ts.
+        const file = await request.file();
+        if (!file) {
+            throw new BadRequestError(
+                'AI_IMAGE_MISSING',
+                'Send the image as a multipart/form-data field named "image", or use a JSON body for text-only messages',
+            );
+        }
+        image = await readAiImage(file);
+        input = sendMessageSchema.parse(multipartTextFields(file));
+    } else {
+        input = sendMessageSchema.parse(request.body);
+    }
+
+    if (!input.content && !image) {
+        throw new BadRequestError('CHAT_EMPTY_MESSAGE', 'Send a message, an image, or both');
+    }
+    const content = input.content ?? '';
 
     const opts = {
         ...(input.deckId ? { deckId: input.deckId } : {}),
         ...(input.locale ? { locale: input.locale } : {}),
+        ...(image ? { image } : {}),
     };
 
     if (!wantsSse(request)) {
@@ -85,7 +111,7 @@ export const sendMessage = async (
         const result = await chatService.sendMessage(
             request.currentUser.sub,
             request.params.id,
-            input.content,
+            content,
             () => undefined,
             opts,
         );
@@ -99,7 +125,7 @@ export const sendMessage = async (
         await chatService.sendMessage(
             request.currentUser.sub,
             request.params.id,
-            input.content,
+            content,
             (frame) => {
                 switch (frame.type) {
                     case 'start':

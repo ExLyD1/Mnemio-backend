@@ -4,6 +4,7 @@ import type {
     AiSuggestion,
     ChatResult,
     ChatStreamEvent,
+    DeckFromImageProviderInput,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -89,6 +90,56 @@ export const mockProvider: AiProvider = {
             targetLanguage: input.targetLanguage,
             subject: 'languages',
             glyph: '✨',
+        };
+        if (opts?.onEvent) {
+            opts.onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
+            cards.forEach((card, position) =>
+                opts.onEvent!({ type: 'card', position, card } satisfies GenerateDeckEvent),
+            );
+            opts.onEvent({
+                type: 'done',
+                meta: { durationMs: Date.now() - start, tokensInput: 0, tokensOutput: 0 },
+            } satisfies GenerateDeckEvent);
+        }
+        return { ...header, cards } satisfies AiDeckDraft;
+    },
+
+    async deckFromImage(input: DeckFromImageProviderInput, opts): Promise<AiDeckDraft> {
+        const start = Date.now();
+        const targetLanguage = input.targetLanguage ?? 'en';
+
+        // Deterministic no-text fixture: lets callers (tests, FE dev) exercise
+        // the "no readable text" empty-deck path without needing real image
+        // content inspection — the mock never actually reads image bytes.
+        const noText = input.instructions === 'mock:no-text';
+
+        const count = noText ? 0 : (input.count ?? 8);
+        const cards = Array.from({ length: count }, (_, i) => {
+            const word = `${titleCase(targetLanguage)} image-word ${i + 1}`;
+            const definition =
+                PLACEHOLDER_DEFS[i % PLACEHOLDER_DEFS.length] ?? PLACEHOLDER_DEFS[0]!;
+            return {
+                word,
+                definition,
+                example: `[mock] "...${word}..." — the sentence it appeared in.`,
+                exampleTranslation: `[mock] Translation of the example for ${word}.`,
+                difficulty: (i % 3 === 0 ? 'easy' : i % 3 === 1 ? 'medium' : 'hard') as
+                    | 'easy'
+                    | 'medium'
+                    | 'hard',
+                tags: ['from-image'],
+            };
+        });
+
+        const header = {
+            title: noText ? 'No readable text found' : `Words from your image`,
+            description: noText
+                ? "We couldn't find any readable, learnable text in that image. Try a clearer photo or a different image."
+                : `AI-extracted vocabulary from your image. Edit before saving.`,
+            sourceLanguage: input.sourceLanguage,
+            targetLanguage,
+            subject: 'languages',
+            glyph: '📷',
         };
         if (opts?.onEvent) {
             opts.onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
