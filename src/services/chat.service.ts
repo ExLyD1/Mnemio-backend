@@ -17,6 +17,7 @@ import * as budget from './ai.budget.service.js';
 import { mockProvider } from './ai.provider.mock.js';
 import { anthropicProvider } from './ai.provider.anthropic.js';
 import type {
+    AiImageInput,
     AiProvider,
     ChatStreamEvent,
     ChatToolOutcome,
@@ -213,7 +214,7 @@ export const sendMessage = async (
     conversationId: string,
     content: string,
     onFrame: (frame: SendMessageStreamFrame) => void,
-    opts: { deckId?: string; locale?: string | null } = {},
+    opts: { deckId?: string; locale?: string | null; image?: AiImageInput } = {},
 ): Promise<{
     userMessage: PublicMessage;
     assistantMessage: PublicMessage;
@@ -224,9 +225,14 @@ export const sendMessage = async (
     const conv = await chatRepo.findConversation(conversationId, userId);
     if (!conv) throw new ChatNotFoundError();
 
+    // Image-attached turns are metered under the 'image' cap (vision calls
+    // cost more) instead of 'chat' — one consistent cap across both the
+    // standalone deck-from-image endpoint and this attachment path.
+    const budgetKind = opts.image ? 'image' : 'chat';
+
     // Budget check BEFORE we persist anything. We don't charge for messages
     // that 429.
-    await budget.assertWithinBudget(userId, 'chat');
+    await budget.assertWithinBudget(userId, budgetKind);
 
     // Resolve the in-context deck (the one the user is viewing). Ownership-scoped
     // — a deckId the user doesn't own is silently ignored, so add_cards simply
@@ -273,11 +279,16 @@ export const sendMessage = async (
     });
 
     // Build the model context: prior turns + the just-saved user message.
+    // Only the newest turn ever carries an image — images aren't persisted,
+    // so turns rebuilt from the DB (priorTurns) are always text-only.
     const priorTurns = await chatRepo.lastTurnsForModel(
         conversationId,
         env.AI_CHAT_CONTEXT_TURNS - 1,
     );
-    const turnsForModel = [...priorTurns, { role: 'user' as const, content }];
+    const turnsForModel = [
+        ...priorTurns,
+        { role: 'user' as const, content, ...(opts.image ? { image: opts.image } : {}) },
+    ];
 
     let buffer = '';
     let tokensInput = 0;
@@ -288,7 +299,7 @@ export const sendMessage = async (
         const result = await provider().chat(
             {
                 messages: turnsForModel,
-                systemPrompt: buildChatSystemPrompt(deckCtx, opts.locale),
+                systemPrompt: buildChatSystemPrompt(deckCtx, opts.locale, !!opts.image),
                 maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
                 tools: toolsForUser(userId, deckCtx, opts.locale),
             },
@@ -363,7 +374,7 @@ export const sendMessage = async (
     }
 
     // Charge the user only after a successful turn.
-    await budget.recordUse(userId, 'chat');
+    await budget.recordUse(userId, budgetKind);
 
     const assistantMessage = toPublicMessage(finalAssistantDb);
     onFrame({

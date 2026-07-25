@@ -13,7 +13,7 @@ subscriptions via Stripe). **65 endpoints under `/api/v1`** + `GET /health` +
 `GET /ready` + static `/media/*`. Nothing in this document is "coming later"
 unless it says so explicitly.
 
-### Endpoint inventory (65 under `/api/v1`)
+### Endpoint inventory (66 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -27,7 +27,7 @@ unless it says so explicitly.
 | Achievements | `GET /achievements` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
-| AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/suggest` |
+| AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
@@ -138,6 +138,9 @@ type ApiError = {
 | `AI_BUDGET_EXCEEDED` | any `/ai/*` | "Daily AI quota reached." `details.kind`, `details.capPerDay` |
 | `AI_PROVIDER_ERROR` | any `/ai/*` | Generic "AI is having a moment — try again." `details.providerStatus` for logs |
 | `AI_VALIDATION_FAILED` | any `/ai/*` | Same UX as provider error; LLM returned garbage |
+| `AI_IMAGE_MISSING` | `POST /ai/deck-from-image` · `POST /chat/conversations/:id/messages` (multipart) | Client bug — no `image` field in the multipart body. |
+| `AI_IMAGE_UNSUPPORTED_TYPE` | `POST /ai/deck-from-image` · image-attached chat message | "That image type isn't supported — try PNG, JPEG, WEBP, or GIF." `details.allowed` |
+| `AI_IMAGE_TOO_LARGE` | `POST /ai/deck-from-image` · image-attached chat message | "That image is too large." `details.maxBytes` |
 | `IMPORT_BAD_URL` | `POST /imports/quizlet` | "URL must be a `quizlet.com` set link." |
 | `IMPORT_NOT_FOUND` | `POST /imports/quizlet` | "Set is private, removed, or doesn't exist." |
 | `IMPORT_PARSE_FAILED` | `POST /imports/*` · `POST /decks/:id/cards/import` | "Couldn't parse this content." Suggest pasting text instead for Quizlet. |
@@ -343,9 +346,11 @@ type WelcomeState = {
   hasReviewed: boolean;
 };
 
-// Ephemeral card draft — used as both the AI-enrichment / generate-deck
-// output and the /imports/* output, so the FE renders one review/preview
-// UI for all three sources.
+// Ephemeral card draft — used as both the AI-enrichment / generate-deck /
+// deck-from-image output and the /imports/* output, so the FE renders one
+// review/preview UI for all four sources. For deck-from-image specifically,
+// `example` is the actual sentence the word appeared in on the image (not a
+// generated one) whenever the source material had one.
 type AiCardDraft = {
   word: string;
   definition: string;
@@ -1250,6 +1255,87 @@ Same SSE protocol as enrich-words, but with one additional event type:
 render the deck shell before any cards arrive. Then `card` events for each
 generated card, then `done`.
 
+#### `POST /ai/deck-from-image`  *(auth)* ⭐ key feature
+"Вчися з будь-чого" — extracts a study-ready deck from a single image (a
+screenshot, a photo of a textbook page, a video subtitle frame). The image is
+**read once and never persisted** — it exists only for the duration of the
+request. **Server does not persist the deck either** — same accept flow as
+`generate-deck` (`POST /decks` + `POST /decks/:id/cards/bulk`).
+
+Request is `multipart/form-data` (not JSON):
+
+```ts
+// Request (multipart/form-data)
+{
+  image: File;                   // field name "image" — png/jpeg/webp/gif,
+                                  // ≤ AI_IMAGE_MAX_BYTES (default 5 MB)
+  sourceLanguage?: string;       // default 'en' — language of definitions
+  targetLanguage?: string;       // omit to let the model detect it from the image
+  count?: number;                // 1–20, default 8 (upper bound — fewer cards
+                                  // come back if the image doesn't have that many)
+  instructions?: string;         // ≤ 300 chars — refine hint on a re-submit of
+                                  // the same image, e.g. "more words", "harder"
+}
+
+// 200 Response (non-streaming)
+{
+  provider: 'mock' | 'anthropic';
+  draft: {
+    title: string;
+    description: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    subject?: string;
+    glyph?: string;
+    cards: AiCardDraft[];        // may be empty — see `note` below
+  };
+  note?: 'no_text';              // present when the image had no readable,
+                                  // learnable text. This is NOT an error —
+                                  // show a friendly empty state, not a toast.
+}
+```
+
+**Invariants:**
+- **Only real words.** Cards are built exclusively from words the model
+  found in the image — never invented. This is a trust guarantee, not just a
+  prompt hint.
+- **Context, not a bare translation.** `example` is the sentence the word
+  appeared in on the image, where the source material had one.
+- **Honest empty state.** No readable/learnable text → `cards: []` +
+  `note: 'no_text'`, HTTP 200. The FE should show a clear message ("couldn't
+  find any words — try a clearer photo") and a retry action, not a generic
+  error toast.
+
+**Errors:**
+- `400 AI_IMAGE_MISSING` — no `image` field in the multipart body.
+- `400 AI_IMAGE_UNSUPPORTED_TYPE` — MIME type isn't png/jpeg/webp/gif.
+- `400 AI_IMAGE_TOO_LARGE` — image exceeds `AI_IMAGE_MAX_BYTES`.
+- `429 AI_BUDGET_EXCEEDED` — daily `image` cap hit (separate from `generate`).
+- `502 AI_PROVIDER_ERROR` / `502 AI_VALIDATION_FAILED` — same as generate-deck.
+
+##### Streaming variant — `Accept: text/event-stream`
+
+Same SSE protocol as `generate-deck` (`start` → `header` → `card`×N →
+`done`), with one difference: the `done` frame carries `note` when present.
+
+```
+event: start
+data: { "provider": "anthropic" }
+
+event: header
+data: { "type": "header", "deck": { "title": "...", "..." } }
+
+event: card
+data: { "type": "card", "position": 0, "card": { "..." } }
+
+event: done
+data: { "meta": { "durationMs": 1200, "tokensInput": 900, "tokensOutput": 300 } }
+```
+
+A `no_text` result streams `start` → `header` (explaining there's nothing to
+learn) → `done` with `note: 'no_text'` and zero `card` events — the FE can
+treat "no cards arrived" and `note` as the same signal.
+
 #### `POST /ai/suggest`  *(auth)*
 Contextual Mimi nudge for the dashboard / deck detail / review screens.
 Always single-response (small payload, no streaming needed).
@@ -1277,8 +1363,14 @@ Always single-response (small payload, no streaming needed).
 | Daily `generate` cap | 20/day | 200/day (env) | `429 AI_BUDGET_EXCEEDED` |
 | Daily `suggest` cap | 60/day | 600/day (env) | `429 AI_BUDGET_EXCEEDED` |
 | Daily `chat` cap | 50/day | 500/day (env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `image` cap | 10/day | 100/day (env) | `429 AI_BUDGET_EXCEEDED` |
 | Daily `import` cap | 20/day | 200/day (env) | `429 IMPORT_BUDGET_EXCEEDED` |
 | Max words per `enrich` call | 100 | 100 | `400 AI_TOO_MANY_WORDS` |
+| Max image size (`deck-from-image` + chat attachment) | 5 MB (env) | 5 MB (env) | `400 AI_IMAGE_TOO_LARGE` |
+
+`image` is its own daily cap — vision calls cost more than text-only ones. It
+covers **both** `POST /ai/deck-from-image` and any chat turn with an attached
+image (a chat turn with an image is metered as `image`, not `chat`).
 
 Free and premium caps are independently configurable via env
 (`AI_DAILY_*_CAP_PER_USER` for free, `AI_DAILY_*_CAP_PREMIUM_PER_USER` for
@@ -1400,7 +1492,7 @@ Hard delete. Cascades to all messages.
 #### `POST /chat/conversations/:id/messages`  *(auth)*
 Append a user message and stream the assistant reply.
 ```ts
-// Request
+// Request (JSON — Content-Type: application/json)
 {
   content: string;                  // 1..4000 chars (trimmed)
   deckId?: string;                  // uuid — the deck the user currently has OPEN.
@@ -1414,6 +1506,31 @@ Append a user message and stream the assistant reply.
                                     // user doesn't ask for a specific one.
 }
 ```
+
+**Image attachment (multipart/form-data)** — same endpoint, sent as
+`multipart/form-data` instead of JSON when the user drops an image into the
+chat ("Вчися з будь-чого" from the chat surface):
+
+```ts
+// Request (multipart/form-data)
+{
+  image: File;                      // field name "image" — png/jpeg/webp/gif,
+                                    // ≤ AI_IMAGE_MAX_BYTES (default 5 MB)
+  content?: string;                 // optional here — image-only messages are
+                                    // valid; when both are sent, content is
+                                    // additional instruction alongside the image
+  deckId?: string;                  // same semantics as the JSON body
+  locale?: string;                  // same semantics as the JSON body
+}
+```
+
+The model reads the image itself (no separate extraction endpoint) and, when
+it finds words worth learning, calls the existing `create_deck` tool — same
+`tool_use`/`tool_result` SSE frames as a text request. **The image is never
+persisted** — it's held in memory for the request only. An image-attached
+turn is metered against the **`image`** daily cap, not `chat` (vision calls
+cost more). If the image has no readable, learnable text the model just
+replies saying so — no tool call, no attachment.
 
 **SSE response** (when `Accept: text/event-stream` or `?stream=1`):
 ```
@@ -1503,6 +1620,14 @@ After an `event: error` the assistant message stays in the database with
 `status: 'partial'` and whatever text we got before the failure. The user
 is NOT charged a daily-cap unit. The FE should render the partial reply
 and offer the user a "retry" affordance.
+
+**Errors specific to the multipart (image) request:**
+- `400 CHAT_EMPTY_MESSAGE` — neither `content` nor `image` was sent.
+- `400 AI_IMAGE_MISSING` — multipart body has no `image` field.
+- `400 AI_IMAGE_UNSUPPORTED_TYPE` / `400 AI_IMAGE_TOO_LARGE` — see the AI
+  section's common errors table.
+- `429 AI_BUDGET_EXCEEDED` with `details.kind === 'image'` on an image turn
+  (vs `'chat'` for a text-only turn).
 
 **Non-SSE response** (default JSON):
 ```ts

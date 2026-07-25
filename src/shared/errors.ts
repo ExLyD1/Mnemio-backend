@@ -97,6 +97,23 @@ export class AiTooManyWordsError extends BadRequestError {
     }
 }
 
+// Vision (deck-from-image + image-attached chat turns).
+export class AiImageTooLargeError extends BadRequestError {
+    constructor(maxBytes: number) {
+        super('AI_IMAGE_TOO_LARGE', `Image exceeds the ${maxBytes}-byte limit`, { maxBytes });
+    }
+}
+
+export class AiImageUnsupportedTypeError extends BadRequestError {
+    constructor(allowed: string[]) {
+        super(
+            'AI_IMAGE_UNSUPPORTED_TYPE',
+            `Unsupported image type (allowed: ${allowed.join(', ')})`,
+            { allowed },
+        );
+    }
+}
+
 // External imports (Quizlet HTML scrape, paste-text, deck CSV/JSON).
 export class ImportBadUrlError extends BadRequestError {
     constructor(message = "URL must be a quizlet.com set link, e.g. https://quizlet.com/<id>/...") {

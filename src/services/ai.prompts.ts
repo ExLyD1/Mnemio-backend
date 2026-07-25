@@ -6,7 +6,7 @@
  * Keeping prompts here (vs inline in the adapter) makes them easy to A/B
  * tune without touching the SDK plumbing.
  */
-import type { EnrichWordsInput, GenerateDeckInput } from '../schemas/ai.schema.js';
+import type { DeckFromImageInput, EnrichWordsInput, GenerateDeckInput } from '../schemas/ai.schema.js';
 import type { SuggestContext } from './ai.provider.js';
 
 const CACHEABLE = { type: 'ephemeral' as const };
@@ -98,6 +98,57 @@ Source language (for definitions/translations): ${input.sourceLanguage}
 Target language (for the words being learned): ${input.targetLanguage}
 Number of cards: ${count}`;
     return { system, user };
+};
+
+const deckFromImageSystem = (sourceLanguage: string, targetLanguage?: string): string => `
+You are a vocabulary-deck designer for Mnemio, working from a single image —
+a photo of a page, a screenshot of an article, or a video subtitle frame.
+
+Your job: read the image, ${targetLanguage ? `the text is in ${targetLanguage}` : 'detect the language of the text in it'},
+and extract words genuinely worth learning — skip purely functional words
+(articles, basic pronouns) and words that are trivially easy.
+
+For each selected word, fill the same fields as enrich (definition REQUIRED,
+in ${sourceLanguage}, <= 120 chars; phonetic / partOfSpeech / example /
+exampleTranslation / tags / difficulty optional).
+
+CRITICAL rules:
+- Only include words that are ACTUALLY PRESENT in the image. Never invent,
+  guess, or add words that aren't there — a fabricated word breaks the
+  user's trust in the feature.
+- Wherever possible, set "example" to the exact sentence the word appeared
+  in on the image (not a made-up sentence), and "exampleTranslation" to that
+  sentence translated into ${sourceLanguage}.
+- Do not transcribe handwriting or blurry/illegible text you're not
+  confident about — skip a word rather than guess at it.
+- If the image has no readable text, or no text in a learnable language,
+  set title/description to explain that plainly and return an EMPTY cards
+  array. Do not fabricate cards to fill the deck.
+
+Also produce: title, description, subject ("languages"), and an optional
+1-glyph emoji.
+
+Call the emit_deck tool exactly once.
+`.trim();
+
+export const buildDeckFromImagePrompt = (input: DeckFromImageInput) => {
+    const system: CacheableSystem = [
+        {
+            type: 'text',
+            text: deckFromImageSystem(input.sourceLanguage, input.targetLanguage),
+            cache_control: CACHEABLE,
+        },
+    ];
+    const count = input.count ?? 8;
+    const lines = [
+        `Source language (for definitions/translations): ${input.sourceLanguage}`,
+        input.targetLanguage
+            ? `Target language (the words being learned): ${input.targetLanguage}`
+            : 'Target language: detect it from the text in the image.',
+        `Aim for up to ${count} cards — fewer is fine if the image genuinely doesn't have that many good words.`,
+    ];
+    if (input.instructions) lines.push(`Additional instructions: ${input.instructions}`);
+    return { system, user: lines.join('\n') };
 };
 
 const suggestSystem = `

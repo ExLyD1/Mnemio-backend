@@ -28,6 +28,8 @@ const capFor = (kind: aiUsageRepo.AiUsageKind, plan: 'free' | 'premium'): number
                 return env.IMPORT_DAILY_CAP_PREMIUM_PER_USER;
             case 'chat':
                 return env.AI_DAILY_CHAT_CAP_PREMIUM_PER_USER;
+            case 'image':
+                return env.AI_DAILY_IMAGE_CAP_PREMIUM_PER_USER;
         }
     }
     switch (kind) {
@@ -41,6 +43,8 @@ const capFor = (kind: aiUsageRepo.AiUsageKind, plan: 'free' | 'premium'): number
             return env.IMPORT_DAILY_CAP_PER_USER;
         case 'chat':
             return env.AI_DAILY_CHAT_CAP_PER_USER;
+        case 'image':
+            return env.AI_DAILY_IMAGE_CAP_PER_USER;
     }
 };
 

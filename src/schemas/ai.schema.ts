@@ -29,6 +29,20 @@ export const generateDeckSchema = z.object({
     count: z.coerce.number().int().min(1).max(20).optional(),
 });
 
+// Text fields for POST /ai/deck-from-image (multipart). The image itself is
+// read via request.file() in the controller — not part of this schema.
+// targetLanguage is optional: when omitted, the model detects the image's
+// language and uses that.
+export const deckFromImageSchema = z.object({
+    sourceLanguage: z.string().trim().min(2).max(10).default('en'),
+    targetLanguage: z.string().trim().min(2).max(10).optional(),
+    count: z.coerce.number().int().min(1).max(20).optional(),
+    // Free-text refine hint carried over on a re-submit of the same image
+    // (e.g. "more words", "harder", "with examples") — the image isn't
+    // stored server-side, so the FE resends it alongside a new instruction.
+    instructions: z.string().trim().max(300).optional(),
+});
+
 export const SUGGEST_KINDS = ['tip', 'deck', 'review'] as const;
 
 export const suggestSchema = z.object({
@@ -38,5 +52,6 @@ export const suggestSchema = z.object({
 
 export type EnrichWordsInput = z.infer<typeof enrichWordsSchema>;
 export type GenerateDeckInput = z.infer<typeof generateDeckSchema>;
+export type DeckFromImageInput = z.infer<typeof deckFromImageSchema>;
 export type SuggestInput = z.infer<typeof suggestSchema>;
 export type EnrichField = (typeof ENRICH_FIELDS)[number];

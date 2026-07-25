@@ -51,6 +51,32 @@ describe('ai.budget.service / assertWithinBudget', () => {
         );
     });
 
+    it('meters the "image" kind separately from "generate"', async () => {
+        // At the generate cap, image (a distinct, lower cap by default) should
+        // still trip on its own usage — not be shielded by generate's headroom.
+        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_IMAGE_CAP_PER_USER);
+        await expect(assertWithinBudget('u', 'image')).rejects.toBeInstanceOf(
+            AiBudgetExceededError,
+        );
+        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_IMAGE_CAP_PER_USER - 1);
+        await expect(assertWithinBudget('u', 'image')).resolves.toBeUndefined();
+    });
+
+    it('image error payload carries kind: "image" + its own capPerDay', async () => {
+        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_IMAGE_CAP_PER_USER);
+        try {
+            await assertWithinBudget('u', 'image');
+            expect.fail('should have thrown');
+        } catch (err) {
+            const payload = (err as AiBudgetExceededError).toPayload();
+            expect(payload.code).toBe('AI_BUDGET_EXCEEDED');
+            expect(payload.details).toEqual({
+                kind: 'image',
+                capPerDay: env.AI_DAILY_IMAGE_CAP_PER_USER,
+            });
+        }
+    });
+
     it('error payload carries kind + capPerDay so the FE can render "X of Y used"', async () => {
         mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_GENERATE_CAP_PER_USER);
         try {

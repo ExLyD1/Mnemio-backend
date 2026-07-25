@@ -19,6 +19,11 @@ const aiRoutes = async (fastify: FastifyInstance) => {
         aiController.generateDeck,
     );
     fastify.post(
+        '/ai/deck-from-image',
+        { config: { rateLimit: aiLimit } },
+        aiController.deckFromImage,
+    );
+    fastify.post(
         '/ai/suggest',
         { config: { rateLimit: aiLimit } },
         aiController.suggest,

@@ -6,6 +6,7 @@ import { mockProvider } from './ai.provider.mock.js';
 import { anthropicProvider } from './ai.provider.anthropic.js';
 import type {
     AiProvider,
+    DeckFromImageProviderInput,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -69,6 +70,19 @@ export const generateDeck = async (
     const draft = await provider.generateDeck(input, opts);
     await budget.recordUse(userId, 'generate');
     return draft;
+};
+
+// Result carries an optional `note` when the image had no readable/learnable
+// text — this is a normal outcome, not an error (empty cards, not a throw).
+export const deckFromImage = async (
+    userId: string,
+    input: DeckFromImageProviderInput,
+    opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+): Promise<{ draft: AiDeckDraft; note?: 'no_text' }> => {
+    await budget.assertWithinBudget(userId, 'image');
+    const draft = await provider.deckFromImage(input, opts);
+    await budget.recordUse(userId, 'image');
+    return draft.cards.length === 0 ? { draft, note: 'no_text' } : { draft };
 };
 
 const computeStreak = (rows: { date: Date; reviews: number }[]): number => {

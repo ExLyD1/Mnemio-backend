@@ -66,6 +66,12 @@ const envSchema = z
         // Hard ceiling on words per enrich call.
         AI_MAX_WORDS_PER_ENRICH: z.coerce.number().int().positive().max(200).default(100),
 
+        // Vision (deck-from-image + image-attached chat turns) — separate daily
+        // cap since vision calls cost more than text-only ones, and a hard byte
+        // ceiling on the uploaded image (images are never persisted).
+        AI_DAILY_IMAGE_CAP_PER_USER: z.coerce.number().int().positive().default(10),
+        AI_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
+
         // Real-time chat — daily per-user cap on user-message turns, context
         // window size (turns sent to the model), and per-reply output ceiling.
         AI_DAILY_CHAT_CAP_PER_USER: z.coerce.number().int().positive().default(50),
@@ -118,6 +124,7 @@ const envSchema = z
         AI_DAILY_SUGGEST_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(600),
         AI_DAILY_CHAT_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(500),
         IMPORT_DAILY_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),
+        AI_DAILY_IMAGE_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(100),
     })
     .refine(
         (v) =>
