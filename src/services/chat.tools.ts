@@ -68,10 +68,33 @@ export const CREATE_DECK_TOOL_DEF = {
         type: 'object' as const,
         properties: {
             topic: { type: 'string' as const },
-            words: { type: 'array' as const, items: { type: 'string' as const } },
-            title: { type: 'string' as const },
-            sourceLanguage: { type: 'string' as const },
-            targetLanguage: { type: 'string' as const },
+            words: {
+                type: 'array' as const,
+                items: { type: 'string' as const },
+                description:
+                    'Clean, standalone dictionary/citation-form words only — ' +
+                    'never raw fragments copied from a source (no list bullets, ' +
+                    'leading/trailing dashes, or numbering). Normalize casing to ' +
+                    'the target language\'s standard orthography even if the ' +
+                    'source displays it differently.',
+            },
+            title: {
+                type: 'string' as const,
+                description:
+                    'A short, natural title describing the deck\'s subject/topic ' +
+                    '(e.g. "Німецькі слова: Енергія" or "German vocabulary — ' +
+                    'Energy"). Do not echo the user\'s selection instructions ' +
+                    '(like a color or formatting cue used to pick the words) — ' +
+                    'describe what the words are about instead.',
+            },
+            sourceLanguage: {
+                type: 'string' as const,
+                description: 'The definitions\' language (what the user reads).',
+            },
+            targetLanguage: {
+                type: 'string' as const,
+                description: 'The language of the words being learned.',
+            },
             count: { type: 'integer' as const, minimum: 3, maximum: 20 },
         },
         required: [] as string[],

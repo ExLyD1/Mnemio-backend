@@ -21,7 +21,11 @@ Critical: when you call create_deck or add_cards for a request that names specif
 
 const IMAGE_ATTACHMENT_CLAUSE = `
 
-The user has attached an image (a screenshot, a photo of a page, or a video subtitle frame). Read it, then extract only the unfamiliar words genuinely worth learning that are ACTUALLY PRESENT in it — never invent words that aren't there. Call create_deck with those exact items as \`words\` (not \`topic\`), preferring the sentence each word appeared in on the image as its example. If the image has no readable, learnable text, say so plainly instead of guessing or calling a tool.`;
+The user has attached an image (a screenshot, a photo of a page, or a video subtitle frame). Read it, then extract only the unfamiliar words genuinely worth learning that are ACTUALLY PRESENT in it — never invent words that aren't there. Call create_deck with those items as \`words\` (not \`topic\`), preferring the sentence each word appeared in on the image as its example. If the image has no readable, learnable text, say so plainly instead of guessing or calling a tool.
+
+Before passing an item as a word, normalize it to its standalone dictionary/citation form — the source is often a messy handwritten or annotated list, not clean prose. Strip list markers, bullets, leading/trailing dashes, and numbering. Apply the target language's standard orthography regardless of how the image displays it (e.g. capitalize German nouns, lowercase German verbs/adjectives, even if the image has them in a different case). If an item is a combining-form fragment sharing a suffix with a neighboring item in a list (e.g. \`Luft-\` / \`Lärm-\` next to \`Verschmutzung\`), reconstruct the full standalone word from context — never pass a bare fragment or a trailing hyphen as a word.
+
+\`sourceLanguage\` (the definitions) is chosen independently of the image's own language — use whatever language the user explicitly asked for in the conversation, else the chat locale. The image's language is always \`targetLanguage\` (the words being learned); never let it leak into \`sourceLanguage\`.`;
 
 // Builds the chat system prompt, optionally injecting the open deck (so the
 // model knows it can append to it), the user's chat locale (so replies and
