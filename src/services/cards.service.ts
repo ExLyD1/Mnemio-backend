@@ -1,6 +1,7 @@
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as achievementsService from './achievements.service.js';
+import type { PublicAchievement } from './achievements.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { toPublicCard, type PublicCard } from '../shared/mappers.deck.js';
 import type {
@@ -45,7 +46,7 @@ export const create = async (
     ownerId: string,
     deckId: string,
     input: CreateCardInput,
-): Promise<PublicCard> => {
+): Promise<PublicCard & { newAchievements: PublicAchievement[] }> => {
     await assertOwnsDeck(deckId, ownerId);
     const position = await cardsRepo.nextPositionForDeck(deckId);
     const card = await cardsRepo.createCard({
@@ -55,15 +56,17 @@ export const create = async (
         ...buildCardCreateFields(input),
     });
     await decksRepo.recomputeCardCount(deckId);
-    achievementsService.evaluate(ownerId, 'card_create').catch(() => {});
-    return toPublicCard(card);
+    const newAchievements = await achievementsService
+        .evaluate(ownerId, 'card_create')
+        .catch(() => []);
+    return { ...toPublicCard(card), newAchievements };
 };
 
 export const bulkCreate = async (
     ownerId: string,
     deckId: string,
     input: BulkCreateCardsInput,
-): Promise<{ created: number }> => {
+): Promise<{ created: number; newAchievements: PublicAchievement[] }> => {
     await assertOwnsDeck(deckId, ownerId);
     const startPos = await cardsRepo.nextPositionForDeck(deckId);
     const rows: cardsRepo.CardCreate[] = input.cards.map((c, i) => ({
@@ -74,8 +77,10 @@ export const bulkCreate = async (
     }));
     const { count } = await cardsRepo.createCardsBulk(rows);
     await decksRepo.recomputeCardCount(deckId);
-    achievementsService.evaluate(ownerId, 'card_create').catch(() => {});
-    return { created: count };
+    const newAchievements = await achievementsService
+        .evaluate(ownerId, 'card_create')
+        .catch(() => []);
+    return { created: count, newAchievements };
 };
 
 export const update = async (

@@ -40,6 +40,17 @@ const collectStats = async (userId: string): Promise<AchievementStats> => {
     };
 };
 
+const toPublic = (a: (typeof ACHIEVEMENTS)[number], earnedAt: Date): PublicAchievement => ({
+    id: a.key,
+    key: a.key,
+    name: a.name,
+    description: a.description,
+    iconKey: a.iconKey,
+    earned: true,
+    earnedAt: earnedAt.toISOString(),
+    progress: 100,
+});
+
 export const list = async (userId: string): Promise<PublicAchievement[]> => {
     const [unlocks, stats] = await Promise.all([
         repo.findUserAchievements(userId),
@@ -64,15 +75,39 @@ export const list = async (userId: string): Promise<PublicAchievement[]> => {
     });
 };
 
+// Earned but not yet acknowledged via POST /achievements/ack — backs the
+// notification bell, and lets a client catch up on unlocks it missed (e.g.
+// earned on another device/tab).
+export const listUnseen = async (userId: string): Promise<PublicAchievement[]> => {
+    const rows = await repo.findUnseen(userId);
+    return rows
+        .map((u) => {
+            const a = ACHIEVEMENT_BY_KEY.get(u.key);
+            return a && u.earnedAt ? toPublic(a, u.earnedAt) : null;
+        })
+        .filter((a): a is PublicAchievement => a !== null);
+};
+
+// Marks unseen achievements as notified so they stop surfacing in the bell /
+// as toasts. Omit `keys` to ack everything currently unseen. Returns the keys
+// actually acked.
+export const acknowledge = async (userId: string, keys?: string[]): Promise<string[]> => {
+    const targetKeys = keys ?? (await repo.findUnseen(userId)).map((u) => u.key);
+    if (targetKeys.length === 0) return [];
+    await repo.markNotified(userId, targetKeys);
+    return targetKeys;
+};
+
 /**
  * Re-evaluates every achievement whose triggers include `trigger`. Idempotent:
- * already-earned achievements are not re-stamped. Returns the list of newly
- * earned keys so the caller can push a toast.
+ * already-earned achievements are not re-stamped. Returns the newly earned
+ * achievements (unseen, i.e. `notifiedAt` is null) so the caller can attach
+ * them to its response and the FE can toast/bell them immediately.
  */
 export const evaluate = async (
     userId: string,
     trigger: AchievementTriggers,
-): Promise<string[]> => {
+): Promise<PublicAchievement[]> => {
     const candidates = ACHIEVEMENTS.filter((a) => a.triggers.includes(trigger));
     if (candidates.length === 0) return [];
 
@@ -82,7 +117,7 @@ export const evaluate = async (
     ]);
     const unlockByKey = new Map(unlocks.map((u) => [u.key, u]));
 
-    const newlyEarned: string[] = [];
+    const newlyEarned: PublicAchievement[] = [];
     const now = new Date();
 
     for (const a of candidates) {
@@ -93,7 +128,7 @@ export const evaluate = async (
 
         if (isEarnedNow && !wasEarned) {
             await repo.upsertProgress(userId, a.key, { earnedAt: now, progress: 100 });
-            newlyEarned.push(a.key);
+            newlyEarned.push(toPublic(a, now));
         } else if (!wasEarned) {
             // Track progress so the UI can show a bar before the badge unlocks.
             await repo.upsertProgress(userId, a.key, { earnedAt: null, progress });

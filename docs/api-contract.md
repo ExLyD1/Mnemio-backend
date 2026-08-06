@@ -24,7 +24,7 @@ unless it says so explicitly.
 | Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
 | SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
 | Dashboard | `GET /dashboard` |
-| Achievements | `GET /achievements` |
+| Achievements | `GET /achievements` · `GET /achievements/unseen` · `POST /achievements/ack` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
 | AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
@@ -697,7 +697,9 @@ is fine — multipart isn't required.
   text: string;       // ≤ 1 000 000 chars
 }
 
-// 201 Response: { created: number }
+// 201 Response: { created: number; newAchievements: Achievement[] }
+// newAchievements: any achievement(s) unlocked by this import, empty array
+// otherwise — see "Achievements" below.
 
 // Errors:
 // 400 VALIDATION_ERROR        — empty body or unknown format
@@ -730,13 +732,14 @@ are imported.
   audioUrl?: string;                     // URL
   imageUrl?: string;                     // URL
 }
-// 201 Response: Card  (position is server-assigned: last + 1)
+// 201 Response: Card & { newAchievements: Achievement[] }
+// newAchievements: unlocked by this create, empty otherwise — see "Achievements".
 ```
 
 #### `POST /decks/:id/cards/bulk`  *(auth)*
 ```ts
 // Request: { cards: <same field set as POST /decks/:id/cards>[] }   // 1–100 items
-// 201 Response: { created: number }
+// 201 Response: { created: number; newAchievements: Achievement[] }
 ```
 
 #### `PATCH /cards/:id`  *(auth)*
@@ -787,12 +790,15 @@ Close session. **XP is server-computed**: `correct * 10 + 25`. User's total XP
 incremented atomically.
 ```ts
 // Request: (empty body)
-// 200 Response: StudySession  (status: 'complete', xpAwarded set)
+// 200 Response: StudySession & { newAchievements: Achievement[] }
+//   (status: 'complete', xpAwarded set)
 // Errors: 400 SESSION_NOT_ACTIVE · 404 SESSION_NOT_FOUND
 ```
 > **Side effect:** `user.xp` increases by `xpAwarded`. The response contains the
 > session, not the user — refresh user state via `GET /auth/me` (or
 > `GET /dashboard.stats.xp`) if the UI shows it.
+> `newAchievements`: any achievement(s) unlocked by finishing this session,
+> empty array otherwise — see "Achievements" below.
 
 #### `POST /sessions/:id/exit`  *(auth)*
 Explicit user-triggered exit. Marks an active session as `incomplete` (no XP
@@ -830,7 +836,9 @@ Most-recent incomplete session (or `null`). Powers "Continue studying" CTA.
 Rate a card. Server runs SM-2 and upserts the user's `CardProgress`.
 ```ts
 // Request: { cardId: string; rating: 'again' | 'hard' | 'good' | 'easy' }
-// 200 Response: CardProgress
+// 200 Response: CardProgress & { newAchievements: Achievement[] }
+// newAchievements: any achievement(s) unlocked by this rating, empty
+// array otherwise — see "Achievements" below.
 // Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN
 ```
 Rating → SM-2 quality mapping (matches the frontend composable). EF delta uses
@@ -944,6 +952,36 @@ create.
 ```
 Each entry includes `earned: boolean`, `earnedAt: string|null`, and
 `progress: 0..100` so the FE can show progress bars even before unlock.
+
+**Instant unlock delivery:** rather than requiring a poll of `GET /achievements`,
+newly-earned achievements ride along on the response of the triggering call —
+`POST /srs/rate`, `POST /sessions/:id/complete`, `POST /decks/:id/cards`,
+`POST /decks/:id/cards/bulk`, and `POST /decks/:id/cards/import` all include a
+`newAchievements: Achievement[]` field (empty when nothing unlocked). This is
+how the FE shows an unlock toast the instant it happens, mid-session included.
+
+Each `UserAchievement` also tracks `notifiedAt` (not exposed on `Achievement`
+directly): null until the unlock has been acknowledged via `POST
+/achievements/ack`. This is the persistent, cross-device "seen" flag backing
+the notification bell — it's what stops the same unlock from re-toasting on a
+later visit.
+
+#### `GET /achievements/unseen`  *(auth)*
+Achievements that are earned but not yet acknowledged (`notifiedAt IS NULL`),
+oldest first. Powers the notification-bell dropdown/badge and lets a client
+catch up on unlocks it missed (e.g. earned on another device/tab) — call this
+once on boot in addition to reacting to `newAchievements` on trigger responses.
+```ts
+// 200 Response: { items: Achievement[] }
+```
+
+#### `POST /achievements/ack`  *(auth)*
+Marks unseen achievements as acknowledged so they stop appearing in
+`GET /achievements/unseen` / as toasts.
+```ts
+// Request: { keys?: string[] }   // omit (or []) to ack everything unseen
+// 200 Response: { acknowledged: string[] }   // keys actually acked
+```
 
 ### Statistics  *(P1)*
 

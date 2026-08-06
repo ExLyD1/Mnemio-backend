@@ -1,6 +1,7 @@
 import * as sessionsRepo from '../repositories/sessions.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as achievementsService from './achievements.service.js';
+import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import { toPublicSession, type PublicSession } from '../shared/mappers.session.js';
@@ -77,7 +78,7 @@ export const updateProgress = async (
 export const complete = async (
     ownerId: string,
     sessionId: string,
-): Promise<PublicSession> => {
+): Promise<PublicSession & { newAchievements: PublicAchievement[] }> => {
     const session = await sessionsRepo.findSessionOwned(sessionId, ownerId);
     if (!session) throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
     if (session.status !== 'active') {
@@ -102,16 +103,15 @@ export const complete = async (
     }
     await sessionsRepo.incrementUserXp(ownerId, xp);
 
-    // Fire-and-don't-fail achievement evaluation. The session response shape is
-    // unchanged — newly-earned keys surface on the next GET /achievements.
-    achievementsService.evaluate(ownerId, 'session_complete').catch(() => {
-        // Swallow: achievement-system errors must not break session completion.
-    });
+    // Achievement errors must not break session completion — swallow to [].
+    const newAchievements = await achievementsService
+        .evaluate(ownerId, 'session_complete')
+        .catch(() => []);
 
     void milestone.checkFirstSession(ownerId);
 
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
-    return toPublicSession(fresh!);
+    return { ...toPublicSession(fresh!), newAchievements };
 };
 
 export const latestIncomplete = async (ownerId: string): Promise<PublicSession | null> => {

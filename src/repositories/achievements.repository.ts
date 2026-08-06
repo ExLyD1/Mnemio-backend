@@ -3,6 +3,19 @@ import { prisma } from '../db/prisma.js';
 export const findUserAchievements = (userId: string) =>
     prisma.userAchievement.findMany({ where: { userId } });
 
+// Earned but not yet acked (notifiedAt null) — backs the notification bell.
+export const findUnseen = (userId: string) =>
+    prisma.userAchievement.findMany({
+        where: { userId, earnedAt: { not: null }, notifiedAt: null },
+        orderBy: { earnedAt: 'asc' },
+    });
+
+export const markNotified = (userId: string, keys: string[]) =>
+    prisma.userAchievement.updateMany({
+        where: { userId, key: { in: keys } },
+        data: { notifiedAt: new Date() },
+    });
+
 export const upsertProgress = (
     userId: string,
     key: string,

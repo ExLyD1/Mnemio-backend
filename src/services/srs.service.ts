@@ -2,6 +2,7 @@ import * as srsRepo from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as activityRepo from '../repositories/activity.repository.js';
 import * as achievementsService from './achievements.service.js';
+import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
@@ -31,7 +32,7 @@ export type PublicCardProgress = {
 export const rate = async (
     ownerId: string,
     input: { cardId: string; rating: Rating },
-): Promise<PublicCardProgress> => {
+): Promise<PublicCardProgress & { newAchievements: PublicAchievement[] }> => {
     // Access: the rater must own the card's deck OR the deck must be public.
     // The progress row is keyed by (ownerId = rater, cardId), so two users
     // studying the same shared deck keep fully independent SRS — a viewer's
@@ -76,7 +77,7 @@ export const rate = async (
         console.error('[activity] recordReview failed', err);
     });
 
-    achievementsService.evaluate(ownerId, 'rate').catch(() => {});
+    const newAchievements = await achievementsService.evaluate(ownerId, 'rate').catch(() => []);
 
     // Only a brand-new progress row can be the user's first-ever review; skip
     // the probe on re-reviews of an already-seen card so it can't double-fire.
@@ -89,6 +90,7 @@ export const rate = async (
         easeFactor: saved.easeFactor,
         nextReviewAt: saved.nextReviewAt.toISOString(),
         lastReviewedAt: saved.lastReviewedAt ? saved.lastReviewedAt.toISOString() : null,
+        newAchievements,
     };
 };
 

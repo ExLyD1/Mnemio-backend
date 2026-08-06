@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as cardsService from './cards.service.js';
+import type { PublicAchievement } from './achievements.service.js';
 import { ImportParseFailedError } from '../shared/errors.js';
 import type { CreateCardInput } from '../schemas/card.schema.js';
 
@@ -137,7 +138,7 @@ export const importIntoDeck = async (
     deckId: string,
     format: DeckImportFormat,
     text: string,
-): Promise<{ created: number }> => {
+): Promise<{ created: number; newAchievements: PublicAchievement[] }> => {
     const cards = format === 'csv' ? fromCsv(text) : fromJson(text);
     if (cards.length === 0) {
         throw new ImportParseFailedError('No valid cards found in the input');
