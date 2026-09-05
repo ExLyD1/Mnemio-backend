@@ -695,6 +695,23 @@ export const chatTurnContent = (m: ChatTurn): Anthropic.MessageParam['content'] 
         : [imageContentBlock(m.image)];
 };
 
+// Builds a plain-text confirmation when round 2 (the model's own "here's your
+// deck!" reply) fails after a tool call already succeeded — see the call site
+// in chat() for why we must not throw in that case. Deliberately provider-
+// agnostic about the exact attachment shape (this file doesn't import
+// ChatAttachment - see the header comment), so it duck-types the fields it
+// needs and falls back to a generic line if they're missing.
+const fallbackToolConfirmation = (toolName: string, data: unknown): string => {
+    const d = data as { title?: unknown; cardCount?: unknown; action?: unknown; addedCount?: unknown };
+    if (toolName === 'add_cards' && typeof d.addedCount === 'number') {
+        return `Added ${d.addedCount} card${d.addedCount === 1 ? '' : 's'}.`;
+    }
+    if (typeof d.title === 'string' && typeof d.cardCount === 'number') {
+        return `Created "${d.title}" with ${d.cardCount} card${d.cardCount === 1 ? '' : 's'}.`;
+    }
+    return 'Done.';
+};
+
 const chat = async (
     input: {
         messages: ChatTurn[];
@@ -782,14 +799,31 @@ const chat = async (
         },
     ];
 
-    const round2 = await runChatRound({
-        messages: round2Messages,
-        system: input.systemPrompt,
-        maxOutputTokens: input.maxOutputTokens,
-        // No tools on round 2 — keep it strictly the final text reply.
-        ...(opts?.onEvent ? { onEvent: opts.onEvent } : {}),
-        ...(opts?.signal ? { signal: opts.signal } : {}),
-    });
+    // If the tool already ran successfully, its write is done and cannot be
+    // un-done — but round 2 (the closing "here's your deck!" text) is just a
+    // description of that write, generated with no further side effects. If
+    // it fails (provider timeout/network blip), don't throw and force the
+    // caller to retry: retrying resends the same user turn, the model calls
+    // create_deck again, and a second (or third) deck gets created for what
+    // the user experiences as one request (BUG-0824-08). Fall back to a
+    // canned confirmation built from the tool's own result instead, so the
+    // turn still completes successfully and nothing needs re-running.
+    let round2: { content: string; tokensInput: number; tokensOutput: number };
+    try {
+        round2 = await runChatRound({
+            messages: round2Messages,
+            system: input.systemPrompt,
+            maxOutputTokens: input.maxOutputTokens,
+            // No tools on round 2 — keep it strictly the final text reply.
+            ...(opts?.onEvent ? { onEvent: opts.onEvent } : {}),
+            ...(opts?.signal ? { signal: opts.signal } : {}),
+        });
+    } catch (err) {
+        if (!outcome.ok) throw err; // nothing was written — safe to propagate and retry
+        const fallback = fallbackToolConfirmation(call.name, outcome.data);
+        opts?.onEvent?.({ type: 'token', delta: fallback } satisfies ChatStreamEvent);
+        round2 = { content: fallback, tokensInput: 0, tokensOutput: 0 };
+    }
 
     const tokensInput = round1.tokensInput + round2.tokensInput;
     const tokensOutput = round1.tokensOutput + round2.tokensOutput;
