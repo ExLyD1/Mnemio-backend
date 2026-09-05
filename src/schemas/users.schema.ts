@@ -28,6 +28,11 @@ export const birthdaySchema = z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Birthday must be YYYY-MM-DD')
     .refine((s) => !Number.isNaN(Date.parse(s)), { message: 'Invalid birthday' })
+    // Checked separately from the age-minimum refine below so a future date
+    // (e.g. picked by mistake, or a client without the date-picker's min/max
+    // constraints) gets its own clear message instead of the misleading
+    // "must be at least 13 years old".
+    .refine((s) => new Date(s) <= today(), { message: 'Birthday cannot be in the future' })
     .refine((s) => new Date(s) <= yearsAgo(MIN_AGE_YEARS), {
         message: `You must be at least ${MIN_AGE_YEARS} years old`,
     });

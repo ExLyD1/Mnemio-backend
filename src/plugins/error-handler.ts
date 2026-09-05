@@ -13,9 +13,15 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
         }
 
         if (error instanceof ZodError) {
+            // Surface the first field-level issue as the top-level message (e.g.
+            // "Birthday cannot be in the future") instead of the generic
+            // "Invalid request payload" - the FE shows `message` directly in a
+            // toast and never reads `details`, so a real validation reason was
+            // silently getting swallowed down to a generic string.
+            const firstIssue = error.issues[0]?.message;
             return reply.status(400).send({
                 code: 'VALIDATION_ERROR',
-                message: 'Invalid request payload',
+                message: firstIssue ?? 'Invalid request payload',
                 details: z.treeifyError(error),
             });
         }
