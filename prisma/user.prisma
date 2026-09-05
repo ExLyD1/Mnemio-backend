@@ -56,6 +56,11 @@ model StudySession {
   deckId          String
   mode            String
   status          String   @default("active")
+  // Mirrors the FE's SRS on/off toggle (mode picker "Just browse" switch).
+  // Sessions started with SRS off never call POST /srs/rate per-card, so
+  // completing them also rolls the day's activity counters here instead -
+  // otherwise browse-mode study is invisible to streaks/goals/mastery stats.
+  srsEnabled      Boolean  @default(true)
   cardIds         String[] @default([])
   cardIndex       Int      @default(0)
   correct         Int      @default(0)

@@ -1,5 +1,6 @@
 import * as sessionsRepo from '../repositories/sessions.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
+import * as activityRepo from '../repositories/activity.repository.js';
 import * as achievementsService from './achievements.service.js';
 import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
@@ -45,6 +46,7 @@ export const start = async (
         deckId: input.deckId,
         mode: input.mode,
         cardIds: cards.map((c) => c.id),
+        srsEnabled: input.srsEnabled,
     });
     return toPublicSession(session);
 };
@@ -102,6 +104,27 @@ export const complete = async (
         throw new BadRequestError('SESSION_NOT_ACTIVE', 'Session was no longer active');
     }
     await sessionsRepo.incrementUserXp(ownerId, xp);
+
+    // Browse-mode sessions (SRS off) never call POST /srs/rate per-card, so
+    // they never touch dailyActivity either — leaving streaks, the weekly
+    // goal, and "cards reviewed" permanently at 0 no matter how much the user
+    // actually studies. Roll the day's counters here instead, once per
+    // session, for exactly the sessions that wouldn't otherwise report any
+    // activity. SRS sessions already get this per-card via srs.service.rate(),
+    // so skip them here to avoid double-counting.
+    if (!session.srsEnabled && cardsStudied > 0) {
+        await activityRepo
+            .recordReview(ownerId, {
+                wasCorrect: correctAnswers > 0,
+                reviews: cardsStudied,
+                correct: correctAnswers,
+                durationMs,
+            })
+            .catch((err) => {
+                // eslint-disable-next-line no-console
+                console.error('[activity] recordReview (browse session) failed', err);
+            });
+    }
 
     // Achievement errors must not break session completion — swallow to [].
     const newAchievements = await achievementsService

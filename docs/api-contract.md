@@ -307,6 +307,7 @@ type StudySession = {
   xpAwarded: number;
   cardsStudied: number;
   correctAnswers: number;
+  srsEnabled: boolean;         // mirrors the FE mode-picker's SRS toggle
   counts: SessionCounts;       // P1: per-grade tally
   revisitCardIds: string[];    // P1: cards the user flagged to revisit
   durationMs: number;          // P1: ms spent in this session
@@ -762,7 +763,11 @@ session is flipped to `incomplete` before the new one becomes `active`.
 
 #### `POST /sessions`  *(auth)*
 ```ts
-// Request: { deckId: string; mode: 'flashcard' | 'multiple_choice' | 'srs' }
+// Request: {
+//   deckId: string;
+//   mode: 'flashcard' | 'multiple_choice' | 'srs';
+//   srsEnabled?: boolean;      // default true; false = "Just browse" (no SM-2 grading)
+// }
 
 // 201 Response: StudySession  (status: 'active', cardIds: deck snapshot,
 //                              cardIndex: 0, correct: 0)
@@ -799,6 +804,11 @@ incremented atomically.
 > `GET /dashboard.stats.xp`) if the UI shows it.
 > `newAchievements`: any achievement(s) unlocked by finishing this session,
 > empty array otherwise — see "Achievements" below.
+> **Browse-mode activity:** when the session was started with `srsEnabled: false`,
+> completing it also rolls the day's `dailyActivity` counters
+> (`reviews += cardsStudied`, `correct += correctAnswers`) directly, since a
+> browse-mode session never calls `POST /srs/rate` per-card. SRS sessions get
+> this per-card via `/srs/rate` instead, so it is not duplicated here.
 
 #### `POST /sessions/:id/exit`  *(auth)*
 Explicit user-triggered exit. Marks an active session as `incomplete` (no XP

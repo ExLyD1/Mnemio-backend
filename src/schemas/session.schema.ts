@@ -6,6 +6,11 @@ export type SessionMode = (typeof SESSION_MODES)[number];
 export const createSessionSchema = z.object({
     deckId: z.string().uuid(),
     mode: z.enum(SESSION_MODES),
+    // Mirrors the FE mode-picker's SRS toggle. Defaults true (SRS on) to match
+    // the FE default. When false, completing the session rolls the day's
+    // activity counters directly (see sessions.service.complete) since no
+    // per-card POST /srs/rate call will do it.
+    srsEnabled: z.boolean().default(true),
 });
 
 export const updateSessionSchema = z

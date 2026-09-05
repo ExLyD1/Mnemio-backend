@@ -19,6 +19,7 @@ export type PublicSession = {
     xpAwarded: number;
     cardsStudied: number;
     correctAnswers: number;
+    srsEnabled: boolean;
     counts: SessionCounts;
     revisitCardIds: string[];
     durationMs: number;
@@ -39,6 +40,7 @@ export const toPublicSession = (s: StudySessionModel): PublicSession => ({
     xpAwarded: s.xpAwarded,
     cardsStudied: s.cardsStudied,
     correctAnswers: s.correctAnswers,
+    srsEnabled: s.srsEnabled,
     counts: {
         again: s.countsAgain,
         hard: s.countsHard,
