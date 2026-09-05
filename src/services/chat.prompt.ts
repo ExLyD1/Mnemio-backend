@@ -1,5 +1,7 @@
 // Single source of truth for the chat system prompt and auto-title rule.
 
+import { normalizeLang, langDisplayName } from '../shared/lang.js';
+
 // In-context deck the user currently has open. When present, the assistant is
 // allowed to append cards to it via the add_cards tool.
 export type ChatDeckContext = {
@@ -37,10 +39,18 @@ export const buildChatSystemPrompt = (
     hasImage?: boolean,
 ): string => {
     let prompt = BASE_PROMPT;
-    if (locale) {
+    const localeCode = normalizeLang(locale);
+    const localeName = localeCode ? langDisplayName(localeCode) : null;
+    if (localeName) {
+        // Named twice, deliberately: once here and once at the very end of the
+        // prompt (see below). A single mention early in a long system prompt is
+        // easy for the model to under-weight once the conversation has its own
+        // English-heavy content (tool JSON, English vocab words being studied,
+        // etc.) - repeating it right before generation keeps it from drifting
+        // back to English mid-conversation (BUG-0824-09).
         prompt += `
 
-The user is writing in "${locale}" â€” reply in that language. When you call create_deck, default sourceLanguage/targetLanguage to "${locale}" UNLESS the user explicitly asks for a different or custom language pair (e.g. "words in Spanish, definitions in Portuguese"), in which case set the languages to what they asked for instead.`;
+The user's app language is ${localeName}. Always reply in ${localeName}, even if their message or the words being studied are in a different language. When you call create_deck, default sourceLanguage/targetLanguage to "${localeCode}" UNLESS the user explicitly asks for a different or custom language pair (e.g. "words in Spanish, definitions in Portuguese"), in which case set the languages to what they asked for instead.`;
     }
     if (deck) {
         prompt += `
@@ -49,6 +59,11 @@ The user is currently viewing the deck "${deck.title}" (${deck.sourceLanguage} â
     }
     if (hasImage) {
         prompt += IMAGE_ATTACHMENT_CLAUSE;
+    }
+    if (localeName) {
+        prompt += `
+
+Reminder: reply in ${localeName}.`;
     }
     return prompt;
 };

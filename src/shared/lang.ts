@@ -38,6 +38,22 @@ const NAME_TO_CODE: Record<string, string> = {
     indonesian: 'id',
 };
 
+// Reverse of NAME_TO_CODE, built once — capitalized English display names
+// for the codes we recognize. Used to give the model an unambiguous language
+// name instead of a bare ISO code, which is easy to under-weight as an
+// instruction (see buildChatSystemPrompt's locale clause).
+const CODE_TO_NAME: Record<string, string> = Object.fromEntries(
+    Object.entries(NAME_TO_CODE).map(([name, code]) => [
+        code,
+        name.charAt(0).toUpperCase() + name.slice(1),
+    ]),
+);
+
+// Human-readable display name for an ISO 639-1 code (e.g. "uk" → "Ukrainian").
+// Falls back to the bare code itself when unrecognized, so callers always get
+// a usable string.
+export const langDisplayName = (code: string): string => CODE_TO_NAME[code] ?? code;
+
 // Accepts codes like "en", "uk-UA", "English", "Ukrainian"; returns a bare
 // 2-letter ISO 639-1 code, or null when it can't be resolved.
 export const normalizeLang = (raw: string | null | undefined): string | null => {
