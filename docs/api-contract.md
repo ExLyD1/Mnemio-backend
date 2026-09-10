@@ -509,13 +509,21 @@ independently; the FE never fully trusts it for hard access control.
 #### Google OAuth flow (3 endpoints)
 
 End-to-end:
-1. FE redirects the user to `GET /auth/oauth/google` (backend sets state
-   + PKCE cookies, redirects to Google).
+1. FE redirects the user to `GET /auth/oauth/google?returnOrigin=<this FE's
+   own origin>` (backend sets state + PKCE cookies, redirects to Google).
+   `returnOrigin` is validated against `WEB_URLS` (falling back to `WEB_URL`
+   if unset/not on the allowlist) and stashed in a cookie alongside state/PKCE
+   — this is what lets multiple deployed frontends (e.g. a dev and a prod
+   origin) share one backend without OAuth always landing back on whichever
+   origin `WEB_URL` happens to be. Omitting it, or passing an origin not on
+   the allowlist, just falls back to `WEB_URL` — nothing breaks.
 2. Google sends the user to `/auth/oauth/google/callback?code=...&state=...`.
    Backend validates state, exchanges the code, looks up or creates the
    user, **sets the `mnemio_refresh` cookie**, generates a short-lived
    exchange code, and 302-redirects to
-   `${WEB_URL}/auth/oauth/callback?code=<short_lived>`.
+   `${returnOrigin}/auth/oauth/callback?code=<short_lived>` (the origin
+   stashed in step 1, re-validated against the current allowlist; `WEB_URL`
+   if none was stashed).
 3. FE swaps the short code via `POST /auth/oauth/exchange { code }` and
    gets `{ accessToken, user, needsProfile, welcome }`.
 
@@ -529,10 +537,10 @@ Identity-linking policy:
 - Else → create a new user with `emailVerifiedAt = now()`, link identity, sign in.
 
 ```ts
-GET /auth/oauth/google      → 302 to https://accounts.google.com/...
+GET /auth/oauth/google?returnOrigin=<optional>  → 302 to https://accounts.google.com/...
 GET /auth/oauth/google/callback?code=&state=
-  → on success: 302 to ${WEB_URL}/auth/oauth/callback?code=<short>
-  → on failure: 302 to ${WEB_URL}/auth/oauth/error?reason=<...>
+  → on success: 302 to ${returnOrigin ?? WEB_URL}/auth/oauth/callback?code=<short>
+  → on failure: 302 to ${returnOrigin ?? WEB_URL}/auth/oauth/error?reason=<...>
                  (reasons: missing_state | bad_state | missing_code |
                   exchange_failed | OAUTH_EMAIL_UNVERIFIED | etc.)
 
