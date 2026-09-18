@@ -8,6 +8,18 @@
  */
 import type { DeckFromImageInput, EnrichWordsInput, GenerateDeckInput } from '../schemas/ai.schema.js';
 import type { SuggestContext } from './ai.provider.js';
+import { langDisplayName, normalizeLang } from '../shared/lang.js';
+
+// Bare ISO codes are ambiguous to the model — "uk" in particular reads as
+// "United Kingdom" (i.e. English), which produced English definitions on
+// decks meant for Ukrainian speakers. Always name the language in full and
+// keep the code alongside it: "Ukrainian (uk)".
+export const promptLang = (raw: string): string => {
+    const code = normalizeLang(raw);
+    if (!code) return raw;
+    const name = langDisplayName(code);
+    return name === code ? code : `${name} (${code})`;
+};
 
 const CACHEABLE = { type: 'ephemeral' as const };
 
@@ -17,18 +29,23 @@ export type CacheableSystem = Array<{
     cache_control?: typeof CACHEABLE;
 }>;
 
-const enrichSystem = (sourceLanguage: string, targetLanguage: string): string => `
+const enrichSystem = (rawSource: string, rawTarget: string): string => {
+    const sourceLanguage = promptLang(rawSource);
+    const targetLanguage = promptLang(rawTarget);
+    return `
 You are a dictionary assistant for Mnemio, a vocabulary-learning app.
 
 Your job: given a list of words written in ${targetLanguage}, output one
 short, learner-friendly entry per word, translated into ${sourceLanguage}.
 
 For each input word, fill these fields:
-- definition (REQUIRED, ${sourceLanguage}, 1 sentence, <= 120 chars)
+- definition (REQUIRED, written in ${sourceLanguage}, 1 sentence, <= 120 chars)
 - phonetic (IPA or pronunciation guide, optional)
 - partOfSpeech (e.g. "noun", "verb"; optional)
-- example (one short sentence in ${targetLanguage}, optional, <= 100 chars)
-- exampleTranslation (the example translated to ${sourceLanguage}, optional)
+- example (one short sentence in ${targetLanguage}, <= 100 chars — include it
+  for every word you can)
+- exampleTranslation (REQUIRED whenever you give an example: that example
+  translated into ${sourceLanguage})
 - tags (1-3 thematic tags, optional)
 - difficulty ("easy" | "medium" | "hard", optional)
 
@@ -43,8 +60,12 @@ Rules:
 - If a word may be a slur or otherwise blocked content, return definition: ""
   and tags: ["ai-blocked"].
 
+The definition and exampleTranslation MUST be in ${sourceLanguage}, never in
+${targetLanguage} (unless the two are the same language).
+
 Call the emit_cards tool exactly once with all entries.
 `.trim();
+};
 
 export const buildEnrichWordsPrompt = (input: EnrichWordsInput) => {
     const system: CacheableSystem = [
@@ -61,7 +82,7 @@ export const buildEnrichWordsPrompt = (input: EnrichWordsInput) => {
 
     const user = [
         input.context ? `Context: ${input.context}\n` : '',
-        `Words (${input.words.length}, in ${input.targetLanguage}):\n${numbered}`,
+        `Words (${input.words.length}, in ${promptLang(input.targetLanguage)}):\n${numbered}`,
     ].join('');
 
     return { system, user };
@@ -74,8 +95,11 @@ Your job: given a topic + a source language and target language, output a
 study-ready deck with title, description, subject ("languages" if vocab,
 else the field), an optional 1-glyph emoji, and N high-quality cards.
 
-Each card has the same fields as enrich (definition is required; phonetic /
-partOfSpeech / example / exampleTranslation / tags / difficulty optional).
+Each card has the same fields as enrich (definition is required and is
+written in the source language; phonetic / partOfSpeech / tags / difficulty
+optional). Give every card an example sentence in the target language plus
+its exampleTranslation into the source language whenever you can — learners
+rely on both.
 
 If the topic names or implies a specific set of items (e.g. "names of X",
 "the capitals of Y", a species/category the caller clearly means to
@@ -94,8 +118,8 @@ export const buildGenerateDeckPrompt = (input: GenerateDeckInput) => {
     ];
     const count = input.count ?? 8;
     const user = `Topic: ${input.topic}
-Source language (for definitions/translations): ${input.sourceLanguage}
-Target language (for the words being learned): ${input.targetLanguage}
+Source language (for definitions/translations): ${promptLang(input.sourceLanguage)}
+Target language (for the words being learned): ${promptLang(input.targetLanguage)}
 Number of cards: ${count}`;
     return { system, user };
 };
@@ -135,15 +159,18 @@ export const buildDeckFromImagePrompt = (input: DeckFromImageInput) => {
     const system: CacheableSystem = [
         {
             type: 'text',
-            text: deckFromImageSystem(input.sourceLanguage, input.targetLanguage),
+            text: deckFromImageSystem(
+                promptLang(input.sourceLanguage),
+                input.targetLanguage ? promptLang(input.targetLanguage) : undefined,
+            ),
             cache_control: CACHEABLE,
         },
     ];
     const count = input.count ?? 8;
     const lines = [
-        `Source language (for definitions/translations): ${input.sourceLanguage}`,
+        `Source language (for definitions/translations): ${promptLang(input.sourceLanguage)}`,
         input.targetLanguage
-            ? `Target language (the words being learned): ${input.targetLanguage}`
+            ? `Target language (the words being learned): ${promptLang(input.targetLanguage)}`
             : 'Target language: detect it from the text in the image.',
         `Aim for up to ${count} cards — fewer is fine if the image genuinely doesn't have that many good words.`,
     ];

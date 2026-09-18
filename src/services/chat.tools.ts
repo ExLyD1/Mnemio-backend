@@ -126,15 +126,25 @@ export const ADD_CARDS_TOOL_DEF = {
 // ---------- Defaults ----------
 
 const DEFAULT_SOURCE = 'en';
-const DEFAULT_TARGET = 'es';
 const DEFAULT_TITLE_FALLBACK = 'Vocabulary deck';
 
+// Fallback learning language when neither the model nor the user's
+// preferences name one: English for everyone whose definitions aren't
+// already English (Mnemio's core audience is Ukrainian learners of English),
+// Spanish for English speakers. Never the definitions' own language — a
+// deck whose words and definitions are both in the user's native language
+// teaches nothing (QA: "Mimi created decks for learning Ukrainian").
+export const defaultTargetFor = (sourceLanguage: string): string =>
+    sourceLanguage === 'en' ? 'es' : 'en';
+
 // Resolves the source/target language pair. Precedence: what the model
-// explicitly passed (it may honor a custom pair the user asked for) wins;
-// otherwise the chat's locale is the default (so a Ukrainian chat gets a
-// Ukrainian deck instead of silently falling back to en/es); otherwise the
-// user's saved preferences; otherwise the hardcoded fallback. Every source is
-// normalized to an ISO 639-1 code so decks never persist "English"/"Ukrainian".
+// explicitly passed (it may honor a custom pair the user asked for) wins.
+// Source (definitions) then falls back to the chat locale, then the user's
+// native-language preference. Target (the words being learned) falls back to
+// the user's first learning language, then defaultTargetFor(source) — it
+// deliberately does NOT fall back to the chat locale, which is the user's own
+// language. Every source is normalized to an ISO 639-1 code so decks never
+// persist "English"/"Ukrainian".
 const resolveDefaults = async (
     userId: string,
     input: CreateDeckToolInput,
@@ -149,8 +159,7 @@ const resolveDefaults = async (
     const targetLanguage =
         normalizeLang(input.targetLanguage) ??
         normalizeLang(pref.learningLanguages[0]) ??
-        normalizeLang(locale) ??
-        DEFAULT_TARGET;
+        defaultTargetFor(sourceLanguage);
     return { sourceLanguage, targetLanguage };
 };
 
@@ -290,8 +299,12 @@ export const runCreateDeck = async (
             {
                 title: input.title ?? draft.title ?? DEFAULT_TITLE_FALLBACK,
                 description: draft.description,
-                sourceLanguage: draft.sourceLanguage ?? sourceLanguage,
-                targetLanguage: draft.targetLanguage ?? targetLanguage,
+                // The resolved pair is authoritative — it is what the prompt
+                // told the model to write in. Don't let the model's own echo of
+                // the languages (draft.sourceLanguage/targetLanguage) override
+                // it: it can mislabel, e.g. read "uk" as UK English.
+                sourceLanguage,
+                targetLanguage,
             },
             draft.cards,
         );
