@@ -42,9 +42,16 @@ export const updateMeSchema = z
         fullName: fullNameSchema.optional(),
         username: usernameSchema.optional(),
         birthday: birthdaySchema.optional(),
+        // Only `null` is accepted: it removes the profile photo. Setting a new
+        // photo goes through POST /media/uploads?kind=avatar.
+        avatarUrl: z.null().optional(),
     })
     .refine(
-        (v) => v.fullName !== undefined || v.username !== undefined || v.birthday !== undefined,
+        (v) =>
+            v.fullName !== undefined ||
+            v.username !== undefined ||
+            v.birthday !== undefined ||
+            v.avatarUrl !== undefined,
         { message: 'At least one field is required' },
     );
 

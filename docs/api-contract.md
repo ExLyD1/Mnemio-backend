@@ -564,6 +564,8 @@ Profile completion. All fields optional; at least one required.
   username?: string;      // 3–24 chars, /^[a-zA-Z0-9_]+$/, lowercased server-side,
                           // reserved names rejected (admin, root, mnemio, …)
   birthday?: string;      // 'YYYY-MM-DD'; must be ≥ 13 years ago
+  avatarUrl?: null;       // only null is accepted — removes the profile photo
+                          // (upload a new one via POST /media/uploads?kind=avatar)
 }
 
 // 200 Response: { user: User; needsProfile: boolean }
