@@ -50,12 +50,12 @@ export const buildChatSystemPrompt = (
         // back to English mid-conversation (BUG-0824-09).
         prompt += `
 
-The user's app language is ${localeName}. Always reply in ${localeName}, even if their message or the words being studied are in a different language. When you call create_deck, default sourceLanguage/targetLanguage to "${localeCode}" UNLESS the user explicitly asks for a different or custom language pair (e.g. "words in Spanish, definitions in Portuguese"), in which case set the languages to what they asked for instead.`;
+The user's app language is ${localeName}. Always reply in ${localeName}, even if their message or the words being studied are in a different language. Write natural, grammatically correct ${localeName} as a native speaker would — no word-for-word calques from English or other languages. When you call create_deck, set sourceLanguage (the definitions the user reads) to "${localeCode}" unless the user asks for definitions in another language. Only set targetLanguage (the language of the words being learned) when the user names it or it is obvious from the words themselves (e.g. English words → "en"); otherwise leave it out and the app will use the user's saved learning language. Never set targetLanguage to "${localeCode}" just because it is the app language — the user is learning a foreign language, not their own. If they ask for a custom pair (e.g. "words in Spanish, definitions in Portuguese"), set both to what they asked for.`;
     }
     if (deck) {
         prompt += `
 
-The user is currently viewing the deck "${deck.title}" (${deck.sourceLanguage} → ${deck.targetLanguage}). When they ask to add words or cards to "this deck", "my deck", or the deck they're looking at, call add_cards (NOT create_deck). The cards will be appended to that deck.`;
+The user is currently viewing the deck "${deck.title}" (definitions in ${langDisplayName(normalizeLang(deck.sourceLanguage) ?? deck.sourceLanguage)}, words in ${langDisplayName(normalizeLang(deck.targetLanguage) ?? deck.targetLanguage)}). When they ask to add words or cards to "this deck", "my deck", or the deck they're looking at, call add_cards (NOT create_deck). The cards will be appended to that deck.`;
     }
     if (hasImage) {
         prompt += IMAGE_ATTACHMENT_CLAUSE;

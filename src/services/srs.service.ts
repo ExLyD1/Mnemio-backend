@@ -6,6 +6,7 @@ import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
+import { DEFAULT_TZ } from './tz.js';
 import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
 
 export const MASTERY_THRESHOLD = 3; // repetitions >= 3 (canonical, deck-stats.repository.ts)
@@ -32,6 +33,7 @@ export type PublicCardProgress = {
 export const rate = async (
     ownerId: string,
     input: { cardId: string; rating: Rating },
+    tz: string = DEFAULT_TZ,
 ): Promise<PublicCardProgress & { newAchievements: PublicAchievement[] }> => {
     // Access: the rater must own the card's deck OR the deck must be public.
     // The progress row is keyed by (ownerId = rater, cardId), so two users
@@ -72,7 +74,7 @@ export const rate = async (
     // Roll the day's activity counters. 'good' and 'easy' count as correct,
     // matching the FE's accuracy model (quality ≥ 3).
     const wasCorrect = input.rating === 'good' || input.rating === 'easy';
-    activityRepo.recordReview(ownerId, { wasCorrect }).catch((err) => {
+    activityRepo.recordReview(ownerId, { wasCorrect, tz }).catch((err) => {
         // eslint-disable-next-line no-console
         console.error('[activity] recordReview failed', err);
     });

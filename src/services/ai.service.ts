@@ -18,6 +18,7 @@ import type {
     SuggestInput,
 } from '../schemas/ai.schema.js';
 import { AiTooManyWordsError } from '../shared/errors.js';
+import { DEFAULT_TZ, computeStreak, tzDayKey } from './tz.js';
 
 const selectProvider = (): AiProvider => {
     if (env.AI_PROVIDER === 'anthropic') return anthropicProvider;
@@ -85,28 +86,13 @@ export const deckFromImage = async (
     return draft.cards.length === 0 ? { draft, note: 'no_text' } : { draft };
 };
 
-const computeStreak = (rows: { date: Date; reviews: number }[]): number => {
-    if (rows.length === 0) return 0;
-    const iso = (d: Date) => d.toISOString().slice(0, 10);
-    const active = new Set(rows.filter((r) => r.reviews > 0).map((r) => iso(r.date)));
-    const cursor = new Date();
-    cursor.setUTCHours(0, 0, 0, 0);
-    if (!active.has(iso(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
-    let streak = 0;
-    while (active.has(iso(cursor))) {
-        streak += 1;
-        cursor.setUTCDate(cursor.getUTCDate() - 1);
-    }
-    return streak;
-};
-
-export const suggest = async (userId: string, input: SuggestInput) => {
+export const suggest = async (userId: string, input: SuggestInput, tz: string = DEFAULT_TZ) => {
     await budget.assertWithinBudget(userId, 'suggest');
     const [dueCount, days] = await Promise.all([
         srsRepo.countDueCards(userId),
         activityRepo.allDays(userId),
     ]);
-    const streak = computeStreak(days);
+    const streak = computeStreak(days, tzDayKey(new Date(), tz));
 
     const args: {
         context: SuggestInput['context'];

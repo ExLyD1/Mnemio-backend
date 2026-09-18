@@ -139,9 +139,23 @@ describe('chat.tools / runCreateDeck — language defaults', () => {
         });
     });
 
-    it('defaults source to the chat locale, and target falls back to it too when prefs are empty', async () => {
+    it('defaults source to the chat locale, but never falls target back to it (no uk→uk decks)', async () => {
         mPrefs.findOrCreate.mockResolvedValue(fakePref());
-        await runCreateDeck('u1', { words: ['слово'] }, 'uk');
+        await runCreateDeck('u1', { words: ['school'] }, 'uk');
+        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+            words: ['school'],
+            sourceLanguage: 'uk',
+            targetLanguage: 'en',
+        });
+    });
+
+    it('an explicitly requested same-language pair is still honored', async () => {
+        mPrefs.findOrCreate.mockResolvedValue(fakePref());
+        await runCreateDeck(
+            'u1',
+            { words: ['слово'], sourceLanguage: 'uk', targetLanguage: 'uk' },
+            'uk',
+        );
         expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
             words: ['слово'],
             sourceLanguage: 'uk',
@@ -276,6 +290,26 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
             action: 'created',
         });
         expect((r as { ok: true; words: string[] }).words).toEqual(['café', 'leche']);
+    });
+
+    it('persists the resolved language pair, not the model\'s echo of it', async () => {
+        mPrefs.findOrCreate.mockResolvedValue(fakePref({ learningLanguages: ['en'] }));
+        mAi.generateDeck.mockResolvedValue({
+            title: 'Школа',
+            description: '',
+            // Model misread "uk" as UK English and echoed en/en.
+            sourceLanguage: 'en',
+            targetLanguage: 'en',
+            cards: [{ word: 'school', definition: 'заклад освіти' }],
+        } as never);
+        mDecks.create.mockResolvedValue(fakeDeck({ id: 'deck-9', title: 'Школа' }));
+
+        await runCreateDeck('u1', { topic: 'school' }, 'uk');
+
+        expect(mDecks.create).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({ sourceLanguage: 'uk', targetLanguage: 'en' }),
+        );
     });
 
     it('retries once when the first draft fails the count sanity check, then persists the retry', async () => {

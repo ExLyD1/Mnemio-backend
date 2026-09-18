@@ -3,6 +3,7 @@ import { assertWithinBudget, recordUse } from '../src/services/ai.budget.service
 import { AiBudgetExceededError } from '../src/shared/errors.js';
 import * as aiUsageRepo from '../src/repositories/ai-usage.repository.js';
 import { env } from '../src/config/env.js';
+import * as subscriptionRepo from '../src/repositories/subscription.repository.js';
 
 vi.mock('../src/repositories/ai-usage.repository.js', async () => {
     const actual =
@@ -14,11 +15,24 @@ vi.mock('../src/repositories/ai-usage.repository.js', async () => {
     };
 });
 
+// The budget check looks up the user's plan (free vs premium caps) via the
+// subscription repository. Unmocked, that hit a real database and every test
+// here failed with a PrismaClientKnownRequestError. These tests cover the
+// free-tier caps, so the user is never entitled.
+vi.mock('../src/repositories/subscription.repository.js', async () => {
+    const actual = await vi.importActual<typeof subscriptionRepo>(
+        '../src/repositories/subscription.repository.js',
+    );
+    return { ...actual, isEntitled: vi.fn() };
+});
+
 const mockedRepo = vi.mocked(aiUsageRepo);
+const mockedSubs = vi.mocked(subscriptionRepo);
 
 describe('ai.budget.service / assertWithinBudget', () => {
     beforeEach(() => {
         vi.resetAllMocks();
+        mockedSubs.isEntitled.mockResolvedValue(false);
     });
 
     it('passes when usage is below cap', async () => {
@@ -96,6 +110,7 @@ describe('ai.budget.service / assertWithinBudget', () => {
 describe('ai.budget.service / recordUse', () => {
     beforeEach(() => {
         vi.resetAllMocks();
+        mockedSubs.isEntitled.mockResolvedValue(false);
     });
 
     it('delegates to the repo upsert', async () => {
