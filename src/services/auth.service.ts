@@ -269,6 +269,36 @@ export const login = async (
 
 // ---------- Refresh ----------
 
+// How long a just-rotated refresh token may still be presented without being
+// treated as theft. Rotation is not atomic from the client's point of view:
+// two tabs refreshing at once, or a mobile network dropping the /auth/refresh
+// response after the server already rotated, both re-present the old cookie a
+// moment later. Without a grace window that looked like token reuse and
+// revoked EVERY session the user had — which users experienced as "the app
+// logs me out when I reopen it" (QA (3) #10, Mnemio правки #10).
+export const REFRESH_REUSE_GRACE_MS = 60_000;
+
+export type RefreshRecordState = 'valid' | 'rotated_grace' | 'reused' | 'invalid';
+
+// Pure: how to treat the presented refresh token's DB record.
+export const classifyRefreshRecord = (
+    record: { revokedAt: Date | null; replacedById: string | null; expiresAt: Date } | null,
+    now: Date,
+): RefreshRecordState => {
+    if (!record) return 'invalid';
+    if (record.revokedAt) {
+        const withinGrace =
+            record.replacedById !== null &&
+            now.getTime() - record.revokedAt.getTime() <= REFRESH_REUSE_GRACE_MS &&
+            record.expiresAt >= now;
+        // Only a token that was ROTATED (replacedById set — not one revoked by
+        // logout) and only just now gets the benefit of the doubt.
+        return withinGrace ? 'rotated_grace' : 'reused';
+    }
+    if (record.expiresAt < now) return 'invalid';
+    return 'valid';
+};
+
 export const refresh = async (
     fastify: FastifyInstance,
     refreshToken: string | null,
@@ -279,17 +309,18 @@ export const refresh = async (
     }
     const tokenHash = hashToken(refreshToken);
     const record = await authRepo.findRefreshTokenByHash(tokenHash);
-    if (!record || record.revokedAt || record.expiresAt < new Date()) {
-        // Reuse detection: if a previously-rotated token is presented again,
-        // revoke all tokens for that user to defend against theft.
-        if (record?.revokedAt) {
-            await authRepo.revokeAllUserRefreshTokens(record.userId);
-            await authRepo.writeAuditLog({
-                userId: record.userId,
-                event: 'refresh.reuse_detected',
-                ip: ctx.ip ?? null,
-            });
-        }
+    const state = classifyRefreshRecord(record, new Date());
+    if (state === 'reused' && record) {
+        // Reuse detection: a rotated token presented again well after its
+        // rotation — revoke all tokens for that user to defend against theft.
+        await authRepo.revokeAllUserRefreshTokens(record.userId);
+        await authRepo.writeAuditLog({
+            userId: record.userId,
+            event: 'refresh.reuse_detected',
+            ip: ctx.ip ?? null,
+        });
+    }
+    if (!record || (state !== 'valid' && state !== 'rotated_grace')) {
         throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid or expired refresh token');
     }
 
@@ -300,10 +331,14 @@ export const refresh = async (
         issueTokens(fastify, user, ctx),
         getWelcomeState(user.id),
     ]);
-    await authRepo.revokeRefreshToken(
-        record.id,
-        (await authRepo.findRefreshTokenByHash(hashToken(tokens.refreshToken)))?.id,
-    );
+    // A grace-window token was already revoked (rotated) by the concurrent
+    // request that won the race — just hand this client its own fresh pair.
+    if (state === 'valid') {
+        await authRepo.revokeRefreshToken(
+            record.id,
+            (await authRepo.findRefreshTokenByHash(hashToken(tokens.refreshToken)))?.id,
+        );
+    }
     return {
         ...tokens,
         user: toPublicUser(user),
