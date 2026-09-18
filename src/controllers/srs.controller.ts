@@ -1,10 +1,11 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { rateSchema, dueQuerySchema, progressQuerySchema } from '../schemas/srs.schema.js';
 import * as srsService from '../services/srs.service.js';
+import { requestTz } from '../shared/request-tz.js';
 
 export const rate = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = rateSchema.parse(request.body);
-    const result = await srsService.rate(request.currentUser.sub, input);
+    const result = await srsService.rate(request.currentUser.sub, input, requestTz(request));
     reply.send(result);
 };
 

@@ -1005,8 +1005,17 @@ Marks unseen achievements as acknowledged so they stop appearing in
 
 ### Statistics  *(P1)*
 
-Backed by a `DailyActivity` rollup table that updates on every `/srs/rate`.
+Backed by a `DailyActivity` rollup table that updates on every `/srs/rate`
+(and on browse-mode `/sessions/:id/complete`).
 All endpoints scoped to the authenticated user.
+
+**Local days (`X-Timezone`).** The client sends its IANA zone on every request
+as the `X-Timezone` header (e.g. `Europe/Kyiv`; a `tz` query param is also
+accepted). `/srs/rate` and `/sessions/:id/complete` roll activity into the
+user's **local** calendar day, and `/stats/overview` (range windows + streak),
+`/stats/series` (labels are local `YYYY-MM-DD` days) and `/stats/activity`
+("today"/current month) read in the same zone. Missing or invalid zone → UTC.
+Rows written before this change stay on their UTC day.
 
 #### `GET /stats/overview?range=7|30|90|all`  *(auth)*  — default `30`
 ```ts

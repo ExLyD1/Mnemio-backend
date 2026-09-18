@@ -6,6 +6,7 @@ import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import { toPublicSession, type PublicSession } from '../shared/mappers.session.js';
+import { DEFAULT_TZ } from './tz.js';
 import type { CreateSessionInput, UpdateSessionInput } from '../schemas/session.schema.js';
 
 // XP formula (locked by frontend plan): correct * 10 + (completed ? 25 : 0).
@@ -80,6 +81,7 @@ export const updateProgress = async (
 export const complete = async (
     ownerId: string,
     sessionId: string,
+    tz: string = DEFAULT_TZ,
 ): Promise<PublicSession & { newAchievements: PublicAchievement[] }> => {
     const session = await sessionsRepo.findSessionOwned(sessionId, ownerId);
     if (!session) throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
@@ -119,6 +121,7 @@ export const complete = async (
                 reviews: cardsStudied,
                 correct: correctAnswers,
                 durationMs,
+                tz,
             })
             .catch((err) => {
                 // eslint-disable-next-line no-console
