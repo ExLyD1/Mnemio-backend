@@ -26,11 +26,7 @@ const ctxOf = (request: FastifyRequest) => ({
 });
 
 // Strip refreshToken from the JSON body — it lives in the cookie now.
-const sendAuthResult = (
-    reply: FastifyReply,
-    result: authService.AuthResult,
-    status = 200,
-) => {
+const sendAuthResult = (reply: FastifyReply, result: authService.AuthResult, status = 200) => {
     setRefreshCookie(reply, result.refreshToken);
     const { refreshToken: _ignored, ...body } = result;
     void _ignored;

@@ -18,8 +18,7 @@ export const resolveMasteredAt = (
     existingMasteredAt: Date | null,
     nextRepetitions: number,
     now: Date,
-): Date | null =>
-    existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
+): Date | null => existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
 
 export type PublicCardProgress = {
     cardId: string;
@@ -112,10 +111,7 @@ export type DueCardDto = {
     repetitions: number;
 };
 
-export const progress = async (
-    ownerId: string,
-    limit = 2000,
-): Promise<PublicCardProgress[]> => {
+export const progress = async (ownerId: string, limit = 2000): Promise<PublicCardProgress[]> => {
     const rows = await srsRepo.findAllProgress(ownerId, limit);
     return rows.map((r) => ({
         cardId: r.cardId,

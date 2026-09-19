@@ -6,7 +6,12 @@ import { getWelcomeState, type WelcomeState } from '../repositories/welcome.repo
 import * as entitlementService from './entitlement.service.js';
 import * as analytics from './analytics.service.js';
 import { toPublicUser, needsProfile, type PublicUser } from '../shared/mappers.js';
-import { BadRequestError, ConflictError, UnauthorizedError, RateLimitedError } from '../shared/errors.js';
+import {
+    BadRequestError,
+    ConflictError,
+    UnauthorizedError,
+    RateLimitedError,
+} from '../shared/errors.js';
 import {
     generateOtpCode,
     hashOtp,
@@ -166,7 +171,10 @@ export const verifyEmail = async (
 
     if (verification.attempts >= OTP_MAX_ATTEMPTS) {
         await authRepo.consumeVerification(verification.id);
-        throw new BadRequestError('AUTH_OTP_EXHAUSTED', 'Too many incorrect attempts; request a new code');
+        throw new BadRequestError(
+            'AUTH_OTP_EXHAUSTED',
+            'Too many incorrect attempts; request a new code',
+        );
     }
 
     if (!verifyOtp(input.code, verification.codeHash)) {
@@ -259,9 +267,13 @@ export const login = async (
     }
 
     if (!user.emailVerifiedAt) {
-        throw new UnauthorizedError('EMAIL_NOT_VERIFIED', 'Please verify your email before logging in', {
-            userId: user.id,
-        });
+        throw new UnauthorizedError(
+            'EMAIL_NOT_VERIFIED',
+            'Please verify your email before logging in',
+            {
+                userId: user.id,
+            },
+        );
     }
 
     await authRepo.writeAuditLog({
@@ -473,7 +485,12 @@ export const signInWithProvider = async (
 
 export const me = async (
     userId: string,
-): Promise<{ user: PublicUser; needsProfile: boolean; welcome: WelcomeState; plan: 'free' | 'premium' }> => {
+): Promise<{
+    user: PublicUser;
+    needsProfile: boolean;
+    welcome: WelcomeState;
+    plan: 'free' | 'premium';
+}> => {
     const [user, welcome, plan] = await Promise.all([
         authRepo.findUserById(userId),
         getWelcomeState(userId),

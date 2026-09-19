@@ -6,9 +6,7 @@ import * as subscriptionRepo from '../src/repositories/subscription.repository.j
 import { refresh, REFRESH_REUSE_GRACE_MS } from '../src/services/auth.service.js';
 
 vi.mock('../src/repositories/auth.repository.js', async () => {
-    const actual = await vi.importActual<typeof authRepo>(
-        '../src/repositories/auth.repository.js',
-    );
+    const actual = await vi.importActual<typeof authRepo>('../src/repositories/auth.repository.js');
     return {
         ...actual,
         findRefreshTokenByHash: vi.fn(),
@@ -62,7 +60,9 @@ const user = {
     updatedAt: new Date('2026-09-01T00:00:00Z'),
 } as unknown as Awaited<ReturnType<typeof authRepo.findUserById>>;
 
-const givenRecord = (over: Partial<{ revokedAt: Date | null; replacedById: string | null; expiresAt: Date }>) => ({
+const givenRecord = (
+    over: Partial<{ revokedAt: Date | null; replacedById: string | null; expiresAt: Date }>,
+) => ({
     id: 'rt-1',
     userId: 'user-1',
     revokedAt: null,

@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-    classifyRefreshRecord,
-    REFRESH_REUSE_GRACE_MS,
-} from '../src/services/auth.service.js';
+import { classifyRefreshRecord, REFRESH_REUSE_GRACE_MS } from '../src/services/auth.service.js';
 
 const now = new Date('2026-09-18T10:00:00Z');
 const future = new Date('2026-10-18T10:00:00Z');

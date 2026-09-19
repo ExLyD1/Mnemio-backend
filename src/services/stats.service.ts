@@ -19,8 +19,7 @@ import type { StatsRange } from '../schemas/stats.schema.js';
 // 365 points so the x-axis stays bounded.
 const ALL_RANGE_SERIES_DAYS = 365;
 
-const rangeDays = (range: StatsRange): number | null =>
-    range === 'all' ? null : Number(range);
+const rangeDays = (range: StatsRange): number | null => (range === 'all' ? null : Number(range));
 
 // ---------- Overview ----------
 //
@@ -33,12 +32,15 @@ export type StatsOverview = {
     range: StatsRange;
     reviewed: number;
     correct: number;
-    retention: number;     // 0..100, rounded
-    streak: number;        // current consecutive-day streak ending today (viewer's local day)
+    retention: number; // 0..100, rounded
+    streak: number; // current consecutive-day streak ending today (viewer's local day)
     dueCount: number;
     trends: {
-        reviewed: { current: number; previous: number; deltaPct: number };
-        retention: { current: number; previous: number; deltaPct: number };
+        // deltaPct is null when there is no comparison window: range 'all' has
+        // no "previous" period by construction, so any percentage there would
+        // be fabricated (it always came out as +100%).
+        reviewed: { current: number; previous: number; deltaPct: number | null };
+        retention: { current: number; previous: number; deltaPct: number | null };
     };
 };
 
@@ -101,14 +103,13 @@ export const overview = async (
 
     const current = aggregateRange(currentRows);
     const prev = aggregateRange(previousRows);
+    // 'all' never loads a previous window, so there is nothing to compare to.
+    const hasComparison = days !== null;
     const dueCount = await srsRepo.countDueCards(userId);
 
-    const retCurrent = current.reviewed > 0
-        ? Math.round((current.correct / current.reviewed) * 100)
-        : 0;
-    const retPrev = prev.reviewed > 0
-        ? Math.round((prev.correct / prev.reviewed) * 100)
-        : 0;
+    const retCurrent =
+        current.reviewed > 0 ? Math.round((current.correct / current.reviewed) * 100) : 0;
+    const retPrev = prev.reviewed > 0 ? Math.round((prev.correct / prev.reviewed) * 100) : 0;
 
     return {
         range,
@@ -121,12 +122,12 @@ export const overview = async (
             reviewed: {
                 current: current.reviewed,
                 previous: prev.reviewed,
-                deltaPct: pctChange(current.reviewed, prev.reviewed),
+                deltaPct: hasComparison ? pctChange(current.reviewed, prev.reviewed) : null,
             },
             retention: {
                 current: retCurrent,
                 previous: retPrev,
-                deltaPct: pctChange(retCurrent, retPrev),
+                deltaPct: hasComparison ? pctChange(retCurrent, retPrev) : null,
             },
         },
     };
@@ -163,17 +164,14 @@ export const series = async (
 // ---------- Activity (year heatmap + current-month calendar) ----------
 
 export type StatsActivity = {
-    yearHeat: number[][];      // 53 weeks × 7 days, value = reviews
+    yearHeat: number[][]; // 53 weeks × 7 days, value = reviews
     monthCalendar: {
-        month: string;           // 'YYYY-MM'
+        month: string; // 'YYYY-MM'
         days: ({ date: string; reviews: number } | null)[]; // pad with nulls for leading blanks
     };
 };
 
-export const activity = async (
-    userId: string,
-    tz: string = DEFAULT_TZ,
-): Promise<StatsActivity> => {
+export const activity = async (userId: string, tz: string = DEFAULT_TZ): Promise<StatsActivity> => {
     // The viewer's local "today" as a day-counter Date (UTC midnight of that
     // calendar day) — all arithmetic below is on UTC getters of that value.
     const today = dayKeyToDate(tzDayKey(new Date(), tz));
@@ -222,8 +220,8 @@ export type StatsDeckRow = {
     cardCount: number;
     masteryPct: number;
     progressPct: number; // 0..100 — graded progress toward mastery (see deckProgressPct)
-    retention: number;          // 0..100 over all-time reviews of cards in this deck
-    reviewed: number;           // total review count over all-time
+    retention: number; // 0..100 over all-time reviews of cards in this deck
+    reviewed: number; // total review count over all-time
 };
 
 // Successful reviews a card needs to count as mastered (repetitions >= 3 —
@@ -292,7 +290,6 @@ export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
         };
     });
 };
-
 
 // ---------- Study-time series (item 2) ----------
 //

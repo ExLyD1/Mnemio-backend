@@ -25,10 +25,7 @@ export const resolveDurationMs = (
 ): number =>
     reportedDurationMs > 0 ? reportedDurationMs : Math.max(0, now.getTime() - startedAt.getTime());
 
-export const start = async (
-    ownerId: string,
-    input: CreateSessionInput,
-): Promise<PublicSession> => {
+export const start = async (ownerId: string, input: CreateSessionInput): Promise<PublicSession> => {
     // Owners study their own decks; anyone may study a public deck. The session
     // row itself belongs to the requester (userId = ownerId), so a viewer's
     // session never touches the owner's data. Private decks 404 for non-owners.
@@ -49,7 +46,10 @@ export const start = async (
     const deckCardIds = new Set(cards.map((c) => c.id));
     const requested = input.cardIds?.filter((id) => deckCardIds.has(id));
     if (input.cardIds && (!requested || requested.length === 0)) {
-        throw new BadRequestError('SESSION_NO_CARDS', 'None of the requested cards are in this deck');
+        throw new BadRequestError(
+            'SESSION_NO_CARDS',
+            'None of the requested cards are in this deck',
+        );
     }
     const sessionCardIds = requested ?? cards.map((c) => c.id);
 

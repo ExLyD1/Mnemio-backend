@@ -99,17 +99,13 @@ describe('sessions.service / complete — daily activity', () => {
     // SRS sessions report per-card via POST /srs/rate; completing must not
     // double-count them into the same day.
     it('SRS-mode does not roll activity a second time', async () => {
-        mockedSessions.findSessionOwned.mockResolvedValue(
-            session({ srsEnabled: true }) as never,
-        );
+        mockedSessions.findSessionOwned.mockResolvedValue(session({ srsEnabled: true }) as never);
         await complete('u1', 'sess-1');
         expect(mockedActivity.recordReview).not.toHaveBeenCalled();
     });
 
     it('prefers a client-reported duration over wall-clock', async () => {
-        mockedSessions.findSessionOwned.mockResolvedValue(
-            session({ durationMs: 12_345 }) as never,
-        );
+        mockedSessions.findSessionOwned.mockResolvedValue(session({ durationMs: 12_345 }) as never);
         await complete('u1', 'sess-1');
         expect(mockedSessions.completeSession.mock.calls[0]?.[2]).toMatchObject({
             durationMs: 12_345,
