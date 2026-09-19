@@ -221,9 +221,25 @@ export type StatsDeckRow = {
     title: string;
     cardCount: number;
     masteryPct: number;
+    progressPct: number; // 0..100 — graded progress toward mastery (see deckProgressPct)
     retention: number;          // 0..100 over all-time reviews of cards in this deck
     reviewed: number;           // total review count over all-time
 };
+
+// Successful reviews a card needs to count as mastered (repetitions >= 3 —
+// canonical in deck-stats.repository.ts / srs.service.ts MASTERY_THRESHOLD).
+const MASTERY_STEPS = 3;
+
+/**
+ * Graded progress toward mastery: each card contributes min(repetitions, 3)/3.
+ * `masteryPct` only moves once a card has 3 successful reviews in a row, which
+ * SM-2 spaces over ~a week (1d, then 6d), so it sits at 0% after any number of
+ * same-day sessions and users read it as broken. This moves with every
+ * successful review (and drops back when "Forgot"/"Hard" resets a card).
+ * `steps` = SUM(LEAST(repetitions, 3)) over the deck's cards.
+ */
+export const deckProgressPct = (steps: number, cardCount: number): number =>
+    cardCount > 0 ? Math.min(100, Math.round((steps / (cardCount * MASTERY_STEPS)) * 100)) : 0;
 
 export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
     // Per-deck retention/review aggregates over all-time. Single query: card_progresses
@@ -244,11 +260,14 @@ export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
 
     // Per-deck reviews from card_progresses.repetitions (approx).
     const reviewRows = await prisma.$queryRaw<
-        { deckId: string; reviews: bigint; correct: bigint }[]
+        { deckId: string; reviews: bigint; correct: bigint; steps: bigint }[]
     >`
         SELECT c."deckId" AS "deckId",
                COALESCE(SUM(cp."repetitions"), 0)::bigint AS reviews,
-               COALESCE(SUM(CASE WHEN cp."repetitions" > 0 THEN cp."repetitions" END), 0)::bigint AS correct
+               COALESCE(SUM(CASE WHEN cp."repetitions" > 0 THEN cp."repetitions" END), 0)::bigint AS correct,
+               -- COALESCE first: LEAST ignores NULLs, so an unstudied card (no
+               -- progress row) would otherwise count as fully mastered.
+               COALESCE(SUM(LEAST(COALESCE(cp."repetitions", 0), ${MASTERY_STEPS})), 0)::bigint AS steps
           FROM cards c
           LEFT JOIN card_progresses cp ON cp."cardId" = c.id AND cp."userId" = ${userId}
          WHERE c."deckId" = ANY(${decksRows.map((d) => d.id)}::text[])
@@ -267,6 +286,7 @@ export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
             title: d.title,
             cardCount: d.cardCount,
             masteryPct: ds.masteredPct,
+            progressPct: deckProgressPct(Number(rev?.steps ?? 0n), d.cardCount),
             retention,
             reviewed: reviews,
         };

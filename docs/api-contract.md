@@ -1070,7 +1070,8 @@ Per-deck performance for the Statistics screen.
     deckId: string;
     title: string;
     cardCount: number;
-    masteryPct: number;       // 0..100
+    masteryPct: number;       // 0..100 — % of cards with repetitions >= 3
+    progressPct: number;      // 0..100 — graded: Σ min(repetitions, 3) / (cardCount × 3)
     retention: number;        // 0..100 — proxy from CardProgress repetitions
     reviewed: number;         // all-time review count over the deck's cards
   }[];
