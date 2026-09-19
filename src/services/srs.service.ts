@@ -18,11 +18,14 @@ export const resolveMasteredAt = (
     existingMasteredAt: Date | null,
     nextRepetitions: number,
     now: Date,
-): Date | null =>
-    existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
+): Date | null => existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
 
 export type PublicCardProgress = {
     cardId: string;
+    // Present on GET /srs/progress (which lists rows across every deck, so the
+    // client needs to know which deck each row belongs to). Omitted by rate(),
+    // where the caller already knows the deck it just rated in.
+    deckId?: string;
     repetitions: number;
     interval: number;
     easeFactor: number;
@@ -108,13 +111,11 @@ export type DueCardDto = {
     repetitions: number;
 };
 
-export const progress = async (
-    ownerId: string,
-    limit = 2000,
-): Promise<PublicCardProgress[]> => {
+export const progress = async (ownerId: string, limit = 2000): Promise<PublicCardProgress[]> => {
     const rows = await srsRepo.findAllProgress(ownerId, limit);
     return rows.map((r) => ({
         cardId: r.cardId,
+        deckId: r.card.deckId,
         repetitions: r.repetitions,
         interval: r.interval,
         easeFactor: r.easeFactor,

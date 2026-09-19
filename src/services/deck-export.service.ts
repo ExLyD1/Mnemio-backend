@@ -13,7 +13,15 @@ export type DeckExportResult = {
 };
 
 const csvEscape = (value: string): string => {
-    if (value.includes('"') || value.includes(',') || value.includes('\n')) {
+    // \r matters as much as \n: a lone carriage return (pasted from Windows or
+    // from some editors) left unquoted breaks the row for CRLF-sensitive
+    // parsers such as Excel, shifting every later column.
+    if (
+        value.includes('"') ||
+        value.includes(',') ||
+        value.includes('\n') ||
+        value.includes('\r')
+    ) {
         return `"${value.replace(/"/g, '""')}"`;
     }
     return value;

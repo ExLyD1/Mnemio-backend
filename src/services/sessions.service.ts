@@ -25,10 +25,7 @@ export const resolveDurationMs = (
 ): number =>
     reportedDurationMs > 0 ? reportedDurationMs : Math.max(0, now.getTime() - startedAt.getTime());
 
-export const start = async (
-    ownerId: string,
-    input: CreateSessionInput,
-): Promise<PublicSession> => {
+export const start = async (ownerId: string, input: CreateSessionInput): Promise<PublicSession> => {
     // Owners study their own decks; anyone may study a public deck. The session
     // row itself belongs to the requester (userId = ownerId), so a viewer's
     // session never touches the owner's data. Private decks 404 for non-owners.
@@ -42,11 +39,25 @@ export const start = async (
         throw new BadRequestError('DECK_EMPTY', 'Cannot start a session on an empty deck');
     }
 
+    // A subset round (e.g. "study unknown", or a shuffled order) tells us which
+    // cards it will actually show. Intersect with the deck's real cards so a
+    // client can never widen a session beyond the deck it was authorised for,
+    // and preserve the client's order — resume() rebuilds from this list.
+    const deckCardIds = new Set(cards.map((c) => c.id));
+    const requested = input.cardIds?.filter((id) => deckCardIds.has(id));
+    if (input.cardIds && (!requested || requested.length === 0)) {
+        throw new BadRequestError(
+            'SESSION_NO_CARDS',
+            'None of the requested cards are in this deck',
+        );
+    }
+    const sessionCardIds = requested ?? cards.map((c) => c.id);
+
     const session = await sessionsRepo.startSession({
         userId: ownerId,
         deckId: input.deckId,
         mode: input.mode,
-        cardIds: cards.map((c) => c.id),
+        cardIds: sessionCardIds,
         srsEnabled: input.srsEnabled,
     });
     return toPublicSession(session);

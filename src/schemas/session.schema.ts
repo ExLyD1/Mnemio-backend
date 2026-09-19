@@ -11,6 +11,13 @@ export const createSessionSchema = z.object({
     // activity counters directly (see sessions.service.complete) since no
     // per-card POST /srs/rate call will do it.
     srsEnabled: z.boolean().default(true),
+    // The exact cards this round will study, in the order the client will show
+    // them. Optional for backwards compatibility: absent means the whole deck.
+    // Without it, a "study unknown" round over 3 cards recorded the entire deck
+    // as studied (cardsStudied = cardIds.length), which in browse mode was
+    // rolled straight into DailyActivity and inflated streaks and stats.
+    // Always intersected with the deck's real cards server-side.
+    cardIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
 });
 
 export const updateSessionSchema = z

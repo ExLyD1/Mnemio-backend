@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { initialState, review } from '../src/services/sm2.js';
 import { RATING_TO_QUALITY } from '../src/schemas/srs.schema.js';
+import { MASTERY_THRESHOLD, resolveMasteredAt } from '../src/services/srs.service.js';
 
 /**
  * Regression for BUG-0706-12 / -21: "deck shows 0% learned after several passes".
@@ -27,8 +28,15 @@ describe('deck mastery threshold (BUG-0706-12/-21)', () => {
     it('3 consecutive "good" passes reach repetitions >= 3 (mastered under the new rule)', () => {
         const state = applyGoods(3);
         expect(state.repetitions).toBe(3);
-        // New threshold: repetitions >= 3 → counted as mastered.
-        expect(state.repetitions >= 3).toBe(true);
+        // Exercise the production predicate rather than restating the line
+        // above: resolveMasteredAt is what actually stamps mastery.
+        expect(resolveMasteredAt(null, state.repetitions, REF_NOW)).toEqual(REF_NOW);
+    });
+
+    it('two passes are not yet mastery — the threshold is exactly 3', () => {
+        const state = applyGoods(2);
+        expect(state.repetitions).toBe(MASTERY_THRESHOLD - 1);
+        expect(resolveMasteredAt(null, state.repetitions, REF_NOW)).toBeNull();
     });
 
     it('after 3 passes the interval is still < 21 — why the old interval-based rule showed 0%', () => {
@@ -42,6 +50,11 @@ describe('deck mastery threshold (BUG-0706-12/-21)', () => {
         let state = applyGoods(3);
         state = review(state, RATING_TO_QUALITY.again, REF_NOW);
         expect(state.repetitions).toBe(0);
-        expect(state.repetitions >= 3).toBe(false);
+        // A fresh card at 0 repetitions would not be stamped...
+        expect(resolveMasteredAt(null, state.repetitions, REF_NOW)).toBeNull();
+        // ...but mastery already earned is never revoked (the curve is
+        // "ever mastered", so it must stay monotonic across a lapse).
+        const earlier = new Date('2026-05-01T00:00:00.000Z');
+        expect(resolveMasteredAt(earlier, state.repetitions, REF_NOW)).toEqual(earlier);
     });
 });
