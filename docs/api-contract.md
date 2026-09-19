@@ -617,15 +617,16 @@ Example (after `npm run seed`):
   description?: string;       // ≤ 500 chars, default ''
   sourceLanguage: string;     // 2–10 chars
   targetLanguage: string;
-  isPublic?: boolean;         // privacy toggle; **default true** (public)
+  isPublic?: boolean;         // privacy toggle; **default false** (private)
   coverColor?: string | null; // P2: '#RRGGBB' hex
   glyph?: string | null;      // P2: 1–8 chars (emoji ok)
   subject?: string | null;    // P2: 1–40 chars
 }
 // 201 Response: Deck
 ```
-> **Privacy:** `isPublic` is enforced server-side. A **public** deck (default) is
-> viewable/copyable by anyone; a **private** deck (`isPublic:false`) is visible
+> **Privacy:** `isPublic` is enforced server-side. A deck is **private by
+> default** (`isPublic: false`) — omitting the field creates a private deck.
+> A **public** deck is viewable/copyable by anyone; a private deck is visible
 > only to its owner. `isPublic` is owner-settable on create and `PATCH` and is
 > returned on every `Deck`. Discovery surfaces (`GET /discover/*`,
 > `/discover/categories` counts, featured) already exclude private decks — they

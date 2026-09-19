@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import * as authRepo from '../src/repositories/auth.repository.js';
 import * as welcomeRepo from '../src/repositories/welcome.repository.js';
+import * as subscriptionRepo from '../src/repositories/subscription.repository.js';
 import { refresh, REFRESH_REUSE_GRACE_MS } from '../src/services/auth.service.js';
 
 vi.mock('../src/repositories/auth.repository.js', async () => {
@@ -19,6 +20,15 @@ vi.mock('../src/repositories/auth.repository.js', async () => {
     };
 });
 
+// refresh() resolves the user's plan (so login/refresh report the same
+// entitlement as /auth/me). Unmocked, that reaches a real database.
+vi.mock('../src/repositories/subscription.repository.js', async () => {
+    const actual = await vi.importActual<typeof subscriptionRepo>(
+        '../src/repositories/subscription.repository.js',
+    );
+    return { ...actual, isEntitled: vi.fn() };
+});
+
 vi.mock('../src/repositories/welcome.repository.js', async () => {
     const actual = await vi.importActual<typeof welcomeRepo>(
         '../src/repositories/welcome.repository.js',
@@ -28,6 +38,7 @@ vi.mock('../src/repositories/welcome.repository.js', async () => {
 
 const mockedRepo = vi.mocked(authRepo);
 const mockedWelcome = vi.mocked(welcomeRepo);
+const mockedSubs = vi.mocked(subscriptionRepo);
 
 // Only `jwt.sign` is reached by the refresh path.
 const fastify = { jwt: { sign: () => 'access-token' } } as unknown as FastifyInstance;
@@ -65,6 +76,7 @@ describe('auth.service / refresh side effects', () => {
         vi.resetAllMocks();
         mockedRepo.findUserById.mockResolvedValue(user);
         mockedWelcome.getWelcomeState.mockResolvedValue({} as never);
+        mockedSubs.isEntitled.mockResolvedValue(false);
         mockedRepo.createRefreshToken.mockResolvedValue({} as never);
         mockedRepo.revokeRefreshToken.mockResolvedValue({} as never);
         mockedRepo.revokeAllUserRefreshTokens.mockResolvedValue({} as never);

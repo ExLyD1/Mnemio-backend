@@ -39,6 +39,10 @@ export type AuthResult = AuthTokens & {
     user: PublicUser;
     needsProfile: boolean;
     welcome: WelcomeState;
+    // Must match what GET /auth/me reports. Without it the FE defaulted every
+    // freshly-authenticated user to 'free', so a premium user hit the paywall
+    // for the whole SPA session (and was recorded as free in analytics).
+    plan: 'free' | 'premium';
 };
 
 const signAccessToken = (fastify: FastifyInstance, user: User): string =>
@@ -70,15 +74,17 @@ const buildAuthResult = async (
     user: User,
     ctx: RequestContext,
 ): Promise<AuthResult> => {
-    const [tokens, welcome] = await Promise.all([
+    const [tokens, welcome, plan] = await Promise.all([
         issueTokens(fastify, user, ctx),
         getWelcomeState(user.id),
+        entitlementService.getPlan(user.id),
     ]);
     return {
         ...tokens,
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
         welcome,
+        plan,
     };
 };
 
@@ -341,9 +347,10 @@ export const refresh = async (
     const user = await authRepo.findUserById(record.userId);
     if (!user) throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid refresh token');
 
-    const [tokens, welcome] = await Promise.all([
+    const [tokens, welcome, plan] = await Promise.all([
         issueTokens(fastify, user, ctx),
         getWelcomeState(user.id),
+        entitlementService.getPlan(user.id),
     ]);
     // A rotated token (grace or stale) was already revoked by the request that
     // won the race — just hand this client its own fresh pair.
@@ -358,6 +365,7 @@ export const refresh = async (
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
         welcome,
+        plan,
     };
 };
 
