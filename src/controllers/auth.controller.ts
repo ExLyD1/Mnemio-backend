@@ -63,8 +63,16 @@ export const login = async (request: FastifyRequest, reply: FastifyReply) => {
 
 export const refresh = async (request: FastifyRequest, reply: FastifyReply) => {
     const token = readRefreshCookie(request);
-    const result = await authService.refresh(request.server, token, ctxOf(request));
-    sendAuthResult(reply, result);
+    try {
+        const result = await authService.refresh(request.server, token, ctxOf(request));
+        sendAuthResult(reply, result);
+    } catch (err) {
+        // A refresh token the server has rejected is dead for good. Clear it so
+        // the browser stops presenting it on every app boot (which otherwise
+        // re-ran reuse detection against an already-revoked family).
+        clearRefreshCookie(reply);
+        throw err;
+    }
 };
 
 export const logout = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -159,10 +167,12 @@ export const googleAuthCallback = async (
         },
         { ip: request.ip ?? null, userAgent: request.headers['user-agent'] ?? null },
     );
-    // Set the refresh cookie immediately — the FE just needs to swap the
-    // exchange code for the access token + user payload, the cookie comes
-    // along automatically on the next request.
-    setRefreshCookie(reply, result.refreshToken);
+    // NOTE: the refresh cookie is deliberately NOT set here. This callback runs
+    // on the BACKEND origin (the FE sends the user to `oauthBase`), while every
+    // later /auth/refresh goes to the FE origin through the Nuxt /api proxy. A
+    // cookie set here would be invisible there, so the session died at the
+    // 15-minute access-token expiry. It is set in oauthExchangeCode instead,
+    // which the FE calls same-origin.
     clearOAuthCookies(reply);
 
     const exchangeCode = oauthExchange.stash(result);
@@ -185,9 +195,10 @@ export const oauthExchangeCode = async (request: FastifyRequest, reply: FastifyR
             'Exchange code expired or already used',
         );
     }
-    // The cookie was already set at the callback step; only need to mirror
-    // the JSON body so the FE can stash the access token.
-    const { refreshToken: _ignored, ...body } = result;
-    void _ignored;
+    // This request is same-origin (FE -> /api proxy -> here), so this is the
+    // only place the refresh cookie can be set on the origin that will actually
+    // send it back on later /auth/refresh calls.
+    const { refreshToken, ...body } = result;
+    setRefreshCookie(reply, refreshToken);
     reply.send(body);
 };
