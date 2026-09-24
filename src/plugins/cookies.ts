@@ -38,6 +38,11 @@ export const readRefreshCookie = (request: FastifyRequest): string | null => {
 // to the OAuth callback path and TTL'd to ~10 min so they don't linger.
 const OAUTH_STATE = 'mnemio_oauth_state';
 const OAUTH_VERIFIER = 'mnemio_oauth_verifier';
+// Which frontend origin to send the browser back to once the OAuth
+// round-trip completes — set only when the start request supplied a
+// validated returnOrigin (see webOrigins.ts). Absent → callers fall back to
+// env.WEB_URL, same as before this cookie existed.
+const OAUTH_RETURN_ORIGIN = 'mnemio_oauth_return_origin';
 const OAUTH_COOKIE_PATH = '/api/v1/auth/oauth';
 const OAUTH_TTL = 10 * 60;
 
@@ -53,23 +58,29 @@ export const setOAuthCookies = (
     reply: FastifyReply,
     state: string,
     codeVerifier: string,
+    returnOrigin?: string | null,
 ): void => {
     reply.setCookie(OAUTH_STATE, state, oauthCookieOptions());
     reply.setCookie(OAUTH_VERIFIER, codeVerifier, oauthCookieOptions());
+    if (returnOrigin) {
+        reply.setCookie(OAUTH_RETURN_ORIGIN, returnOrigin, oauthCookieOptions());
+    }
 };
 
 export const readOAuthCookies = (
     request: FastifyRequest,
-): { state: string; codeVerifier: string } | null => {
+): { state: string; codeVerifier: string; returnOrigin: string | null } | null => {
     const state = request.cookies?.[OAUTH_STATE];
     const codeVerifier = request.cookies?.[OAUTH_VERIFIER];
     if (!state || !codeVerifier) return null;
-    return { state, codeVerifier };
+    const returnOrigin = request.cookies?.[OAUTH_RETURN_ORIGIN];
+    return { state, codeVerifier, returnOrigin: returnOrigin && returnOrigin.length > 0 ? returnOrigin : null };
 };
 
 export const clearOAuthCookies = (reply: FastifyReply): void => {
     reply.clearCookie(OAUTH_STATE, { path: OAUTH_COOKIE_PATH });
     reply.clearCookie(OAUTH_VERIFIER, { path: OAUTH_COOKIE_PATH });
+    reply.clearCookie(OAUTH_RETURN_ORIGIN, { path: OAUTH_COOKIE_PATH });
 };
 
 export const registerCookies = async (fastify: FastifyInstance): Promise<void> => {

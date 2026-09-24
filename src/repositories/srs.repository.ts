@@ -79,11 +79,16 @@ export const findDueCards = async (userId: string, limit: number): Promise<DueCa
     `;
 };
 
+// `deckId` comes along via the card relation. Without it the FE could not tell
+// which deck a progress row belonged to, so it fetched every deck individually
+// to rebuild a card->deck map — 21 requests per /review mount, and any deck past
+// the first page of 20 was simply missing from the due queue.
 export const findAllProgress = (userId: string, limit: number) =>
     prisma.cardProgress.findMany({
         where: { userId },
         orderBy: { nextReviewAt: 'asc' },
         take: limit,
+        include: { card: { select: { deckId: true } } },
     });
 
 // Every set masteredAt for the user, powering the cumulative mastery curve

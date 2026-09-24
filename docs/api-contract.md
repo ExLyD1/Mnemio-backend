@@ -509,13 +509,21 @@ independently; the FE never fully trusts it for hard access control.
 #### Google OAuth flow (3 endpoints)
 
 End-to-end:
-1. FE redirects the user to `GET /auth/oauth/google` (backend sets state
-   + PKCE cookies, redirects to Google).
+1. FE redirects the user to `GET /auth/oauth/google?returnOrigin=<this FE's
+   own origin>` (backend sets state + PKCE cookies, redirects to Google).
+   `returnOrigin` is validated against `WEB_URLS` (falling back to `WEB_URL`
+   if unset/not on the allowlist) and stashed in a cookie alongside state/PKCE
+   — this is what lets multiple deployed frontends (e.g. a dev and a prod
+   origin) share one backend without OAuth always landing back on whichever
+   origin `WEB_URL` happens to be. Omitting it, or passing an origin not on
+   the allowlist, just falls back to `WEB_URL` — nothing breaks.
 2. Google sends the user to `/auth/oauth/google/callback?code=...&state=...`.
    Backend validates state, exchanges the code, looks up or creates the
    user, **sets the `mnemio_refresh` cookie**, generates a short-lived
    exchange code, and 302-redirects to
-   `${WEB_URL}/auth/oauth/callback?code=<short_lived>`.
+   `${returnOrigin}/auth/oauth/callback?code=<short_lived>` (the origin
+   stashed in step 1, re-validated against the current allowlist; `WEB_URL`
+   if none was stashed).
 3. FE swaps the short code via `POST /auth/oauth/exchange { code }` and
    gets `{ accessToken, user, needsProfile, welcome }`.
 
@@ -529,10 +537,10 @@ Identity-linking policy:
 - Else → create a new user with `emailVerifiedAt = now()`, link identity, sign in.
 
 ```ts
-GET /auth/oauth/google      → 302 to https://accounts.google.com/...
+GET /auth/oauth/google?returnOrigin=<optional>  → 302 to https://accounts.google.com/...
 GET /auth/oauth/google/callback?code=&state=
-  → on success: 302 to ${WEB_URL}/auth/oauth/callback?code=<short>
-  → on failure: 302 to ${WEB_URL}/auth/oauth/error?reason=<...>
+  → on success: 302 to ${returnOrigin ?? WEB_URL}/auth/oauth/callback?code=<short>
+  → on failure: 302 to ${returnOrigin ?? WEB_URL}/auth/oauth/error?reason=<...>
                  (reasons: missing_state | bad_state | missing_code |
                   exchange_failed | OAUTH_EMAIL_UNVERIFIED | etc.)
 
@@ -556,6 +564,8 @@ Profile completion. All fields optional; at least one required.
   username?: string;      // 3–24 chars, /^[a-zA-Z0-9_]+$/, lowercased server-side,
                           // reserved names rejected (admin, root, mnemio, …)
   birthday?: string;      // 'YYYY-MM-DD'; must be ≥ 13 years ago
+  avatarUrl?: null;       // only null is accepted — removes the profile photo
+                          // (upload a new one via POST /media/uploads?kind=avatar)
 }
 
 // 200 Response: { user: User; needsProfile: boolean }
@@ -607,15 +617,16 @@ Example (after `npm run seed`):
   description?: string;       // ≤ 500 chars, default ''
   sourceLanguage: string;     // 2–10 chars
   targetLanguage: string;
-  isPublic?: boolean;         // privacy toggle; **default true** (public)
+  isPublic?: boolean;         // privacy toggle; **default false** (private)
   coverColor?: string | null; // P2: '#RRGGBB' hex
   glyph?: string | null;      // P2: 1–8 chars (emoji ok)
   subject?: string | null;    // P2: 1–40 chars
 }
 // 201 Response: Deck
 ```
-> **Privacy:** `isPublic` is enforced server-side. A **public** deck (default) is
-> viewable/copyable by anyone; a **private** deck (`isPublic:false`) is visible
+> **Privacy:** `isPublic` is enforced server-side. A deck is **private by
+> default** (`isPublic: false`) — omitting the field creates a private deck.
+> A **public** deck is viewable/copyable by anyone; a private deck is visible
 > only to its owner. `isPublic` is owner-settable on create and `PATCH` and is
 > returned on every `Deck`. Discovery surfaces (`GET /discover/*`,
 > `/discover/categories` counts, featured) already exclude private decks — they
@@ -995,8 +1006,17 @@ Marks unseen achievements as acknowledged so they stop appearing in
 
 ### Statistics  *(P1)*
 
-Backed by a `DailyActivity` rollup table that updates on every `/srs/rate`.
+Backed by a `DailyActivity` rollup table that updates on every `/srs/rate`
+(and on browse-mode `/sessions/:id/complete`).
 All endpoints scoped to the authenticated user.
+
+**Local days (`X-Timezone`).** The client sends its IANA zone on every request
+as the `X-Timezone` header (e.g. `Europe/Kyiv`; a `tz` query param is also
+accepted). `/srs/rate` and `/sessions/:id/complete` roll activity into the
+user's **local** calendar day, and `/stats/overview` (range windows + streak),
+`/stats/series` (labels are local `YYYY-MM-DD` days) and `/stats/activity`
+("today"/current month) read in the same zone. Missing or invalid zone → UTC.
+Rows written before this change stay on their UTC day.
 
 #### `GET /stats/overview?range=7|30|90|all`  *(auth)*  — default `30`
 ```ts
@@ -1051,7 +1071,8 @@ Per-deck performance for the Statistics screen.
     deckId: string;
     title: string;
     cardCount: number;
-    masteryPct: number;       // 0..100
+    masteryPct: number;       // 0..100 — % of cards with repetitions >= 3
+    progressPct: number;      // 0..100 — graded: Σ min(repetitions, 3) / (cardCount × 3)
     retention: number;        // 0..100 — proxy from CardProgress repetitions
     reviewed: number;         // all-time review count over the deck's cards
   }[];

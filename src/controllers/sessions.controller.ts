@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { createSessionSchema, updateSessionSchema } from '../schemas/session.schema.js';
 import * as sessionsService from '../services/sessions.service.js';
+import { requestTz } from '../shared/request-tz.js';
 
 type IdParams = { id: string };
 
@@ -27,7 +28,11 @@ export const complete = async (
     request: FastifyRequest<{ Params: IdParams }>,
     reply: FastifyReply,
 ) => {
-    const session = await sessionsService.complete(request.currentUser.sub, request.params.id);
+    const session = await sessionsService.complete(
+        request.currentUser.sub,
+        request.params.id,
+        requestTz(request),
+    );
     reply.send(session);
 };
 

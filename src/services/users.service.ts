@@ -19,6 +19,7 @@ export const updateMe = async (
     if (input.fullName !== undefined) patch.fullName = input.fullName;
     if (input.username !== undefined) patch.username = input.username;
     if (input.birthday !== undefined) patch.birthday = new Date(input.birthday);
+    if (input.avatarUrl === null) patch.avatarUrl = null;
 
     try {
         const user = await usersRepo.updateUser(userId, patch);

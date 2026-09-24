@@ -67,7 +67,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         },
         credentials: true,
         methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Timezone'],
     });
 
     await fastify.register(rateLimit, {

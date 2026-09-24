@@ -1,13 +1,14 @@
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
-import pluginVue from 'eslint-plugin-vue';
-import vueParser from 'vue-eslint-parser';
-import tailwindPlugin from 'eslint-plugin-tailwindcss';
 import prettierPlugin from 'eslint-plugin-prettier';
 import prettierConfig from 'eslint-config-prettier';
 
 const tsconfigRootDir = import.meta.dirname;
 
+// Backend (Node/Fastify) lint config. The Vue / Tailwind sections that were
+// copied over from the frontend config were removed: their plugins are not
+// backend dependencies, so ESLint crashed on startup ("Cannot find package
+// 'eslint-plugin-vue'") and the backend could not be linted at all.
 export default [
     // ── 1. Global ignores ────────────────────────────────────────────────────
     {
@@ -39,32 +40,9 @@ export default [
         },
     },
 
-    // ── 3. Vue — recommended flat config ─────────────────────────────────────
-    ...pluginVue.configs['flat/recommended'],
-
-    // ── 4. Vue — TypeScript inside .vue files ────────────────────────────────
+    // ── 3. All files — Prettier + project rules ───────────────────────────────
     {
-        files: ['**/*.vue'],
-        plugins: { '@typescript-eslint': tsPlugin },
-        languageOptions: {
-            parser: vueParser,
-            parserOptions: {
-                parser: tsParser,
-                ecmaVersion: 'latest',
-                sourceType: 'module',
-                projectService: true,
-                tsconfigRootDir,
-                extraFileExtensions: ['.vue'],
-            },
-        },
-    },
-
-    // ── 5. Tailwind ──────────────────────────────────────────────────────────
-    ...tailwindPlugin.configs['flat/recommended'],
-
-    // ── 6. All files — Prettier + project rules ───────────────────────────────
-    {
-        files: ['**/*.{js,ts,vue}'],
+        files: ['**/*.{js,ts}'],
         plugins: {
             '@typescript-eslint': tsPlugin,
             prettier: prettierPlugin,
@@ -96,9 +74,9 @@ export default [
         },
     },
 
-    // ── 8. TypeScript + Vue — type-aware rules ───────────────────────────────
+    // ── 4. TypeScript — type-aware rules ─────────────────────────────────────
     {
-        files: ['**/*.{ts,vue}'],
+        files: ['**/*.ts'],
         plugins: {
             '@typescript-eslint': tsPlugin,
         },
@@ -130,21 +108,6 @@ export default [
             '@typescript-eslint/restrict-template-expressions': 'error',
             '@typescript-eslint/only-throw-error': 'error',
             '@typescript-eslint/consistent-type-imports': 'error',
-
-            // ── Vue ──────────────────────────────────────────────────────────
-            'vue/component-api-style': ['error', ['script-setup', 'composition']],
-            'vue/no-mutating-props': 'error',
-            'vue/no-use-v-if-with-v-for': 'error',
-            'vue/no-setup-props-reactivity-loss': 'error',
-            'vue/no-ref-as-operand': 'error',
-            'vue/no-unused-vars': 'error',
-
-            // ── Tailwind ─────────────────────────────────────────────────────
-            // 'tailwindcss/classnames-order': 'error',
-            // 'tailwindcss/enforces-shorthand': 'error',
-            // 'tailwindcss/no-contradicting-classname': 'error',
-            // 'tailwindcss/no-unnecessary-arbitrary-value': 'error',
-            // 'tailwindcss/no-custom-classname': 'error',
         },
     },
 ];

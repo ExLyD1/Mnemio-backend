@@ -10,6 +10,7 @@ import { startSse, wantsSse } from '../shared/sse.js';
 import { AppError, BadRequestError } from '../shared/errors.js';
 import { multipartTextFields, readAiImage } from '../shared/ai-image.js';
 import type { GenerateDeckEvent } from '../services/ai.provider.js';
+import { requestTz } from '../shared/request-tz.js';
 
 export const enrichWords = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = enrichWordsSchema.parse(request.body);
@@ -116,6 +117,6 @@ export const deckFromImage = async (request: FastifyRequest, reply: FastifyReply
 
 export const suggest = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = suggestSchema.parse(request.body);
-    const suggestion = await aiService.suggest(request.currentUser.sub, input);
+    const suggestion = await aiService.suggest(request.currentUser.sub, input, requestTz(request));
     reply.send(suggestion);
 };

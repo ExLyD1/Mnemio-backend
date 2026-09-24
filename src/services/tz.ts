@@ -48,3 +48,58 @@ export const tzWindowLowerBoundUtc = (end: Date, tz: string, days: number): Date
     const [y, m, d] = keys[0]!.split('-').map(Number);
     return new Date(Date.UTC(y!, m! - 1, d!) - 86_400_000);
 };
+
+// ---------- Per-user local-day bucketing for the DailyActivity rollup ----------
+//
+// DailyActivity.date is a calendar day (@db.Date). It used to be the UTC day of
+// the review, so for a user in Kyiv (UTC+2/+3) anything studied between 00:00
+// and 03:00 counted toward *yesterday* — breaking streaks and "days practiced".
+// Rows are now keyed by the user's LOCAL calendar day (the client sends its
+// IANA zone in the X-Timezone header); a local day key 'YYYY-MM-DD' is stored
+// as that date at UTC midnight, which is exactly what a @db.Date column holds.
+
+export const DEFAULT_TZ = 'UTC';
+
+export const isValidTimeZone = (tz: string): boolean => {
+    try {
+        new Intl.DateTimeFormat('en-US', { timeZone: tz });
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+// Anything missing/invalid falls back to UTC (the pre-existing behaviour), so a
+// bad or absent header can never break a write.
+export const normalizeTz = (raw: unknown): string => {
+    if (typeof raw !== 'string') return DEFAULT_TZ;
+    const tz = raw.trim();
+    if (tz.length === 0 || tz.length > 64) return DEFAULT_TZ;
+    return isValidTimeZone(tz) ? tz : DEFAULT_TZ;
+};
+
+// 'YYYY-MM-DD' → the @db.Date value for that calendar day.
+export const dayKeyToDate = (key: string): Date => new Date(`${key}T00:00:00.000Z`);
+
+// @db.Date value → 'YYYY-MM-DD'.
+export const dateToDayKey = (d: Date): string => d.toISOString().slice(0, 10);
+
+// The @db.Date value of the local calendar day `at` falls on in `tz`.
+export const localDayDate = (at: Date, tz: string): Date => dayKeyToDate(tzDayKey(at, tz));
+
+// Consecutive active days ending on `todayKey` (or on the day before, if today
+// has no activity yet — the streak isn't broken until the day is over).
+export const computeStreak = (
+    rows: { date: Date; reviews: number }[],
+    todayKey: string,
+): number => {
+    const active = new Set(rows.filter((r) => r.reviews > 0).map((r) => dateToDayKey(r.date)));
+    const cursor = dayKeyToDate(todayKey);
+    if (!active.has(dateToDayKey(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+    let streak = 0;
+    while (active.has(dateToDayKey(cursor))) {
+        streak += 1;
+        cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
+    return streak;
+};

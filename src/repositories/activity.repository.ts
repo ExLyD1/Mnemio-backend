@@ -1,10 +1,5 @@
 import { prisma } from '../db/prisma.js';
-
-const dateAtUtcMidnight = (d: Date): Date => {
-    const out = new Date(d);
-    out.setUTCHours(0, 0, 0, 0);
-    return out;
-};
+import { DEFAULT_TZ, localDayDate } from '../services/tz.js';
 
 // `reviews`/`correct` default to a single-card increment (the SRS per-card
 // rate() call site); pass explicit counts to roll up a whole session at once
@@ -17,9 +12,11 @@ export const recordReview = async (
         at?: Date;
         reviews?: number;
         correct?: number;
+        // The reviewer's IANA zone: the row is keyed by THEIR calendar day.
+        tz?: string;
     },
 ): Promise<void> => {
-    const date = dateAtUtcMidnight(args.at ?? new Date());
+    const date = localDayDate(args.at ?? new Date(), args.tz ?? DEFAULT_TZ);
     const reviewsInc = args.reviews ?? 1;
     const correctInc = args.correct ?? (args.wasCorrect ? 1 : 0);
     const durationInc = args.durationMs ?? 0;

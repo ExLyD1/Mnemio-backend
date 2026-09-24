@@ -10,6 +10,7 @@ import {
     resendOtpSchema,
 } from '../schemas/auth.schema.js';
 import { AppError, BadRequestError } from '../shared/errors.js';
+import { resolveReturnOrigin } from '../shared/webOrigins.js';
 import {
     setRefreshCookie,
     clearRefreshCookie,
@@ -25,11 +26,7 @@ const ctxOf = (request: FastifyRequest) => ({
 });
 
 // Strip refreshToken from the JSON body — it lives in the cookie now.
-const sendAuthResult = (
-    reply: FastifyReply,
-    result: authService.AuthResult,
-    status = 200,
-) => {
+const sendAuthResult = (reply: FastifyReply, result: authService.AuthResult, status = 200) => {
     setRefreshCookie(reply, result.refreshToken);
     const { refreshToken: _ignored, ...body } = result;
     void _ignored;
@@ -62,8 +59,16 @@ export const login = async (request: FastifyRequest, reply: FastifyReply) => {
 
 export const refresh = async (request: FastifyRequest, reply: FastifyReply) => {
     const token = readRefreshCookie(request);
-    const result = await authService.refresh(request.server, token, ctxOf(request));
-    sendAuthResult(reply, result);
+    try {
+        const result = await authService.refresh(request.server, token, ctxOf(request));
+        sendAuthResult(reply, result);
+    } catch (err) {
+        // A refresh token the server has rejected is dead for good. Clear it so
+        // the browser stops presenting it on every app boot (which otherwise
+        // re-ran reuse detection against an already-revoked family).
+        clearRefreshCookie(reply);
+        throw err;
+    }
 };
 
 export const logout = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -80,7 +85,19 @@ export const me = async (request: FastifyRequest, reply: FastifyReply) => {
 
 // ---------- Google OAuth ----------
 
-export const googleAuthStart = async (_request: FastifyRequest, reply: FastifyReply) => {
+type GoogleStartQuery = { returnOrigin?: string };
+
+export const googleAuthStart = async (
+    request: FastifyRequest<{ Querystring: GoogleStartQuery }>,
+    reply: FastifyReply,
+) => {
+    // Which frontend to send the browser back to once this round-trip
+    // completes — dev.mnemio.xyz, mnemio.xyz, localhost, whichever one the FE
+    // that initiated this actually is, as long as it's on the WEB_URLS
+    // allowlist. null (missing/invalid/not-allowlisted) just means "behave
+    // like before": everything downstream falls back to env.WEB_URL.
+    const returnOrigin = resolveReturnOrigin(request.query.returnOrigin);
+
     // Mirror the callback's redirect-on-failure pattern. The FE renders the
     // same /auth/oauth/error page either way; a 302 keeps the user inside
     // the browser flow instead of dumping a raw JSON error mid-redirect.
@@ -88,12 +105,12 @@ export const googleAuthStart = async (_request: FastifyRequest, reply: FastifyRe
         googleOAuth.assertGoogleConfigured();
     } catch (err) {
         const reason = err instanceof AppError ? err.code : 'OAUTH_NOT_CONFIGURED';
-        const target = new URL('/auth/oauth/error', env.WEB_URL);
+        const target = new URL('/auth/oauth/error', returnOrigin ?? env.WEB_URL);
         target.searchParams.set('reason', reason);
         return reply.redirect(target.toString(), 302);
     }
     const { state, codeVerifier } = googleOAuth.newStateAndVerifier();
-    setOAuthCookies(reply, state, codeVerifier);
+    setOAuthCookies(reply, state, codeVerifier, returnOrigin);
     const url = googleOAuth.buildAuthorizationUrl(state, codeVerifier);
     reply.redirect(url.toString(), 302);
 };
@@ -104,16 +121,20 @@ export const googleAuthCallback = async (
     request: FastifyRequest<{ Querystring: GoogleCallbackQuery }>,
     reply: FastifyReply,
 ) => {
+    const cookies = readOAuthCookies(request);
+    // Re-validate against the current allowlist rather than trusting the
+    // cookie value outright — cheap, and means a WEB_URLS change takes effect
+    // immediately instead of only for OAuth attempts started after it.
+    const returnOrigin = resolveReturnOrigin(cookies?.returnOrigin) ?? env.WEB_URL;
+
     const fail = (msg: string) => {
-        const target = new URL('/auth/oauth/error', env.WEB_URL);
+        const target = new URL('/auth/oauth/error', returnOrigin);
         target.searchParams.set('reason', msg);
         clearOAuthCookies(reply);
         return reply.redirect(target.toString(), 302);
     };
 
     if (request.query.error) return fail(request.query.error);
-
-    const cookies = readOAuthCookies(request);
     if (!cookies) return fail('missing_state');
     if (!request.query.state || request.query.state !== cookies.state) {
         return fail('bad_state');
@@ -142,14 +163,16 @@ export const googleAuthCallback = async (
         },
         { ip: request.ip ?? null, userAgent: request.headers['user-agent'] ?? null },
     );
-    // Set the refresh cookie immediately — the FE just needs to swap the
-    // exchange code for the access token + user payload, the cookie comes
-    // along automatically on the next request.
-    setRefreshCookie(reply, result.refreshToken);
+    // NOTE: the refresh cookie is deliberately NOT set here. This callback runs
+    // on the BACKEND origin (the FE sends the user to `oauthBase`), while every
+    // later /auth/refresh goes to the FE origin through the Nuxt /api proxy. A
+    // cookie set here would be invisible there, so the session died at the
+    // 15-minute access-token expiry. It is set in oauthExchangeCode instead,
+    // which the FE calls same-origin.
     clearOAuthCookies(reply);
 
     const exchangeCode = oauthExchange.stash(result);
-    const target = new URL('/auth/oauth/callback', env.WEB_URL);
+    const target = new URL('/auth/oauth/callback', returnOrigin);
     target.searchParams.set('code', exchangeCode);
     reply.redirect(target.toString(), 302);
 };
@@ -168,9 +191,10 @@ export const oauthExchangeCode = async (request: FastifyRequest, reply: FastifyR
             'Exchange code expired or already used',
         );
     }
-    // The cookie was already set at the callback step; only need to mirror
-    // the JSON body so the FE can stash the access token.
-    const { refreshToken: _ignored, ...body } = result;
-    void _ignored;
+    // This request is same-origin (FE -> /api proxy -> here), so this is the
+    // only place the refresh cookie can be set on the origin that will actually
+    // send it back on later /auth/refresh calls.
+    const { refreshToken, ...body } = result;
+    setRefreshCookie(reply, refreshToken);
     reply.send(body);
 };

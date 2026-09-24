@@ -6,7 +6,12 @@ import { getWelcomeState, type WelcomeState } from '../repositories/welcome.repo
 import * as entitlementService from './entitlement.service.js';
 import * as analytics from './analytics.service.js';
 import { toPublicUser, needsProfile, type PublicUser } from '../shared/mappers.js';
-import { BadRequestError, ConflictError, UnauthorizedError, RateLimitedError } from '../shared/errors.js';
+import {
+    BadRequestError,
+    ConflictError,
+    UnauthorizedError,
+    RateLimitedError,
+} from '../shared/errors.js';
 import {
     generateOtpCode,
     hashOtp,
@@ -39,6 +44,10 @@ export type AuthResult = AuthTokens & {
     user: PublicUser;
     needsProfile: boolean;
     welcome: WelcomeState;
+    // Must match what GET /auth/me reports. Without it the FE defaulted every
+    // freshly-authenticated user to 'free', so a premium user hit the paywall
+    // for the whole SPA session (and was recorded as free in analytics).
+    plan: 'free' | 'premium';
 };
 
 const signAccessToken = (fastify: FastifyInstance, user: User): string =>
@@ -70,15 +79,17 @@ const buildAuthResult = async (
     user: User,
     ctx: RequestContext,
 ): Promise<AuthResult> => {
-    const [tokens, welcome] = await Promise.all([
+    const [tokens, welcome, plan] = await Promise.all([
         issueTokens(fastify, user, ctx),
         getWelcomeState(user.id),
+        entitlementService.getPlan(user.id),
     ]);
     return {
         ...tokens,
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
         welcome,
+        plan,
     };
 };
 
@@ -160,7 +171,10 @@ export const verifyEmail = async (
 
     if (verification.attempts >= OTP_MAX_ATTEMPTS) {
         await authRepo.consumeVerification(verification.id);
-        throw new BadRequestError('AUTH_OTP_EXHAUSTED', 'Too many incorrect attempts; request a new code');
+        throw new BadRequestError(
+            'AUTH_OTP_EXHAUSTED',
+            'Too many incorrect attempts; request a new code',
+        );
     }
 
     if (!verifyOtp(input.code, verification.codeHash)) {
@@ -253,9 +267,13 @@ export const login = async (
     }
 
     if (!user.emailVerifiedAt) {
-        throw new UnauthorizedError('EMAIL_NOT_VERIFIED', 'Please verify your email before logging in', {
-            userId: user.id,
-        });
+        throw new UnauthorizedError(
+            'EMAIL_NOT_VERIFIED',
+            'Please verify your email before logging in',
+            {
+                userId: user.id,
+            },
+        );
     }
 
     await authRepo.writeAuditLog({
@@ -269,6 +287,42 @@ export const login = async (
 
 // ---------- Refresh ----------
 
+// How long a just-rotated refresh token may still be presented without being
+// treated as theft. Rotation is not atomic from the client's point of view:
+// two tabs refreshing at once, or a mobile network dropping the /auth/refresh
+// response after the server already rotated, both re-present the old cookie a
+// moment later. Without a grace window that looked like token reuse and
+// revoked EVERY session the user had — which users experienced as "the app
+// logs me out when I reopen it" (QA (3) #10, Mnemio правки #10).
+export const REFRESH_REUSE_GRACE_MS = 60_000;
+
+export type RefreshRecordState = 'valid' | 'rotated_grace' | 'rotated_stale' | 'reused' | 'invalid';
+
+// Pure: how to treat the presented refresh token's DB record.
+export const classifyRefreshRecord = (
+    record: { revokedAt: Date | null; replacedById: string | null; expiresAt: Date } | null,
+    now: Date,
+): RefreshRecordState => {
+    if (!record) return 'invalid';
+    if (record.revokedAt) {
+        // A token revoked by LOGOUT (replacedById == null) is never re-issuable:
+        // presenting it again is either a stale client or a genuine replay.
+        if (record.replacedById === null) return 'reused';
+        // Past its own 30-day life it is dead regardless of why it was revoked.
+        if (record.expiresAt < now) return 'reused';
+        const withinGrace = now.getTime() - record.revokedAt.getTime() <= REFRESH_REUSE_GRACE_MS;
+        // A ROTATED token that is still inside its lifetime is a rotation
+        // artifact, not theft. Two tabs racing land inside the grace window;
+        // a second device, or a client that slept, shows up hours later. Both
+        // are the same event — this client simply never saw the new token.
+        // Treating the late case as theft revoked EVERY session on EVERY
+        // device, which users experienced as "I get logged out the next day".
+        return withinGrace ? 'rotated_grace' : 'rotated_stale';
+    }
+    if (record.expiresAt < now) return 'invalid';
+    return 'valid';
+};
+
 export const refresh = async (
     fastify: FastifyInstance,
     refreshToken: string | null,
@@ -279,36 +333,51 @@ export const refresh = async (
     }
     const tokenHash = hashToken(refreshToken);
     const record = await authRepo.findRefreshTokenByHash(tokenHash);
-    if (!record || record.revokedAt || record.expiresAt < new Date()) {
-        // Reuse detection: if a previously-rotated token is presented again,
-        // revoke all tokens for that user to defend against theft.
-        if (record?.revokedAt) {
-            await authRepo.revokeAllUserRefreshTokens(record.userId);
-            await authRepo.writeAuditLog({
-                userId: record.userId,
-                event: 'refresh.reuse_detected',
-                ip: ctx.ip ?? null,
-            });
-        }
+    const state = classifyRefreshRecord(record, new Date());
+    if (state === 'reused' && record) {
+        // Reuse detection: a token revoked by logout, or one replayed past its
+        // own expiry, presented again — revoke everything to defend against theft.
+        await authRepo.revokeAllUserRefreshTokens(record.userId);
+        await authRepo.writeAuditLog({
+            userId: record.userId,
+            event: 'refresh.reuse_detected',
+            ip: ctx.ip ?? null,
+        });
+    }
+    if (state === 'rotated_stale' && record) {
+        // Not theft — audited so a real attack is still visible in the log.
+        await authRepo.writeAuditLog({
+            userId: record.userId,
+            event: 'refresh.rotated_stale',
+            ip: ctx.ip ?? null,
+        });
+    }
+    if (!record || (state !== 'valid' && state !== 'rotated_grace' && state !== 'rotated_stale')) {
         throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid or expired refresh token');
     }
 
     const user = await authRepo.findUserById(record.userId);
     if (!user) throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid refresh token');
 
-    const [tokens, welcome] = await Promise.all([
+    const [tokens, welcome, plan] = await Promise.all([
         issueTokens(fastify, user, ctx),
         getWelcomeState(user.id),
+        entitlementService.getPlan(user.id),
     ]);
-    await authRepo.revokeRefreshToken(
-        record.id,
-        (await authRepo.findRefreshTokenByHash(hashToken(tokens.refreshToken)))?.id,
-    );
+    // A rotated token (grace or stale) was already revoked by the request that
+    // won the race — just hand this client its own fresh pair.
+    if (state === 'valid') {
+        await authRepo.revokeRefreshToken(
+            record.id,
+            (await authRepo.findRefreshTokenByHash(hashToken(tokens.refreshToken)))?.id,
+        );
+    }
     return {
         ...tokens,
         user: toPublicUser(user),
         needsProfile: needsProfile(user),
         welcome,
+        plan,
     };
 };
 
@@ -416,7 +485,12 @@ export const signInWithProvider = async (
 
 export const me = async (
     userId: string,
-): Promise<{ user: PublicUser; needsProfile: boolean; welcome: WelcomeState; plan: 'free' | 'premium' }> => {
+): Promise<{
+    user: PublicUser;
+    needsProfile: boolean;
+    welcome: WelcomeState;
+    plan: 'free' | 'premium';
+}> => {
     const [user, welcome, plan] = await Promise.all([
         authRepo.findUserById(userId),
         getWelcomeState(userId),

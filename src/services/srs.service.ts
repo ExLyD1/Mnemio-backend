@@ -6,6 +6,7 @@ import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
+import { DEFAULT_TZ } from './tz.js';
 import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
 
 export const MASTERY_THRESHOLD = 3; // repetitions >= 3 (canonical, deck-stats.repository.ts)
@@ -17,11 +18,14 @@ export const resolveMasteredAt = (
     existingMasteredAt: Date | null,
     nextRepetitions: number,
     now: Date,
-): Date | null =>
-    existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
+): Date | null => existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
 
 export type PublicCardProgress = {
     cardId: string;
+    // Present on GET /srs/progress (which lists rows across every deck, so the
+    // client needs to know which deck each row belongs to). Omitted by rate(),
+    // where the caller already knows the deck it just rated in.
+    deckId?: string;
     repetitions: number;
     interval: number;
     easeFactor: number;
@@ -32,6 +36,7 @@ export type PublicCardProgress = {
 export const rate = async (
     ownerId: string,
     input: { cardId: string; rating: Rating },
+    tz: string = DEFAULT_TZ,
 ): Promise<PublicCardProgress & { newAchievements: PublicAchievement[] }> => {
     // Access: the rater must own the card's deck OR the deck must be public.
     // The progress row is keyed by (ownerId = rater, cardId), so two users
@@ -72,7 +77,7 @@ export const rate = async (
     // Roll the day's activity counters. 'good' and 'easy' count as correct,
     // matching the FE's accuracy model (quality ≥ 3).
     const wasCorrect = input.rating === 'good' || input.rating === 'easy';
-    activityRepo.recordReview(ownerId, { wasCorrect }).catch((err) => {
+    activityRepo.recordReview(ownerId, { wasCorrect, tz }).catch((err) => {
         // eslint-disable-next-line no-console
         console.error('[activity] recordReview failed', err);
     });
@@ -106,13 +111,11 @@ export type DueCardDto = {
     repetitions: number;
 };
 
-export const progress = async (
-    ownerId: string,
-    limit = 2000,
-): Promise<PublicCardProgress[]> => {
+export const progress = async (ownerId: string, limit = 2000): Promise<PublicCardProgress[]> => {
     const rows = await srsRepo.findAllProgress(ownerId, limit);
     return rows.map((r) => ({
         cardId: r.cardId,
+        deckId: r.card.deckId,
         repetitions: r.repetitions,
         interval: r.interval,
         easeFactor: r.easeFactor,

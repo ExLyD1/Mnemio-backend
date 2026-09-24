@@ -4,54 +4,44 @@ import * as srsRepo from '../repositories/srs.repository.js';
 import * as deckStatsRepo from '../repositories/deck-stats.repository.js';
 import * as sessionsRepo from '../repositories/sessions.repository.js';
 import { buildStats } from '../shared/mappers.deck.js';
-import { tzDayKey, tzDayKeysEndingOn, tzWindowLowerBoundUtc } from './tz.js';
+import {
+    DEFAULT_TZ,
+    computeStreak,
+    dateToDayKey,
+    dayKeyToDate,
+    tzDayKey,
+    tzDayKeysEndingOn,
+    tzWindowLowerBoundUtc,
+} from './tz.js';
 import type { StatsRange } from '../schemas/stats.schema.js';
 
 // 'all' has no fixed window; per-day series mirror getSeries and cap 'all' at
 // 365 points so the x-axis stays bounded.
 const ALL_RANGE_SERIES_DAYS = 365;
 
-const utcMidnight = (d: Date) => {
-    const x = new Date(d);
-    x.setUTCHours(0, 0, 0, 0);
-    return x;
-};
-
-const daysBetween = (a: Date, b: Date) =>
-    Math.round((utcMidnight(a).getTime() - utcMidnight(b).getTime()) / 86_400_000);
-
-const rangeDays = (range: StatsRange): number | null =>
-    range === 'all' ? null : Number(range);
-
-const toIsoDate = (d: Date) => d.toISOString().slice(0, 10);
+const rangeDays = (range: StatsRange): number | null => (range === 'all' ? null : Number(range));
 
 // ---------- Overview ----------
+//
+// Every per-day figure here is keyed by the viewer's LOCAL calendar day (tz):
+// DailyActivity rows are written under the reviewer's local day (see
+// activity.repository recordReview), and "today", the range windows and the
+// streak are all computed in the same zone. Pass 'UTC' for the old behaviour.
 
 export type StatsOverview = {
     range: StatsRange;
     reviewed: number;
     correct: number;
-    retention: number;     // 0..100, rounded
-    streak: number;        // current consecutive-day streak ending today (UTC)
+    retention: number; // 0..100, rounded
+    streak: number; // current consecutive-day streak ending today (viewer's local day)
     dueCount: number;
     trends: {
-        reviewed: { current: number; previous: number; deltaPct: number };
-        retention: { current: number; previous: number; deltaPct: number };
+        // deltaPct is null when there is no comparison window: range 'all' has
+        // no "previous" period by construction, so any percentage there would
+        // be fabricated (it always came out as +100%).
+        reviewed: { current: number; previous: number; deltaPct: number | null };
+        retention: { current: number; previous: number; deltaPct: number | null };
     };
-};
-
-const computeStreak = (rows: { date: Date; reviews: number }[]): number => {
-    if (rows.length === 0) return 0;
-    const activeDays = new Set(rows.filter((r) => r.reviews > 0).map((r) => toIsoDate(r.date)));
-    let streak = 0;
-    const cursor = utcMidnight(new Date());
-    // Allow the streak to start "yesterday" if today has no review yet.
-    if (!activeDays.has(toIsoDate(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
-    while (activeDays.has(toIsoDate(cursor))) {
-        streak += 1;
-        cursor.setUTCDate(cursor.getUTCDate() - 1);
-    }
-    return streak;
 };
 
 const aggregateRange = (rows: { reviews: number; correct: number }[]) =>
@@ -69,11 +59,22 @@ const pctChange = (current: number, previous: number): number => {
     return Math.round(((current - previous) / previous) * 100);
 };
 
+// Pure: the current and previous `days`-long windows of local day keys.
+export const overviewWindows = (
+    now: Date,
+    tz: string,
+    days: number,
+): { current: string[]; previous: string[] } => {
+    const keys = tzDayKeysEndingOn(now, tz, days * 2);
+    return { previous: keys.slice(0, days), current: keys.slice(days) };
+};
+
 export const overview = async (
     userId: string,
     range: StatsRange,
+    tz: string = DEFAULT_TZ,
 ): Promise<StatsOverview> => {
-    const today = utcMidnight(new Date());
+    const now = new Date();
     const days = rangeDays(range);
 
     let currentRows: Awaited<ReturnType<typeof activityRepo.rangeDays>>;
@@ -82,31 +83,33 @@ export const overview = async (
     if (days === null) {
         currentRows = await activityRepo.allDays(userId);
     } else {
-        const from = new Date(today);
-        from.setUTCDate(from.getUTCDate() - (days - 1));
-        const prevTo = new Date(from);
-        prevTo.setUTCDate(prevTo.getUTCDate() - 1);
-        const prevFrom = new Date(prevTo);
-        prevFrom.setUTCDate(prevFrom.getUTCDate() - (days - 1));
+        const { current, previous } = overviewWindows(now, tz, days);
         [currentRows, previousRows] = await Promise.all([
-            activityRepo.rangeDays(userId, from, today),
-            activityRepo.rangeDays(userId, prevFrom, prevTo),
+            activityRepo.rangeDays(
+                userId,
+                dayKeyToDate(current[0]!),
+                dayKeyToDate(current[current.length - 1]!),
+            ),
+            activityRepo.rangeDays(
+                userId,
+                dayKeyToDate(previous[0]!),
+                dayKeyToDate(previous[previous.length - 1]!),
+            ),
         ]);
     }
 
     const allRows = await activityRepo.allDays(userId);
-    const streak = computeStreak(allRows);
+    const streak = computeStreak(allRows, tzDayKey(now, tz));
 
     const current = aggregateRange(currentRows);
     const prev = aggregateRange(previousRows);
+    // 'all' never loads a previous window, so there is nothing to compare to.
+    const hasComparison = days !== null;
     const dueCount = await srsRepo.countDueCards(userId);
 
-    const retCurrent = current.reviewed > 0
-        ? Math.round((current.correct / current.reviewed) * 100)
-        : 0;
-    const retPrev = prev.reviewed > 0
-        ? Math.round((prev.correct / prev.reviewed) * 100)
-        : 0;
+    const retCurrent =
+        current.reviewed > 0 ? Math.round((current.correct / current.reviewed) * 100) : 0;
+    const retPrev = prev.reviewed > 0 ? Math.round((prev.correct / prev.reviewed) * 100) : 0;
 
     return {
         range,
@@ -119,12 +122,12 @@ export const overview = async (
             reviewed: {
                 current: current.reviewed,
                 previous: prev.reviewed,
-                deltaPct: pctChange(current.reviewed, prev.reviewed),
+                deltaPct: hasComparison ? pctChange(current.reviewed, prev.reviewed) : null,
             },
             retention: {
                 current: retCurrent,
                 previous: retPrev,
-                deltaPct: pctChange(retCurrent, retPrev),
+                deltaPct: hasComparison ? pctChange(retCurrent, retPrev) : null,
             },
         },
     };
@@ -134,45 +137,49 @@ export const overview = async (
 
 export type StatsSeriesPoint = { label: string; value: number };
 
+// Pure: one point per local day on the `labels` scaffold (zeros included).
+export const buildDailySeries = (
+    rows: { date: Date; reviews: number }[],
+    labels: string[],
+): StatsSeriesPoint[] => {
+    const byDay = new Map(rows.map((r) => [dateToDayKey(r.date), r.reviews]));
+    return labels.map((label) => ({ label, value: byDay.get(label) ?? 0 }));
+};
+
 export const series = async (
     userId: string,
     range: StatsRange,
+    tz: string = DEFAULT_TZ,
 ): Promise<{ range: StatsRange; points: StatsSeriesPoint[] }> => {
-    const today = utcMidnight(new Date());
-    const days = rangeDays(range) ?? 365;
-    const from = new Date(today);
-    from.setUTCDate(from.getUTCDate() - (days - 1));
-
-    const rows = await activityRepo.rangeDays(userId, from, today);
-    const byDate = new Map(rows.map((r) => [toIsoDate(r.date), r.reviews]));
-
-    const points: StatsSeriesPoint[] = [];
-    const cursor = new Date(from);
-    for (let i = 0; i < days; i++) {
-        const iso = toIsoDate(cursor);
-        points.push({ label: iso, value: byDate.get(iso) ?? 0 });
-        cursor.setUTCDate(cursor.getUTCDate() + 1);
-    }
-    return { range, points };
+    const days = rangeDays(range) ?? ALL_RANGE_SERIES_DAYS;
+    const labels = tzDayKeysEndingOn(new Date(), tz, days);
+    const rows = await activityRepo.rangeDays(
+        userId,
+        dayKeyToDate(labels[0]!),
+        dayKeyToDate(labels[labels.length - 1]!),
+    );
+    return { range, points: buildDailySeries(rows, labels) };
 };
 
 // ---------- Activity (year heatmap + current-month calendar) ----------
 
 export type StatsActivity = {
-    yearHeat: number[][];      // 53 weeks × 7 days, value = reviews
+    yearHeat: number[][]; // 53 weeks × 7 days, value = reviews
     monthCalendar: {
-        month: string;           // 'YYYY-MM'
+        month: string; // 'YYYY-MM'
         days: ({ date: string; reviews: number } | null)[]; // pad with nulls for leading blanks
     };
 };
 
-export const activity = async (userId: string): Promise<StatsActivity> => {
-    const today = utcMidnight(new Date());
+export const activity = async (userId: string, tz: string = DEFAULT_TZ): Promise<StatsActivity> => {
+    // The viewer's local "today" as a day-counter Date (UTC midnight of that
+    // calendar day) — all arithmetic below is on UTC getters of that value.
+    const today = dayKeyToDate(tzDayKey(new Date(), tz));
     const yearStart = new Date(today);
     yearStart.setUTCDate(yearStart.getUTCDate() - 7 * 52); // ~53 weeks back
 
     const rows = await activityRepo.rangeDays(userId, yearStart, today);
-    const byDate = new Map(rows.map((r) => [toIsoDate(r.date), r.reviews]));
+    const byDate = new Map(rows.map((r) => [dateToDayKey(r.date), r.reviews]));
 
     // yearHeat: 53 columns (weeks, oldest → newest), 7 rows (Sun..Sat).
     const cols = 53;
@@ -182,7 +189,7 @@ export const activity = async (userId: string): Promise<StatsActivity> => {
     cursor.setUTCDate(cursor.getUTCDate() - cursor.getUTCDay());
     for (let c = 0; c < cols; c++) {
         for (let r = 0; r < 7; r++) {
-            const iso = toIsoDate(cursor);
+            const iso = dateToDayKey(cursor);
             yearHeat[c]![r] = byDate.get(iso) ?? 0;
             cursor.setUTCDate(cursor.getUTCDate() + 1);
         }
@@ -197,7 +204,7 @@ export const activity = async (userId: string): Promise<StatsActivity> => {
 
     const monthCursor = new Date(monthStart);
     while (monthCursor.getUTCMonth() === monthStart.getUTCMonth()) {
-        const iso = toIsoDate(monthCursor);
+        const iso = dateToDayKey(monthCursor);
         monthDays.push({ date: iso, reviews: byDate.get(iso) ?? 0 });
         monthCursor.setUTCDate(monthCursor.getUTCDate() + 1);
     }
@@ -212,9 +219,25 @@ export type StatsDeckRow = {
     title: string;
     cardCount: number;
     masteryPct: number;
-    retention: number;          // 0..100 over all-time reviews of cards in this deck
-    reviewed: number;           // total review count over all-time
+    progressPct: number; // 0..100 — graded progress toward mastery (see deckProgressPct)
+    retention: number; // 0..100 over all-time reviews of cards in this deck
+    reviewed: number; // total review count over all-time
 };
+
+// Successful reviews a card needs to count as mastered (repetitions >= 3 —
+// canonical in deck-stats.repository.ts / srs.service.ts MASTERY_THRESHOLD).
+const MASTERY_STEPS = 3;
+
+/**
+ * Graded progress toward mastery: each card contributes min(repetitions, 3)/3.
+ * `masteryPct` only moves once a card has 3 successful reviews in a row, which
+ * SM-2 spaces over ~a week (1d, then 6d), so it sits at 0% after any number of
+ * same-day sessions and users read it as broken. This moves with every
+ * successful review (and drops back when "Forgot"/"Hard" resets a card).
+ * `steps` = SUM(LEAST(repetitions, 3)) over the deck's cards.
+ */
+export const deckProgressPct = (steps: number, cardCount: number): number =>
+    cardCount > 0 ? Math.min(100, Math.round((steps / (cardCount * MASTERY_STEPS)) * 100)) : 0;
 
 export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
     // Per-deck retention/review aggregates over all-time. Single query: card_progresses
@@ -235,11 +258,14 @@ export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
 
     // Per-deck reviews from card_progresses.repetitions (approx).
     const reviewRows = await prisma.$queryRaw<
-        { deckId: string; reviews: bigint; correct: bigint }[]
+        { deckId: string; reviews: bigint; correct: bigint; steps: bigint }[]
     >`
         SELECT c."deckId" AS "deckId",
                COALESCE(SUM(cp."repetitions"), 0)::bigint AS reviews,
-               COALESCE(SUM(CASE WHEN cp."repetitions" > 0 THEN cp."repetitions" END), 0)::bigint AS correct
+               COALESCE(SUM(CASE WHEN cp."repetitions" > 0 THEN cp."repetitions" END), 0)::bigint AS correct,
+               -- COALESCE first: LEAST ignores NULLs, so an unstudied card (no
+               -- progress row) would otherwise count as fully mastered.
+               COALESCE(SUM(LEAST(COALESCE(cp."repetitions", 0), ${MASTERY_STEPS})), 0)::bigint AS steps
           FROM cards c
           LEFT JOIN card_progresses cp ON cp."cardId" = c.id AND cp."userId" = ${userId}
          WHERE c."deckId" = ANY(${decksRows.map((d) => d.id)}::text[])
@@ -258,14 +284,12 @@ export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
             title: d.title,
             cardCount: d.cardCount,
             masteryPct: ds.masteredPct,
+            progressPct: deckProgressPct(Number(rev?.steps ?? 0n), d.cardCount),
             retention,
             reviewed: reviews,
         };
     });
 };
-
-// helper exported for tests/sessions; daysBetween kept for future use
-export const _daysBetween = daysBetween;
 
 // ---------- Study-time series (item 2) ----------
 //
