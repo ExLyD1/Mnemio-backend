@@ -6,6 +6,17 @@ const dayUtc = (d: Date = new Date()) => {
     return x;
 };
 
+/**
+ * When today's counters reset: the next UTC midnight. Counters are keyed by
+ * `dayUtc`, so this is the single source of truth for every "resets at" the
+ * API reports — the FE renders it in the user's own timezone.
+ */
+export const nextResetAt = (d: Date = new Date()): Date => {
+    const x = dayUtc(d);
+    x.setUTCDate(x.getUTCDate() + 1);
+    return x;
+};
+
 // 'import' shares the same per-user-per-day rollup table as the AI kinds
 // (Quizlet / paste-text imports — see imports.service.ts). 'chat' tracks
 // real-time chat-message turns (see chat.service.ts). 'image' tracks vision
@@ -21,6 +32,25 @@ export const findTodayCount = async (
         where: { userId_day_kind: { userId, day: dayUtc(), kind } },
     });
     return row?.count ?? 0;
+};
+
+/**
+ * Every kind's count for today in one query — backs GET /ai/usage, which the
+ * chat composer polls so the user sees "3/5 decks today" before they hit the
+ * cap rather than after.
+ */
+export const findTodayCounts = async (
+    userId: string,
+): Promise<Partial<Record<AiUsageKind, number>>> => {
+    const rows = await prisma.aiUsage.findMany({
+        where: { userId, day: dayUtc() },
+        select: { kind: true, count: true },
+    });
+    const out: Partial<Record<AiUsageKind, number>> = {};
+    for (const r of rows) {
+        out[r.kind as AiUsageKind] = r.count;
+    }
+    return out;
 };
 
 /**

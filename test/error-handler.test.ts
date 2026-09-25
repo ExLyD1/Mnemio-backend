@@ -147,3 +147,39 @@ describe('error-handler / not found', () => {
         expect(res.json().message).toContain('/no/such/route');
     });
 });
+
+// Fastify and its plugins throw errors that already carry a real HTTP status.
+// They used to fall through to the catch-all and reach the client as an opaque
+// 500 — which is how conversation delete looked like a broken server: a DELETE
+// carrying an empty JSON body is a Fastify 400, reported as 500.
+describe('error-handler / errors raised by Fastify itself', () => {
+    it('keeps a 4xx from Fastify instead of reporting it as 500', async () => {
+        const app = Fastify();
+        registerErrorHandler(app);
+        app.delete('/thing', async (_req, reply) => reply.code(204).send());
+
+        const res = await app.inject({
+            method: 'DELETE',
+            url: '/thing',
+            headers: { 'content-type': 'application/json' },
+            payload: '',
+        });
+
+        expect(res.statusCode).toBe(400);
+        expect(res.json().code).toBe('BAD_REQUEST');
+    });
+
+    it('maps a plugin 429 to RATE_LIMITED', async () => {
+        const app = Fastify();
+        registerErrorHandler(app);
+        app.get('/limited', async () => {
+            throw Object.assign(new Error('Rate limit exceeded, retry in 1 minute.'), {
+                statusCode: 429,
+            });
+        });
+
+        const res = await app.inject({ method: 'GET', url: '/limited' });
+        expect(res.statusCode).toBe(429);
+        expect(res.json().code).toBe('RATE_LIMITED');
+    });
+});

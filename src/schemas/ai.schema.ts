@@ -57,7 +57,12 @@ export type EnrichWordsInput = z.infer<typeof enrichWordsSchema>;
 export type GenerateDeckRequest = z.infer<typeof generateDeckSchema>;
 export type DeckFromImageRequest = z.infer<typeof deckFromImageSchema>;
 // What the provider receives — the service has resolved sourceLanguage.
-export type GenerateDeckInput = GenerateDeckRequest & { sourceLanguage: string };
+// `exclude` is internal (chat's add_cards): the words already in the deck being
+// appended to, so the generator picks different ones. Never accepted over HTTP.
+export type GenerateDeckInput = GenerateDeckRequest & {
+    sourceLanguage: string;
+    exclude?: string[];
+};
 export type DeckFromImageInput = DeckFromImageRequest & { sourceLanguage: string };
 export type SuggestInput = z.infer<typeof suggestSchema>;
 export type EnrichField = (typeof ENRICH_FIELDS)[number];

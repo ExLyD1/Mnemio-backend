@@ -111,7 +111,9 @@ const withResolvedHeader = (
 
 export const generateDeck = async (
     userId: string,
-    input: GenerateDeckRequest,
+    // `exclude` is internal-only (chat's add_cards passes the words already in
+    // the deck); the HTTP schema never accepts it.
+    input: GenerateDeckRequest & { exclude?: string[] },
     opts?: { onEvent?: (event: GenerateDeckEvent) => void },
 ): Promise<AiDeckDraft> => {
     await budget.assertWithinBudget(userId, 'generate');

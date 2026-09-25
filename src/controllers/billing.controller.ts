@@ -2,7 +2,7 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import * as billingService from '../services/billing.service.js';
 import * as authRepo from '../repositories/auth.repository.js';
 import { checkoutSchema } from '../schemas/billing.schema.js';
-import { BadRequestError, NotFoundError, UnauthorizedError } from '../shared/errors.js';
+import { BadRequestError, UnauthorizedError } from '../shared/errors.js';
 
 export const checkout = async (request: FastifyRequest, reply: FastifyReply) => {
     const { plan } = checkoutSchema.parse(request.body);
@@ -12,12 +12,13 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
     reply.code(201).send(result);
 };
 
+// 200 with a null body for a user who has never subscribed — being on the free
+// plan is the normal case, not an error. It used to 404 on every page load,
+// which filled the browser console with red herrings while debugging real
+// failures. Clients that still treat 404 as "free" keep working.
 export const getSubscription = async (request: FastifyRequest, reply: FastifyReply) => {
     const result = await billingService.getSubscription(request.currentUser.sub);
-    if (!result) {
-        throw new NotFoundError('BILLING_NO_SUBSCRIPTION', 'No active subscription');
-    }
-    reply.send(result);
+    reply.send(result ?? null);
 };
 
 export const portal = async (request: FastifyRequest, reply: FastifyReply) => {

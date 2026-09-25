@@ -9,6 +9,7 @@ import * as aiService from '../src/services/ai.service.js';
 import * as decksService from '../src/services/decks.service.js';
 import * as cardsService from '../src/services/cards.service.js';
 import * as decksRepo from '../src/repositories/decks.repository.js';
+import * as cardsRepo from '../src/repositories/cards.repository.js';
 import { AiBudgetExceededError } from '../src/shared/errors.js';
 
 vi.mock('../src/services/ai.service.js', () => ({
@@ -23,12 +24,17 @@ vi.mock('../src/services/cards.service.js', () => ({
 }));
 vi.mock('../src/repositories/decks.repository.js', () => ({
     findDeckById: vi.fn(),
+    listDeckTitles: vi.fn(),
+}));
+vi.mock('../src/repositories/cards.repository.js', () => ({
+    listAllCardsForDeck: vi.fn(),
 }));
 
 const mAi = vi.mocked(aiService);
 const mDecks = vi.mocked(decksService);
 const mCards = vi.mocked(cardsService);
 const mDecksRepo = vi.mocked(decksRepo);
+const mCardsRepo = vi.mocked(cardsRepo);
 
 const langs = (native: string | null, learning: string[] = []): UserLanguages => ({
     native,
@@ -63,6 +69,10 @@ beforeEach(() => {
     vi.resetAllMocks();
     mDecks.create.mockResolvedValue(fakeDeck());
     mCards.bulkCreate.mockResolvedValue({ created: 0 } as never);
+    // Default: the deck is empty and the user owns no other decks, so neither
+    // the duplicate filter nor the wrong-deck guard fires unless a test says so.
+    mCardsRepo.listAllCardsForDeck.mockResolvedValue([] as never);
+    mDecksRepo.listDeckTitles.mockResolvedValue([] as never);
 });
 
 describe('chat.tools / runCreateDeck — input validation', () => {
@@ -455,5 +465,208 @@ describe('chat.tools / runAddCards — append to an existing deck', () => {
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toBe('NEEDS_WORDS_OR_TOPIC');
         expect(mDecksRepo.findDeckById).not.toHaveBeenCalled();
+    });
+});
+
+// QA found cards landing in the deck that happened to be open while the reply
+// said "Done!" without naming it. The tool now refuses instead, before it
+// spends any AI budget or writes anything.
+describe('chat.tools / runAddCards — wrong-deck guard', () => {
+    const openDeck = () =>
+        mDecksRepo.findDeckById.mockResolvedValue(
+            fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits' }),
+        );
+
+    it('refuses when the model names a deck other than the open one', async () => {
+        openDeck();
+        const r = await runAddCards('u1', 'deck-99', {
+            words: ['zebra'],
+            deckTitle: 'QA-Animals',
+        });
+        expect(r).toMatchObject({
+            ok: false,
+            reason: 'DECK_MISMATCH',
+            details: { openDeck: 'QA-Fruits', requestedDeck: 'QA-Animals' },
+        });
+        expect(mAi.enrichWords).not.toHaveBeenCalled();
+        expect(mCards.bulkCreate).not.toHaveBeenCalled();
+    });
+
+    it("refuses when the user's own message names another deck they own", async () => {
+        openDeck();
+        mDecksRepo.listDeckTitles.mockResolvedValue([
+            { id: 'deck-99', title: 'QA-Fruits' },
+            { id: 'deck-7', title: 'QA-Animals' },
+        ] as never);
+        // The model omitted deckTitle (or echoed the open deck) — the message
+        // itself is the second, independent check.
+        const r = await runAddCards(
+            'u1',
+            'deck-99',
+            { words: ['zebra'], deckTitle: 'QA-Fruits' },
+            { userMessage: "Add 'zebra' and 'koala' to my QA-Animals deck" },
+        );
+        expect(r).toMatchObject({ ok: false, reason: 'DECK_MISMATCH' });
+        expect(mCards.bulkCreate).not.toHaveBeenCalled();
+    });
+
+    it('allows the open deck through punctuation and case differences', async () => {
+        mDecksRepo.findDeckById
+            .mockResolvedValueOnce(fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits' }))
+            .mockResolvedValueOnce(
+                fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 6 }),
+            );
+        mAi.enrichWords.mockResolvedValue({
+            cards: [{ word: 'pear', definition: 'fruit' }],
+            meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
+        } as never);
+
+        const r = await runAddCards(
+            'u1',
+            'deck-99',
+            { words: ['pear'], deckTitle: '«qa fruits»' },
+            { userMessage: 'add pear to this deck' },
+        );
+        expect(r.ok).toBe(true);
+    });
+});
+
+describe('chat.tools / runAddCards — duplicates', () => {
+    const deckWithApple = () => {
+        mDecksRepo.findDeckById
+            .mockResolvedValueOnce(fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 1 }))
+            .mockResolvedValueOnce(fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 2 }));
+        mCardsRepo.listAllCardsForDeck.mockResolvedValue([{ word: 'Apple ' }] as never);
+    };
+
+    it('skips a word already in the deck and reports it', async () => {
+        deckWithApple();
+        mAi.enrichWords.mockResolvedValue({
+            cards: [{ word: 'peach', definition: 'fruit' }],
+            meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
+        } as never);
+
+        const r = await runAddCards('u1', 'deck-99', {
+            words: ['apple', 'peach'],
+            deckTitle: 'QA-Fruits',
+        });
+
+        // Only the new word is sent for enrichment — no AI spend on a duplicate.
+        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', expect.objectContaining({
+            words: ['peach'],
+        }));
+        expect(r).toMatchObject({
+            ok: true,
+            skipped: ['apple'],
+            attachment: { addedCount: 1, skippedCount: 1 },
+        });
+    });
+
+    it('writes nothing when every requested word is already there', async () => {
+        mDecksRepo.findDeckById.mockResolvedValue(
+            fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 1 }),
+        );
+        mCardsRepo.listAllCardsForDeck.mockResolvedValue([{ word: 'apple' }] as never);
+
+        const r = await runAddCards('u1', 'deck-99', {
+            words: ['apple', 'APPLE'],
+            deckTitle: 'QA-Fruits',
+        });
+
+        expect(r).toMatchObject({ ok: false, reason: 'ALL_DUPLICATES' });
+        expect(mAi.enrichWords).not.toHaveBeenCalled();
+        expect(mCards.bulkCreate).not.toHaveBeenCalled();
+    });
+
+    it('tells the topic generator which words the deck already has', async () => {
+        mDecksRepo.findDeckById
+            .mockResolvedValueOnce(fakeDeckRow({ id: 'deck-99', cardCount: 2 }))
+            .mockResolvedValueOnce(fakeDeckRow({ id: 'deck-99', cardCount: 4 }));
+        mCardsRepo.listAllCardsForDeck.mockResolvedValue([
+            { word: 'apple' },
+            { word: 'pear' },
+        ] as never);
+        mAi.generateDeck.mockResolvedValue({
+            title: 'more fruit',
+            description: '',
+            cards: [
+                { word: 'apple', definition: 'dupe the model produced anyway' },
+                { word: 'plum', definition: 'fruit' },
+            ],
+        } as never);
+
+        const r = await runAddCards('u1', 'deck-99', {
+            topic: 'more fruit',
+            deckTitle: 'My Spanish deck',
+        });
+
+        expect(mAi.generateDeck).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({ exclude: ['apple', 'pear'] }),
+        );
+        // The generator ignored the exclusion for 'apple'; the final net drops it.
+        expect(r).toMatchObject({ ok: true, attachment: { addedCount: 1 } });
+        expect((r as { words: string[] }).words).toEqual(['plum']);
+    });
+});
+
+describe('chat.tools / failure details', () => {
+    it('passes the cap and reset time to the model instead of a bare code', async () => {
+        mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow({ id: 'deck-99' }));
+        mAi.enrichWords.mockRejectedValue(
+            new AiBudgetExceededError('enrich', 5, '2026-06-11T00:00:00.000Z'),
+        );
+
+        const r = await runAddCards('u1', 'deck-99', {
+            words: ['pomme'],
+            deckTitle: 'My Spanish deck',
+        });
+
+        expect(r).toMatchObject({
+            ok: false,
+            reason: 'AI_BUDGET_EXCEEDED',
+            details: {
+                kind: 'enrich',
+                capPerDay: 5,
+                resetsAt: '2026-06-11T00:00:00.000Z',
+                // Nothing is retried in the background — the model used to
+                // promise "try again in a moment" / "your request is queued".
+                retryable: false,
+            },
+        });
+    });
+});
+
+describe('chat.tools / deck title', () => {
+    it("keeps the name the user quoted instead of the model's embellishment", async () => {
+        mAi.enrichWords.mockResolvedValue({
+            cards: [{ word: 'hola', definition: 'hello' }],
+            meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
+        } as never);
+
+        await runCreateDeck(
+            'u1',
+            { words: ['hola'], title: 'Spanish vocabulary — QA-ES-PT' },
+            UK_ES,
+            'en',
+            { userMessage: 'Deck "QA-ES-PT": 5 Spanish words with Portuguese definitions' },
+        );
+
+        expect(mDecks.create).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({ title: 'QA-ES-PT' }),
+        );
+    });
+
+    it('caps an over-long title rather than passing it straight to the DB', async () => {
+        mAi.enrichWords.mockResolvedValue({
+            cards: [{ word: 'hola', definition: 'hello' }],
+            meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
+        } as never);
+
+        await runCreateDeck('u1', { words: ['hola'], title: 'x'.repeat(300) }, UK_ES, 'en');
+
+        const title = (mDecks.create.mock.calls[0]?.[1] as { title: string }).title;
+        expect(title.length).toBeLessThanOrEqual(120);
     });
 });

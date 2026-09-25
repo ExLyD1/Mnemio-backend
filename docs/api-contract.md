@@ -153,9 +153,10 @@ type ApiError = {
 | `AUTH_EMAIL_UNVERIFIED_LINK` | `/auth/oauth/google/callback` | The user already has an unverified password account with that email; tell them to verify it first or use a different Google account. |
 | `NOT_READY` | `GET /ready` | 503 — DB ping failed. Ops-only; FE doesn't call `/ready`. |
 | `CHAT_NOT_FOUND` | any `/chat/conversations/:id*` | 404 — conversation missing or owned by someone else. |
+| `CHAT_BUSY` | `POST /chat/conversations/:id/messages` | 409 — a reply is already streaming in this conversation (another tab). Nothing was written; wait for it to finish. |
 | `PREMIUM_REQUIRED` | any gated endpoint | 403 — feature requires an active subscription. Show paywall/upgrade modal. |
 | `BILLING_NOT_CONFIGURED` | any `/billing/*` | 400 — Stripe keys absent on this deployment. Hide billing UI entirely. |
-| `BILLING_NO_SUBSCRIPTION` | `GET /billing/subscription` · `POST /billing/portal` | 404 — user has no subscription row. Treat the same as `plan: 'free'`. |
+| `BILLING_NO_SUBSCRIPTION` | `POST /billing/portal` | 404 — user has no subscription row. Treat the same as `plan: 'free'`. `GET /billing/subscription` returns `200 null` instead. |
 | `BILLING_PRICE_NOT_CONFIGURED` | `POST /billing/checkout` | 400 — specific plan price ID missing in env. Fall back to the other plan or show "unavailable". |
 
 **429 envelope:** `@fastify/rate-limit` is now configured with our standard
@@ -375,7 +376,11 @@ type Conversation = {
 };
 
 type ChatMessageRole = 'user' | 'assistant' | 'system';
-type ChatMessageStatus = 'complete' | 'partial';   // 'partial' when a stream got cut
+type ChatMessageStatus = 'complete' | 'partial' | 'streaming';
+// 'partial'   — the stream was cut; the content so far is saved, and the FE may
+//               offer Retry (send `retryOf` so the failed pair is replaced).
+// 'streaming' — a reply is being generated for this row right now. Show the
+//               typing indicator and re-fetch; never render it as interrupted.
 
 type ChatMessage = {
   id: string;
@@ -400,6 +405,8 @@ type ChatAttachment = {
   cardCount: number;                  // the deck's CURRENT total after the tool ran
   action?: 'created' | 'appended';    // 'created' = create_deck, 'appended' = add_cards
   addedCount?: number;                // cards just appended (only on action: 'appended')
+  skippedCount?: number;              // requested words already in the deck, so not
+                                      // duplicated (only on action: 'appended')
   sourceLanguage?: string;            // the deck's definitions language (ISO 639-1)
   targetLanguage?: string;            // the deck's words language (ISO 639-1)
                                       // (both absent on messages saved before 2026-09)
@@ -1447,6 +1454,23 @@ Always single-response (small payload, no streaming needed).
 covers **both** `POST /ai/deck-from-image` and any chat turn with an attached
 image (a chat turn with an image is metered as `image`, not `chat`).
 
+**`GET /ai/usage`** *(auth)* reports today's consumption for every kind, so the
+UI can show a limit before the user hits it:
+```ts
+// 200 Response
+{
+  plan: 'free' | 'premium';
+  resetsAt: string;                 // ISO — next UTC midnight; counters are per UTC day
+  kinds: Record<
+    'enrich' | 'generate' | 'suggest' | 'import' | 'chat' | 'image',
+    { used: number; cap: number; remaining: number }
+  >;
+}
+```
+Every `429 AI_BUDGET_EXCEEDED` also carries `details.resetsAt` alongside
+`details.kind` and `details.capPerDay`. Show the real reset time; nothing is
+retried automatically.
+
 Free and premium caps are independently configurable via env
 (`AI_DAILY_*_CAP_PER_USER` for free, `AI_DAILY_*_CAP_PREMIUM_PER_USER` for
 premium). The cap used is determined server-side from the caller's active
@@ -1525,7 +1549,9 @@ plain JSON. SSE-or-JSON negotiation is the same `Accept: text/event-stream`
 + `?stream=1` switch the other AI endpoints use.
 
 #### `GET /chat/conversations`  *(auth)*
-Sidebar list. Cursor-paginated by `lastMessageAt DESC, id DESC`.
+Sidebar list. Cursor-paginated by `lastMessageAt DESC, id DESC`. Conversations
+with no messages are omitted — the FE creates a conversation before it sends
+the first message, so a failed first send must not leave a ghost row behind.
 ```ts
 // Query: ?cursor?=string&limit?=number(<=100)   default limit 20
 // 200 Response: Page<Conversation>
@@ -1542,8 +1568,10 @@ first and sends the user's first message in a follow-up call.
 ```
 
 #### `GET /chat/conversations/:id`  *(auth)*
-Fetch the conversation header plus its most recent 50 messages
-(`createdAt ASC, id ASC`).
+Fetch the conversation header plus its most recent 50 messages, returned
+oldest-first. A message with `status: 'streaming'` means a reply is being
+generated right now: render the typing indicator and re-fetch until it
+settles, rather than treating an empty assistant row as a failure.
 ```ts
 // 200 Response: { conversation: Conversation; messages: ChatMessage[] }
 // Errors: 404 CHAT_NOT_FOUND
@@ -1558,7 +1586,8 @@ Rename. Replaces the auto-generated title.
 ```
 
 #### `DELETE /chat/conversations/:id`  *(auth)*
-Hard delete. Cascades to all messages.
+Hard delete. Cascades to all messages. Send no body and no `Content-Type` —
+an empty JSON body is rejected by Fastify (400, not 500 since 2026-09).
 ```ts
 // 204 No Content
 // Errors: 404 CHAT_NOT_FOUND
@@ -1579,8 +1608,18 @@ Append a user message and stream the assistant reply.
                                     // Drives the reply language; it is only the
                                     // last-resort default for a new deck's
                                     // definitions (see **Language** below).
+  retryOf?: string;                  // uuid of the caller's own 'partial' assistant
+                                    // message. That message and the user message
+                                    // before it are DELETED, then this turn runs —
+                                    // so a retry replaces the failed pair instead
+                                    // of appending a duplicate one.
 }
 ```
+
+**One reply at a time.** A conversation may only have one turn generating at
+once. A second concurrent send (another tab, a re-POST) is rejected with
+`409 CHAT_BUSY` and writes nothing; retry once the first reply finishes. An
+abandoned generation (process died) is released after 3 minutes.
 
 **Image attachment (multipart/form-data)** — same endpoint, sent as
 `multipart/form-data` instead of JSON when the user drops an image into the
@@ -1873,8 +1912,10 @@ fine).
 #### `GET /billing/subscription`  *(auth)*
 Current subscription details.
 ```ts
-// 200 Response: Subscription
-// 404 BILLING_NO_SUBSCRIPTION — user has no subscription row (plan: 'free')
+// 200 Response: Subscription | null   // null = never subscribed (plan: 'free').
+//                                     // Being on the free plan is the normal
+//                                     // case, not an error — this used to 404
+//                                     // on every page load.
 ```
 
 #### `POST /billing/portal`  *(auth)*

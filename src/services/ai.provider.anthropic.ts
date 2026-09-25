@@ -40,6 +40,7 @@ import {
     buildGenerateDeckPrompt,
     buildSuggestPrompt,
 } from './ai.prompts.js';
+import { normalizeLang } from '../shared/lang.js';
 
 const cardItemSchema = {
     type: 'object',
@@ -128,6 +129,17 @@ const client = (() => {
     };
 })();
 
+/**
+ * Which model writes a deck's CARD CONTENT. Ukrainian gets the stronger model:
+ * the fast one produced Russian loanwords and broken agreement on the very text
+ * learners study. Everything else — chat replies, suggestions — stays on
+ * ANTHROPIC_MODEL, where quality was fine and latency matters more.
+ */
+export const contentModel = (...langs: (string | undefined)[]): string =>
+    langs.some((l) => l && normalizeLang(l) === 'uk')
+        ? env.ANTHROPIC_CONTENT_MODEL_UK
+        : env.ANTHROPIC_MODEL;
+
 /** Run an Anthropic call and pull the forced tool's input out of the response. */
 const callToolUse = async <T>(args: {
     system: ReturnType<typeof buildEnrichWordsPrompt>['system'];
@@ -135,11 +147,12 @@ const callToolUse = async <T>(args: {
     toolName: string;
     tool: typeof ENRICH_TOOL | typeof DECK_TOOL | typeof SUGGEST_TOOL;
     maxTokens: number;
+    model?: string;
 }): Promise<{ data: T; tokensInput: number; tokensOutput: number }> => {
     let response;
     try {
         response = await client().messages.create({
-            model: env.ANTHROPIC_MODEL,
+            model: args.model ?? env.ANTHROPIC_MODEL,
             max_tokens: args.maxTokens,
             system: args.system,
             messages: [{ role: 'user', content: args.user }],
@@ -225,6 +238,7 @@ const enrichWords = async (
     const start = Date.now();
     const { system, user } = buildEnrichWordsPrompt(input);
     const maxTokens = Math.min(8000, Math.max(1000, input.words.length * 200));
+    const model = contentModel(input.sourceLanguage, input.targetLanguage);
 
     // Non-streaming fast path: caller doesn't want incremental events.
     if (!opts?.onCard) {
@@ -237,6 +251,7 @@ const enrichWords = async (
                 toolName: ENRICH_TOOL.name,
                 tool: ENRICH_TOOL,
                 maxTokens,
+                model,
             },
             isValidCardArray,
         );
@@ -262,7 +277,7 @@ const enrichWords = async (
 
     try {
         const stream = client().messages.stream({
-            model: env.ANTHROPIC_MODEL,
+            model,
             max_tokens: maxTokens,
             system,
             messages: [{ role: 'user', content: user }],
@@ -334,6 +349,7 @@ const generateDeck = async (
     const start = Date.now();
     const { system, user } = buildGenerateDeckPrompt(input);
     const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
+    const model = contentModel(input.sourceLanguage, input.targetLanguage);
 
     if (!opts?.onEvent) {
         const { data } = await callWithRetry<AiDeckDraft>(
@@ -343,6 +359,7 @@ const generateDeck = async (
                 toolName: DECK_TOOL.name,
                 tool: DECK_TOOL,
                 maxTokens,
+                model,
             },
             isValidDeckDraft,
         );
@@ -357,7 +374,7 @@ const generateDeck = async (
 
     try {
         const stream = client().messages.stream({
-            model: env.ANTHROPIC_MODEL,
+            model,
             max_tokens: maxTokens,
             system,
             messages: [{ role: 'user', content: user }],
@@ -446,11 +463,12 @@ const callImageToolUse = async (args: {
     system: ReturnType<typeof buildDeckFromImagePrompt>['system'];
     content: Anthropic.ContentBlockParam[];
     maxTokens: number;
+    model?: string;
 }): Promise<{ data: AiDeckDraft; tokensInput: number; tokensOutput: number }> => {
     let response;
     try {
         response = await client().messages.create({
-            model: env.ANTHROPIC_MODEL,
+            model: args.model ?? env.ANTHROPIC_MODEL,
             max_tokens: args.maxTokens,
             system: args.system,
             messages: [{ role: 'user', content: args.content }],
@@ -484,9 +502,10 @@ const deckFromImage = async (
         { type: 'text', text: user },
     ];
     const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
+    const model = contentModel(input.sourceLanguage, input.targetLanguage);
 
     if (!opts?.onEvent) {
-        let result = await callImageToolUse({ system, content: baseContent, maxTokens });
+        let result = await callImageToolUse({ system, content: baseContent, maxTokens, model });
         if (!isValidImageDeckDraft(result.data)) {
             result = await callImageToolUse({
                 system,
@@ -498,6 +517,7 @@ const deckFromImage = async (
                     },
                 ],
                 maxTokens,
+                model,
             });
             if (!isValidImageDeckDraft(result.data)) throw new AiValidationFailedError();
         }
@@ -513,7 +533,7 @@ const deckFromImage = async (
 
     try {
         const stream = client().messages.stream({
-            model: env.ANTHROPIC_MODEL,
+            model,
             max_tokens: maxTokens,
             system,
             messages: [{ role: 'user', content: baseContent }],
@@ -640,8 +660,11 @@ const runChatRound = async (params: {
                 ? {
                       tools: params.tools.defs as unknown as Anthropic.Tool[],
                       // 'auto' = model decides. Plain chat keeps working when
-                      // the user isn't asking for a deck.
-                      tool_choice: { type: 'auto' as const },
+                      // the user isn't asking for a deck. Parallel calls are
+                      // off: only the first tool_use block is dispatched, and a
+                      // second one leaves round 2 with an unanswered tool_use id
+                      // (the API then rejects the whole turn).
+                      tool_choice: { type: 'auto' as const, disable_parallel_tool_use: true },
                   }
                 : {}),
         });

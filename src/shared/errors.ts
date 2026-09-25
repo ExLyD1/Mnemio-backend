@@ -67,11 +67,16 @@ export class RateLimitedError extends AppError {
 }
 
 // AI-specific errors (P2 follow-up: real LLM provider wiring).
+//
+// `resetsAt` (ISO, next UTC midnight) is part of the contract: the FE renders
+// the real reset time instead of the assistant improvising "try again in a
+// moment" — nothing here is ever retried automatically.
 export class AiBudgetExceededError extends RateLimitedError {
-    constructor(kind: string, capPerDay: number) {
+    constructor(kind: string, capPerDay: number, resetsAt: string) {
         super('AI_BUDGET_EXCEEDED', `Daily AI ${kind} cap of ${capPerDay} reached`, {
             kind,
             capPerDay,
+            resetsAt,
         });
     }
 }
@@ -140,10 +145,11 @@ export class ImportUpstreamError extends AppError {
 }
 
 export class ImportBudgetExceededError extends RateLimitedError {
-    constructor(capPerDay: number) {
+    constructor(capPerDay: number, resetsAt: string) {
         super('IMPORT_BUDGET_EXCEEDED', `Daily import cap of ${capPerDay} reached`, {
             kind: 'import',
             capPerDay,
+            resetsAt,
         });
     }
 }
@@ -153,6 +159,15 @@ export class ImportBudgetExceededError extends RateLimitedError {
 export class ChatNotFoundError extends NotFoundError {
     constructor() {
         super('CHAT_NOT_FOUND', 'Conversation not found');
+    }
+}
+
+// A reply is already streaming in this conversation (another tab, a retried
+// POST). Two concurrent sends used to interleave and corrupt the stored
+// assistant message, so the second one is refused instead.
+export class ChatBusyError extends ConflictError {
+    constructor() {
+        super('CHAT_BUSY', 'This conversation is already generating a reply');
     }
 }
 

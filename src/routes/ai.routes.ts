@@ -8,6 +8,9 @@ const aiRoutes = async (fastify: FastifyInstance) => {
     // provider is wired. The numbers are mock-friendly today.
     const aiLimit = { max: 30, timeWindow: '1 minute' };
 
+    // Cheap read (one indexed row per kind) — not under the generation limit.
+    fastify.get('/ai/usage', aiController.usage);
+
     fastify.post(
         '/ai/enrich-words',
         { config: { rateLimit: aiLimit } },

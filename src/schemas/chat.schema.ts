@@ -20,6 +20,11 @@ export const sendMessageSchema = z.object({
     // The deck the user currently has open, if any. Unlocks the add_cards tool
     // so "add these words to this deck" appends instead of creating a new deck.
     deckId: z.string().uuid().optional(),
+    // Retry of a turn that failed: the id of the caller's own 'partial'
+    // assistant message. That message and the user message that produced it are
+    // replaced rather than appended to, so retrying never leaves a duplicate
+    // pair in the thread.
+    retryOf: z.string().uuid().optional(),
     // The UI/chat language (e.g. "uk", "en-US"), normalized to an ISO 639-1
     // code. Drives the reply language and the default deck language for
     // create_deck/add_cards when the user doesn't ask for a specific pair.

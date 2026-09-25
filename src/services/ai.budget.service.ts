@@ -15,7 +15,7 @@ const AI_FEATURE_BY_KIND: Partial<
     suggest: 'suggestion',
 };
 
-const capFor = (kind: aiUsageRepo.AiUsageKind, plan: 'free' | 'premium'): number => {
+export const capFor = (kind: aiUsageRepo.AiUsageKind, plan: 'free' | 'premium'): number => {
     if (plan === 'premium') {
         switch (kind) {
             case 'enrich':
@@ -63,17 +63,52 @@ export const assertWithinBudget = async (
     ]);
     const cap = capFor(kind, plan);
     if (used >= cap) {
+        const resetsAt = aiUsageRepo.nextResetAt().toISOString();
         // 'import' gets its own error code so the FE can distinguish AI vs
         // import quotas — the user might be capped on one and free on the other.
-        if (kind === 'import') throw new ImportBudgetExceededError(cap);
+        if (kind === 'import') throw new ImportBudgetExceededError(cap, resetsAt);
         // Fire the paywall-funnel event at the un-bypassable guard — exactly
         // once, before the throw, for the three contract AI features.
         const aiFeature = AI_FEATURE_BY_KIND[kind];
         if (aiFeature) {
             analytics.track(userId, 'ai_cap_reached', { ai_feature: aiFeature, cap_per_day: cap });
         }
-        throw new AiBudgetExceededError(kind, cap);
+        throw new AiBudgetExceededError(kind, cap, resetsAt);
     }
+};
+
+export type UsageSnapshot = {
+    plan: 'free' | 'premium';
+    resetsAt: string;
+    kinds: Record<aiUsageRepo.AiUsageKind, { used: number; cap: number; remaining: number }>;
+};
+
+const ALL_KINDS: aiUsageRepo.AiUsageKind[] = [
+    'enrich',
+    'generate',
+    'suggest',
+    'import',
+    'chat',
+    'image',
+];
+
+/**
+ * Today's usage for every kind — what GET /ai/usage returns, and what the chat
+ * system prompt reads so Mimi can state a real remaining count instead of
+ * guessing at a limit.
+ */
+export const usageSnapshot = async (userId: string): Promise<UsageSnapshot> => {
+    const [plan, counts] = await Promise.all([
+        entitlementService.getPlan(userId),
+        aiUsageRepo.findTodayCounts(userId),
+    ]);
+    const kinds = {} as UsageSnapshot['kinds'];
+    for (const kind of ALL_KINDS) {
+        const cap = capFor(kind, plan);
+        const used = counts[kind] ?? 0;
+        kinds[kind] = { used, cap, remaining: Math.max(0, cap - used) };
+    }
+    return { plan, resetsAt: aiUsageRepo.nextResetAt().toISOString(), kinds };
 };
 
 /**

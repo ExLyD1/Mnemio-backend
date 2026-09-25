@@ -104,6 +104,7 @@ export const sendMessage = async (
         ...(input.deckId ? { deckId: input.deckId } : {}),
         ...(input.locale ? { locale: input.locale } : {}),
         ...(image ? { image } : {}),
+        ...(input.retryOf ? { retryOf: input.retryOf } : {}),
     };
 
     if (!wantsSse(request)) {

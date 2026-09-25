@@ -35,6 +35,29 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
             });
         }
 
+        // Errors raised by Fastify itself or a plugin: they already carry a
+        // real HTTP status (an empty JSON body on DELETE is a 400,
+        // @fastify/rate-limit is a 429, an oversized payload is a 413). These
+        // used to fall through to the catch-all and surface as an opaque 500 —
+        // which is what made conversation deletion look server-broken.
+        const pluginStatus = typeof error.statusCode === 'number' ? error.statusCode : 0;
+        if (pluginStatus >= 400 && pluginStatus < 500) {
+            const body = error as unknown as { code?: string; message?: string };
+            const code =
+                pluginStatus === 429
+                    ? 'RATE_LIMITED'
+                    : pluginStatus === 404
+                      ? 'NOT_FOUND'
+                      : pluginStatus === 413
+                        ? 'PAYLOAD_TOO_LARGE'
+                        : 'BAD_REQUEST';
+            return reply.status(pluginStatus).send({
+                code,
+                message: body.message ?? 'Request rejected',
+                ...(body.code ? { details: { fastifyCode: body.code } } : {}),
+            });
+        }
+
         // Prisma known constraint errors (P2002 unique, P2025 not found)
         if (error.code === 'P2002') {
             return reply.status(409).send({

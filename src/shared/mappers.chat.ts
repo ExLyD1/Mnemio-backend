@@ -10,7 +10,10 @@ export type PublicConversation = {
 };
 
 export type PublicMessageRole = 'user' | 'assistant' | 'system';
-export type PublicMessageStatus = 'complete' | 'partial';
+// 'streaming' means a reply is being generated for this row right now. The FE
+// renders the typing indicator and polls until it settles, instead of showing
+// a completed-but-empty reply as "interrupted".
+export type PublicMessageStatus = 'complete' | 'partial' | 'streaming';
 
 // Structured side-effect of a tool-use turn. Only 'deck' exists today; the
 // union shape leaves room for future tools (audio, image, study session, …)
@@ -18,8 +21,9 @@ export type PublicMessageStatus = 'complete' | 'partial';
 //
 // `action` distinguishes a freshly-created deck (`create_deck`) from cards
 // appended to an existing one (`add_cards`); `addedCount` is the number of cards
-// just appended (only set for 'appended'). `cardCount` is always the deck's
-// current total so the FE can render/refresh it. `sourceLanguage`/
+// just appended (only set for 'appended') and `skippedCount` how many of the
+// requested words were already in the deck and therefore not duplicated.
+// `cardCount` is always the deck's current total so the FE can render/refresh it. `sourceLanguage`/
 // `targetLanguage` are the deck's pair (absent on rows saved before they were
 // added); chat.service also feeds them back to the model on later turns.
 export type ChatAttachment = {
@@ -29,6 +33,7 @@ export type ChatAttachment = {
     cardCount: number;
     action?: 'created' | 'appended';
     addedCount?: number;
+    skippedCount?: number;
     sourceLanguage?: string;
     targetLanguage?: string;
 };
@@ -77,6 +82,7 @@ export const fromDbAttachments = (raw: unknown): ChatAttachment[] | undefined =>
                 cardCount: number;
                 action?: unknown;
                 addedCount?: unknown;
+                skippedCount?: unknown;
                 sourceLanguage?: unknown;
                 targetLanguage?: unknown;
             };
@@ -87,6 +93,7 @@ export const fromDbAttachments = (raw: unknown): ChatAttachment[] | undefined =>
                 cardCount: o.cardCount,
                 ...(o.action === 'created' || o.action === 'appended' ? { action: o.action } : {}),
                 ...(typeof o.addedCount === 'number' ? { addedCount: o.addedCount } : {}),
+                ...(typeof o.skippedCount === 'number' ? { skippedCount: o.skippedCount } : {}),
                 ...(typeof o.sourceLanguage === 'string'
                     ? { sourceLanguage: o.sourceLanguage }
                     : {}),
@@ -99,6 +106,19 @@ export const fromDbAttachments = (raw: unknown): ChatAttachment[] | undefined =>
     return out.length > 0 ? out : undefined;
 };
 
+// A 'streaming' row whose turn died with the process would otherwise keep the
+// FE polling forever, so anything older than this reads as 'partial'. Mirrors
+// STALE_STREAM_MS in chat.repository.ts, which reaps the row for real on the
+// next send.
+const STALE_STREAM_MS = 3 * 60 * 1000;
+
+const publicStatus = (m: ChatMessageModel): PublicMessageStatus => {
+    if (m.status === 'streaming' && Date.now() - m.createdAt.getTime() > STALE_STREAM_MS) {
+        return 'partial';
+    }
+    return m.status as PublicMessageStatus;
+};
+
 export const toPublicMessage = (m: ChatMessageModel): PublicMessage => {
     const attachments = fromDbAttachments(m.attachments);
     return {
@@ -106,7 +126,7 @@ export const toPublicMessage = (m: ChatMessageModel): PublicMessage => {
         conversationId: m.conversationId,
         role: m.role as PublicMessageRole,
         content: m.content,
-        status: m.status as PublicMessageStatus,
+        status: publicStatus(m),
         tokensInput: m.tokensInput,
         tokensOutput: m.tokensOutput,
         ...(attachments ? { attachments } : {}),

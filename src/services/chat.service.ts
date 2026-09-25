@@ -1,5 +1,5 @@
 import { env } from '../config/env.js';
-import { ChatNotFoundError } from '../shared/errors.js';
+import { ChatBusyError, ChatNotFoundError } from '../shared/errors.js';
 import { encodeCursor, type Cursor, type Page } from '../shared/pagination.js';
 import {
     fromDbAttachments,
@@ -167,12 +167,18 @@ const toOutcome = (result: ToolResult): ChatToolOutcome =>
               // `words` grounds the model's round-2 reply in the actual
               // persisted cards (not just the title/count) — it's only in the
               // tool_result JSON the model sees, not the FE-facing attachment.
+              // ALL of them, not a slice: with a truncated list the model
+              // filled the gap from its own draft and named words that were
+              // never saved (QA: the reply said "água", the card said "agua").
               resultJson: JSON.stringify({
                   ok: true,
                   ...result.attachment,
                   wordsLanguage: result.attachment.targetLanguage,
                   definitionsLanguage: result.attachment.sourceLanguage,
-                  words: result.words.slice(0, 10),
+                  words: result.words,
+                  ...(result.skipped && result.skipped.length > 0
+                      ? { skipped: result.skipped }
+                      : {}),
               }),
           }
         : {
@@ -227,19 +233,31 @@ const withDeckNote = (turn: {
 const toolsForUser = (
     userId: string,
     userLangs: UserLanguages,
-    deckCtx?: ChatDeckContext,
-    locale?: string | null,
+    deckCtx: ChatDeckContext | undefined,
+    locale: string | null | undefined,
+    // The message that triggered this turn. The tools read it to honour a deck
+    // name the user quoted, and to refuse an append aimed at a deck other than
+    // the open one — neither can be trusted to the model's own arguments.
+    userMessage: string,
 ): ChatToolsConfig => ({
     defs: deckCtx ? [CREATE_DECK_TOOL_DEF, ADD_CARDS_TOOL_DEF] : [CREATE_DECK_TOOL_DEF],
     run: async (call): Promise<ChatToolOutcome> => {
         if (call.name === 'create_deck') {
             return toOutcome(
-                await runCreateDeck(userId, call.input as CreateDeckToolInput, userLangs, locale),
+                await runCreateDeck(
+                    userId,
+                    call.input as CreateDeckToolInput,
+                    userLangs,
+                    locale,
+                    { userMessage },
+                ),
             );
         }
         if (call.name === 'add_cards' && deckCtx) {
             return toOutcome(
-                await runAddCards(userId, deckCtx.deckId, call.input as AddCardsToolInput),
+                await runAddCards(userId, deckCtx.deckId, call.input as AddCardsToolInput, {
+                    userMessage,
+                }),
             );
         }
         return {
@@ -264,7 +282,12 @@ export const sendMessage = async (
     conversationId: string,
     content: string,
     onFrame: (frame: SendMessageStreamFrame) => void,
-    opts: { deckId?: string; locale?: string | null; image?: AiImageInput } = {},
+    opts: {
+        deckId?: string;
+        locale?: string | null;
+        image?: AiImageInput;
+        retryOf?: string;
+    } = {},
 ): Promise<{
     userMessage: PublicMessage;
     assistantMessage: PublicMessage;
@@ -304,27 +327,42 @@ export const sendMessage = async (
 
     const userLangs = await loadUserLanguages(userId);
 
-    // Is this the auto-title turn?
-    const priorUserCount = await chatRepo.countUserMessages(conversationId);
-    const isAutoTitleTurn = priorUserCount === 0;
+    // Real remaining deck-building allowance, so the reply can state it instead
+    // of inventing one (and so an exhausted budget costs a sentence, not a
+    // doomed tool call).
+    const usage = await budget.usageSnapshot(userId);
+    const budgetCtx = {
+        wordListRemaining: usage.kinds.enrich.remaining,
+        wordListCap: usage.kinds.enrich.cap,
+        topicRemaining: usage.kinds.generate.remaining,
+        topicCap: usage.kinds.generate.cap,
+        resetsAt: usage.resetsAt,
+        plan: usage.plan,
+    };
 
-    // Persist the user message first — if anything below fails, we still
-    // have what they typed.
-    const userRowDb = await chatRepo.createMessage({
+
+    // Persist the user message and claim the conversation's streaming slot in
+    // one transaction — if anything below fails, we still have what they typed,
+    // and a second concurrent send is refused rather than interleaved.
+    const claimed = await chatRepo.claimTurn({
         conversationId,
-        role: 'user',
         content,
+        ...(opts.retryOf ? { retryOf: opts.retryOf } : {}),
     });
+    if (!claimed) {
+        throw new ChatBusyError();
+    }
+    const { userRow: userRowDb, placeholder: assistantPlaceholder } = claimed;
     const userMessage = toPublicMessage(userRowDb);
 
-    // Placeholder assistant row with status='partial'. The id is stable from
-    // here on so the FE can render "typing…" attached to it.
-    const assistantPlaceholder = await chatRepo.createMessage({
+    // Is this the auto-title turn? Counted after the claim and scoped to rows
+    // older than this one, so a retry (which deleted the failed pair) still
+    // titles the conversation.
+    const priorUserCount = await chatRepo.countUserMessages(
         conversationId,
-        role: 'assistant',
-        content: '',
-        status: 'partial',
-    });
+        userRowDb.createdAt,
+    );
+    const isAutoTitleTurn = priorUserCount === 0;
 
     onFrame({
         type: 'start',
@@ -333,11 +371,14 @@ export const sendMessage = async (
     });
 
     // Build the model context: prior turns + the just-saved user message.
+    // `before` excludes this turn's own rows — they are already persisted, so
+    // without it the current message went to the model twice.
     // Only the newest turn ever carries an image — images aren't persisted,
     // so turns rebuilt from the DB (priorTurns) are always text-only.
     const priorTurns = await chatRepo.lastTurnsForModel(
         conversationId,
         env.AI_CHAT_CONTEXT_TURNS - 1,
+        userRowDb.createdAt,
     );
     const turnsForModel = [
         ...priorTurns.map(withDeckNote),
@@ -353,9 +394,15 @@ export const sendMessage = async (
         const result = await provider().chat(
             {
                 messages: turnsForModel,
-                systemPrompt: buildChatSystemPrompt(deckCtx, opts.locale, !!opts.image, userLangs),
+                systemPrompt: buildChatSystemPrompt(
+                    deckCtx,
+                    opts.locale,
+                    !!opts.image,
+                    userLangs,
+                    budgetCtx,
+                ),
                 maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
-                tools: toolsForUser(userId, userLangs, deckCtx, opts.locale),
+                tools: toolsForUser(userId, userLangs, deckCtx, opts.locale, content),
             },
             {
                 onEvent: (event: ChatStreamEvent) => {
@@ -369,6 +416,14 @@ export const sendMessage = async (
                             input: event.call.input,
                         });
                     } else if (event.type === 'tool_result') {
+                        // Remember a successful write here, not just on the
+                        // provider's return value: if the turn dies after the
+                        // deck was persisted, the partial message must still
+                        // carry the attachment so the FE hides Retry and the
+                        // user can't create the same deck twice.
+                        if (event.ok) {
+                            attachments = [event.data as ChatAttachment];
+                        }
                         onFrame({
                             type: 'tool_result',
                             name: event.name,
@@ -395,13 +450,16 @@ export const sendMessage = async (
             attachments = result.attachments as ChatAttachment[];
         }
     } catch (err) {
-        // Save whatever we got so the FE can render the partial reply.
+        // Save whatever we got so the FE can render the partial reply, and
+        // release the streaming slot. Attachments ride along when a tool
+        // already wrote something (see the tool_result handler above).
         await chatRepo.finalizeAssistantMessage({
             id: assistantPlaceholder.id,
             content: buffer,
             tokensInput: 0,
             tokensOutput: 0,
             status: 'partial',
+            ...(attachments ? { attachments } : {}),
         });
         throw err;
     }

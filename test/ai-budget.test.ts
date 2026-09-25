@@ -84,10 +84,15 @@ describe('ai.budget.service / assertWithinBudget', () => {
         } catch (err) {
             const payload = (err as AiBudgetExceededError).toPayload();
             expect(payload.code).toBe('AI_BUDGET_EXCEEDED');
-            expect(payload.details).toEqual({
+            // resetsAt lets the FE say "resets at 3:00" instead of the
+            // assistant guessing "try again in a moment".
+            expect(payload.details).toMatchObject({
                 kind: 'image',
                 capPerDay: env.AI_DAILY_IMAGE_CAP_PER_USER,
             });
+            expect(
+                new Date(payload.details?.resetsAt as string).getTime(),
+            ).toBeGreaterThan(Date.now());
         }
     });
 
@@ -99,10 +104,13 @@ describe('ai.budget.service / assertWithinBudget', () => {
         } catch (err) {
             const payload = (err as AiBudgetExceededError).toPayload();
             expect(payload.code).toBe('AI_BUDGET_EXCEEDED');
-            expect(payload.details).toEqual({
+            expect(payload.details).toMatchObject({
                 kind: 'generate',
                 capPerDay: env.AI_DAILY_GENERATE_CAP_PER_USER,
             });
+            expect(
+                new Date(payload.details?.resetsAt as string).getTime(),
+            ).toBeGreaterThan(Date.now());
         }
     });
 });
