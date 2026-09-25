@@ -122,15 +122,17 @@ export const listMessages = (conversationId: string, take = 50) =>
 export const lastTurnsForModel = async (
     conversationId: string,
     take: number,
-): Promise<{ role: 'user' | 'assistant'; content: string }[]> => {
+): Promise<{ role: 'user' | 'assistant'; content: string; attachments: unknown }[]> => {
     const rows = await prisma.chatMessage.findMany({
         where: { conversationId, role: { in: ['user', 'assistant'] }, status: 'complete' },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take,
     });
-    return rows
-        .reverse()
-        .map((r) => ({ role: r.role as 'user' | 'assistant', content: r.content }));
+    return rows.reverse().map((r) => ({
+        role: r.role as 'user' | 'assistant',
+        content: r.content,
+        attachments: r.attachments,
+    }));
 };
 
 // Used to decide whether the first user message should set the conversation

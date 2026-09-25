@@ -19,7 +19,9 @@ export type PublicMessageStatus = 'complete' | 'partial';
 // `action` distinguishes a freshly-created deck (`create_deck`) from cards
 // appended to an existing one (`add_cards`); `addedCount` is the number of cards
 // just appended (only set for 'appended'). `cardCount` is always the deck's
-// current total so the FE can render/refresh it.
+// current total so the FE can render/refresh it. `sourceLanguage`/
+// `targetLanguage` are the deck's pair (absent on rows saved before they were
+// added); chat.service also feeds them back to the model on later turns.
 export type ChatAttachment = {
     type: 'deck';
     deckId: string;
@@ -27,6 +29,8 @@ export type ChatAttachment = {
     cardCount: number;
     action?: 'created' | 'appended';
     addedCount?: number;
+    sourceLanguage?: string;
+    targetLanguage?: string;
 };
 
 export type PublicMessage = {
@@ -53,8 +57,10 @@ export const toPublicConversation = (c: ConversationModel): PublicConversation =
 // Defensive: the DB column is Json so anything could theoretically be there
 // (legacy rows, migrations gone wrong). Only forward shapes that match the
 // current ChatAttachment union; silently drop anything else.
-const fromDbAttachments = (raw: unknown): ChatAttachment[] | undefined => {
-    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+export const fromDbAttachments = (raw: unknown): ChatAttachment[] | undefined => {
+    if (!Array.isArray(raw) || raw.length === 0) {
+        return undefined;
+    }
     const out: ChatAttachment[] = [];
     for (const item of raw) {
         if (
@@ -71,16 +77,22 @@ const fromDbAttachments = (raw: unknown): ChatAttachment[] | undefined => {
                 cardCount: number;
                 action?: unknown;
                 addedCount?: unknown;
+                sourceLanguage?: unknown;
+                targetLanguage?: unknown;
             };
             out.push({
                 type: 'deck',
                 deckId: o.deckId,
                 title: o.title,
                 cardCount: o.cardCount,
-                ...(o.action === 'created' || o.action === 'appended'
-                    ? { action: o.action }
-                    : {}),
+                ...(o.action === 'created' || o.action === 'appended' ? { action: o.action } : {}),
                 ...(typeof o.addedCount === 'number' ? { addedCount: o.addedCount } : {}),
+                ...(typeof o.sourceLanguage === 'string'
+                    ? { sourceLanguage: o.sourceLanguage }
+                    : {}),
+                ...(typeof o.targetLanguage === 'string'
+                    ? { targetLanguage: o.targetLanguage }
+                    : {}),
             });
         }
     }

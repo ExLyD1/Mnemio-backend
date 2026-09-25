@@ -1,18 +1,17 @@
 import { env } from '../config/env.js';
 import { ChatNotFoundError } from '../shared/errors.js';
+import { encodeCursor, type Cursor, type Page } from '../shared/pagination.js';
 import {
-    encodeCursor,
-    type Cursor,
-    type Page,
-} from '../shared/pagination.js';
-import {
+    fromDbAttachments,
     toPublicConversation,
     toPublicMessage,
+    type ChatAttachment,
     type PublicConversation,
     type PublicMessage,
 } from '../shared/mappers.chat.js';
 import * as chatRepo from '../repositories/chat.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
+import * as prefsRepo from '../repositories/preferences.repository.js';
 import * as budget from './ai.budget.service.js';
 import { mockProvider } from './ai.provider.mock.js';
 import { anthropicProvider } from './ai.provider.anthropic.js';
@@ -32,20 +31,24 @@ import {
     type CreateDeckToolInput,
     type AddCardsToolInput,
     type ToolResult,
+    type UserLanguages,
 } from './chat.tools.js';
-import type { ChatAttachment } from '../shared/mappers.chat.js';
+import { normalizeLang } from '../shared/lang.js';
+import { promptLang } from './ai.prompts.js';
 
 // Same selector ai.service uses — keeps the mock/real switch single-sourced
 // at env.AI_PROVIDER.
 const selectProvider = (): AiProvider => {
-    if (env.AI_PROVIDER === 'anthropic') return anthropicProvider;
+    if (env.AI_PROVIDER === 'anthropic') {
+        return anthropicProvider;
+    }
     return mockProvider;
 };
 
 // Lazy so tests can mock the provider before the service is imported.
 let cachedProvider: AiProvider | null = null;
 const provider = (): AiProvider => {
-    if (!cachedProvider) cachedProvider = selectProvider();
+    cachedProvider ??= selectProvider();
     return cachedProvider;
 };
 
@@ -70,18 +73,22 @@ export const renameConversation = async (
     title: string,
 ): Promise<PublicConversation> => {
     const result = await chatRepo.renameConversation(conversationId, userId, title);
-    if (result.count === 0) throw new ChatNotFoundError();
+    if (result.count === 0) {
+        throw new ChatNotFoundError();
+    }
     const refreshed = await chatRepo.findConversation(conversationId, userId);
-    // findConversation can't be null here — we just updated the row.
-    return toPublicConversation(refreshed!);
+    // Only null if the row was deleted between the rename and this read.
+    if (!refreshed) {
+        throw new ChatNotFoundError();
+    }
+    return toPublicConversation(refreshed);
 };
 
-export const deleteConversation = async (
-    userId: string,
-    conversationId: string,
-): Promise<void> => {
+export const deleteConversation = async (userId: string, conversationId: string): Promise<void> => {
     const result = await chatRepo.deleteConversation(conversationId, userId);
-    if (result.count === 0) throw new ChatNotFoundError();
+    if (result.count === 0) {
+        throw new ChatNotFoundError();
+    }
 };
 
 export const listConversations = async (
@@ -111,7 +118,9 @@ export const getConversationWithMessages = async (
     conversationId: string,
 ): Promise<{ conversation: PublicConversation; messages: PublicMessage[] }> => {
     const conv = await chatRepo.findConversation(conversationId, userId);
-    if (!conv) throw new ChatNotFoundError();
+    if (!conv) {
+        throw new ChatNotFoundError();
+    }
     const messages = await chatRepo.listMessages(conversationId, 50);
     return {
         conversation: toPublicConversation(conv),
@@ -161,14 +170,54 @@ const toOutcome = (result: ToolResult): ChatToolOutcome =>
               resultJson: JSON.stringify({
                   ok: true,
                   ...result.attachment,
+                  wordsLanguage: result.attachment.targetLanguage,
+                  definitionsLanguage: result.attachment.sourceLanguage,
                   words: result.words.slice(0, 10),
               }),
           }
         : {
               ok: false,
               data: { reason: result.reason },
-              resultJson: JSON.stringify({ ok: false, reason: result.reason }),
+              resultJson: JSON.stringify({
+                  ok: false,
+                  reason: result.reason,
+                  ...(result.details ? { details: result.details } : {}),
+              }),
           };
+
+// The user's profile languages, normalized and deduped. Unrecognized stored
+// values are dropped rather than guessed at.
+const loadUserLanguages = async (userId: string): Promise<UserLanguages> => {
+    const pref = await prefsRepo.findOrCreate(userId);
+    const learning = pref.learningLanguages
+        .map((l) => normalizeLang(l))
+        .filter((l): l is string => l !== null);
+    return {
+        native: normalizeLang(pref.nativeLanguage),
+        learning: [...new Set(learning)],
+    };
+};
+
+// Prior turns go to the model as plain text, so a deck made earlier would
+// lose its languages ("make another one" then drifts). Append them to the
+// assistant turn that produced the deck.
+const withDeckNote = (turn: {
+    role: 'user' | 'assistant';
+    content: string;
+    attachments: unknown;
+}): { role: 'user' | 'assistant'; content: string } => {
+    const notes = (fromDbAttachments(turn.attachments) ?? []).flatMap((a) =>
+        a.sourceLanguage && a.targetLanguage
+            ? [
+                  `(Deck "${a.title}": words in ${promptLang(a.targetLanguage)}, definitions in ${promptLang(a.sourceLanguage)})`,
+              ]
+            : [],
+    );
+    return {
+        role: turn.role,
+        content: notes.length > 0 ? `${turn.content}\n\n${notes.join('\n')}` : turn.content,
+    };
+};
 
 // Builds the tools config the provider receives. Lives here (not in
 // chat.tools.ts) because it closes over the per-request userId + the in-context
@@ -177,6 +226,7 @@ const toOutcome = (result: ToolResult): ChatToolOutcome =>
 // model), so the model can't append to an arbitrary deck.
 const toolsForUser = (
     userId: string,
+    userLangs: UserLanguages,
     deckCtx?: ChatDeckContext,
     locale?: string | null,
 ): ChatToolsConfig => ({
@@ -184,7 +234,7 @@ const toolsForUser = (
     run: async (call): Promise<ChatToolOutcome> => {
         if (call.name === 'create_deck') {
             return toOutcome(
-                await runCreateDeck(userId, call.input as CreateDeckToolInput, locale),
+                await runCreateDeck(userId, call.input as CreateDeckToolInput, userLangs, locale),
             );
         }
         if (call.name === 'add_cards' && deckCtx) {
@@ -223,7 +273,9 @@ export const sendMessage = async (
     tokensOutput: number;
 }> => {
     const conv = await chatRepo.findConversation(conversationId, userId);
-    if (!conv) throw new ChatNotFoundError();
+    if (!conv) {
+        throw new ChatNotFoundError();
+    }
 
     // Image-attached turns are metered under the 'image' cap (vision calls
     // cost more) instead of 'chat' — one consistent cap across both the
@@ -249,6 +301,8 @@ export const sendMessage = async (
             };
         }
     }
+
+    const userLangs = await loadUserLanguages(userId);
 
     // Is this the auto-title turn?
     const priorUserCount = await chatRepo.countUserMessages(conversationId);
@@ -286,7 +340,7 @@ export const sendMessage = async (
         env.AI_CHAT_CONTEXT_TURNS - 1,
     );
     const turnsForModel = [
-        ...priorTurns,
+        ...priorTurns.map(withDeckNote),
         { role: 'user' as const, content, ...(opts.image ? { image: opts.image } : {}) },
     ];
 
@@ -299,9 +353,9 @@ export const sendMessage = async (
         const result = await provider().chat(
             {
                 messages: turnsForModel,
-                systemPrompt: buildChatSystemPrompt(deckCtx, opts.locale, !!opts.image),
+                systemPrompt: buildChatSystemPrompt(deckCtx, opts.locale, !!opts.image, userLangs),
                 maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
-                tools: toolsForUser(userId, deckCtx, opts.locale),
+                tools: toolsForUser(userId, userLangs, deckCtx, opts.locale),
             },
             {
                 onEvent: (event: ChatStreamEvent) => {

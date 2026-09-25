@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as chatRepo from '../src/repositories/chat.repository.js';
 import * as decksRepo from '../src/repositories/decks.repository.js';
+import * as prefsRepo from '../src/repositories/preferences.repository.js';
 import * as budget from '../src/services/ai.budget.service.js';
 import { sendMessage, __setProviderForTesting } from '../src/services/chat.service.js';
 import { AiProviderError, ChatNotFoundError, AiBudgetExceededError } from '../src/shared/errors.js';
@@ -18,6 +19,9 @@ vi.mock('../src/repositories/chat.repository.js', () => ({
 vi.mock('../src/repositories/decks.repository.js', () => ({
     findDeckById: vi.fn(),
 }));
+vi.mock('../src/repositories/preferences.repository.js', () => ({
+    findOrCreate: vi.fn(),
+}));
 vi.mock('../src/services/ai.budget.service.js', () => ({
     assertWithinBudget: vi.fn(),
     recordUse: vi.fn(),
@@ -26,6 +30,10 @@ vi.mock('../src/services/ai.budget.service.js', () => ({
 const mockedRepo = vi.mocked(chatRepo);
 const mockedDecksRepo = vi.mocked(decksRepo);
 const mockedBudget = vi.mocked(budget);
+const mockedPrefs = vi.mocked(prefsRepo);
+
+const setProfile = (nativeLanguage: string | null, learningLanguages: string[]) =>
+    mockedPrefs.findOrCreate.mockResolvedValue({ nativeLanguage, learningLanguages } as never);
 
 const conversationRow = (overrides: Record<string, unknown> = {}) => ({
     id: 'conv-1',
@@ -63,6 +71,7 @@ const buildProvider = (
 beforeEach(() => {
     vi.resetAllMocks();
     __setProviderForTesting(null);
+    setProfile(null, []);
 });
 
 describe('chat.service / sendMessage', () => {
@@ -332,14 +341,88 @@ describe('chat.service / sendMessage', () => {
 
         await sendMessage('u', 'c', 'Привіт', () => undefined, { locale: 'uk' });
 
-        expect(seenPrompt).toContain('"uk"');
+        expect(seenPrompt).toContain('Always reply in Ukrainian');
+        expect(seenPrompt).toContain('app language: Ukrainian (uk)');
+    });
+
+    it('gives the model the user\'s profile languages (normalized) in the system prompt', async () => {
+        setProfile('ukrainian', ['en', 'de-DE', 'xx']);
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        mockedRepo.createMessage
+            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
+            .mockResolvedValueOnce(
+                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
+            );
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
+        );
+        let seenPrompt = '';
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenPrompt = input.systemPrompt;
+                return { content: 'ok', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', 'зроби колоду', () => undefined, { locale: 'en' });
+
+        expect(seenPrompt).toContain(
+            'native language: Ukrainian (uk); learning: English (en), German (de); app language: English (en)',
+        );
+    });
+
+    it('re-attaches a previous deck\'s languages to its assistant turn for the model', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([
+            { role: 'user', content: 'German food words', attachments: null },
+            {
+                role: 'assistant',
+                content: 'Done!',
+                attachments: [
+                    {
+                        type: 'deck',
+                        deckId: 'd1',
+                        title: 'Food',
+                        cardCount: 8,
+                        action: 'created',
+                        sourceLanguage: 'uk',
+                        targetLanguage: 'de',
+                    },
+                ],
+            },
+        ]);
+        mockedRepo.createMessage
+            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
+            .mockResolvedValueOnce(
+                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
+            );
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
+        );
+        let seenMessages: { role: string; content: string }[] = [];
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenMessages = input.messages;
+                return { content: 'ok', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', 'one more', () => undefined);
+
+        expect(seenMessages[0]).toEqual({ role: 'user', content: 'German food words' });
+        expect(seenMessages[1]?.content).toBe(
+            'Done!\n\n(Deck "Food": words in German (de), definitions in Ukrainian (uk))',
+        );
     });
 
     it('with an attached image: meters under "image" (not "chat"), adds the image clause to the prompt, and attaches the image to only the newest turn', async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([
-            { role: 'user', content: 'earlier text turn' },
+            { role: 'user', content: 'earlier text turn', attachments: null },
         ]);
         mockedRepo.createMessage
             .mockResolvedValueOnce(messageRow({ id: 'user-msg', content: '' }) as never)

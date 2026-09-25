@@ -2,6 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { mockProvider } from '../src/services/ai.provider.mock.js';
 import type { DeckFromImageProviderInput, GenerateDeckEvent } from '../src/services/ai.provider.js';
 
+vi.mock('../src/repositories/preferences.repository.js', () => ({
+    findOrCreate: vi.fn().mockResolvedValue({ nativeLanguage: 'uk', learningLanguages: ['de'] }),
+}));
+
 vi.mock('../src/services/ai.budget.service.js', () => ({
     assertWithinBudget: vi.fn().mockResolvedValue(undefined),
     recordUse: vi.fn().mockResolvedValue(undefined),
@@ -78,5 +82,23 @@ describe('ai.service / deckFromImage', () => {
         const result = await deckFromImage('user-1', baseInput({ count: 3 }));
         expect(result.draft.cards.length).toBe(3);
         expect(result.note).toBeUndefined();
+    });
+});
+
+describe('ai.service / deckFromImage — definitions language', () => {
+    it("defaults definitions to the user's native language, not 'en', when none is sent", async () => {
+        const { deckFromImage } = await import('../src/services/ai.service.js');
+        const events: GenerateDeckEvent[] = [];
+        const { sourceLanguage: _omit, ...input } = baseInput({ count: 1 });
+        const { draft } = await deckFromImage('u1', input, { onEvent: (e) => events.push(e) });
+        expect(draft.sourceLanguage).toBe('uk');
+        const header = events.find((e) => e.type === 'header');
+        expect(header?.type === 'header' && header.deck.sourceLanguage).toBe('uk');
+    });
+
+    it('keeps an explicitly requested definitions language', async () => {
+        const { deckFromImage } = await import('../src/services/ai.service.js');
+        const { draft } = await deckFromImage('u1', baseInput({ sourceLanguage: 'pl', count: 1 }));
+        expect(draft.sourceLanguage).toBe('pl');
     });
 });

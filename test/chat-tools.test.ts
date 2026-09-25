@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runCreateDeck, runAddCards } from '../src/services/chat.tools.js';
+import {
+    runCreateDeck,
+    runAddCards,
+    resolveDeckLanguages,
+    type UserLanguages,
+} from '../src/services/chat.tools.js';
 import * as aiService from '../src/services/ai.service.js';
 import * as decksService from '../src/services/decks.service.js';
 import * as cardsService from '../src/services/cards.service.js';
 import * as decksRepo from '../src/repositories/decks.repository.js';
-import * as prefsRepo from '../src/repositories/preferences.repository.js';
 import { AiBudgetExceededError } from '../src/shared/errors.js';
 
 vi.mock('../src/services/ai.service.js', () => ({
@@ -20,30 +24,18 @@ vi.mock('../src/services/cards.service.js', () => ({
 vi.mock('../src/repositories/decks.repository.js', () => ({
     findDeckById: vi.fn(),
 }));
-vi.mock('../src/repositories/preferences.repository.js', () => ({
-    findOrCreate: vi.fn(),
-}));
 
 const mAi = vi.mocked(aiService);
 const mDecks = vi.mocked(decksService);
 const mCards = vi.mocked(cardsService);
 const mDecksRepo = vi.mocked(decksRepo);
-const mPrefs = vi.mocked(prefsRepo);
 
-const fakePref = (overrides: Record<string, unknown> = {}) =>
-    ({
-        userId: 'u1',
-        interests: [],
-        goal: null,
-        nativeLanguage: null,
-        learningLanguages: [],
-        avatarHue: null,
-        mimiPlacement: null,
-        favorites: [],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        ...overrides,
-    }) as never;
+const langs = (native: string | null, learning: string[] = []): UserLanguages => ({
+    native,
+    learning,
+});
+// Ukrainian speaker learning Spanish — the default profile for these tests.
+const UK_ES = langs('uk', ['es']);
 
 const fakeDeck = (overrides: Record<string, unknown> = {}) =>
     ({
@@ -75,7 +67,7 @@ beforeEach(() => {
 
 describe('chat.tools / runCreateDeck — input validation', () => {
     it('refuses when neither topic nor words is provided', async () => {
-        const r = await runCreateDeck('u1', {});
+        const r = await runCreateDeck('u1', {}, UK_ES);
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toMatch(/topic.*words/i);
         expect(mAi.enrichWords).not.toHaveBeenCalled();
@@ -83,17 +75,116 @@ describe('chat.tools / runCreateDeck — input validation', () => {
     });
 
     it('refuses when words is an empty array', async () => {
-        const r = await runCreateDeck('u1', { words: [] });
+        const r = await runCreateDeck('u1', { words: [] }, UK_ES);
         expect(r.ok).toBe(false);
     });
 
     it('refuses when topic is just whitespace', async () => {
-        const r = await runCreateDeck('u1', { topic: '   ' });
+        const r = await runCreateDeck('u1', { topic: '   ' }, UK_ES);
         expect(r.ok).toBe(false);
     });
 });
 
-describe('chat.tools / runCreateDeck — language defaults', () => {
+describe('chat.tools / resolveDeckLanguages', () => {
+    it('uses native → definitions and the single learning language → words', () => {
+        expect(resolveDeckLanguages({ userLangs: langs('uk', ['en']), locale: 'uk' })).toEqual({
+            ok: true,
+            sourceLanguage: 'uk',
+            targetLanguage: 'en',
+        });
+    });
+
+    it('native language beats the app locale for definitions', () => {
+        expect(resolveDeckLanguages({ userLangs: langs('uk', ['de']), locale: 'en' })).toEqual({
+            ok: true,
+            sourceLanguage: 'uk',
+            targetLanguage: 'de',
+        });
+    });
+
+    it('falls back to the locale, then en, when native is not set', () => {
+        const withLocale = resolveDeckLanguages({ userLangs: langs(null, ['de']), locale: 'uk' });
+        expect(withLocale).toMatchObject({ sourceLanguage: 'uk' });
+        const bare = resolveDeckLanguages({ userLangs: langs(null, ['de']) });
+        expect(bare).toMatchObject({ sourceLanguage: 'en' });
+    });
+
+    it('asks instead of guessing when several learning languages remain', () => {
+        expect(resolveDeckLanguages({ userLangs: langs('uk', ['en', 'de']) })).toEqual({
+            ok: false,
+            reason: 'WORDS_LANGUAGE_AMBIGUOUS',
+            details: { options: ['en', 'de'] },
+        });
+    });
+
+    it('asks instead of guessing when no learning language is set (no en/es fallback)', () => {
+        expect(resolveDeckLanguages({ userLangs: langs('en'), locale: 'en' })).toEqual({
+            ok: false,
+            reason: 'WORDS_LANGUAGE_NEEDED',
+            details: {},
+        });
+    });
+
+    it('never picks the definitions language as the words language', () => {
+        // Learning list contains the native language by mistake — skip it.
+        expect(resolveDeckLanguages({ userLangs: langs('uk', ['uk', 'en']) })).toMatchObject({
+            ok: true,
+            sourceLanguage: 'uk',
+            targetLanguage: 'en',
+        });
+        // Definitions explicitly English, the only learning language is English.
+        expect(
+            resolveDeckLanguages({ definitionsLanguage: 'en', userLangs: langs('uk', ['en']) }),
+        ).toMatchObject({ ok: false, reason: 'WORDS_LANGUAGE_NEEDED' });
+    });
+
+    it('explicit languages win over the profile', () => {
+        expect(
+            resolveDeckLanguages({
+                wordsLanguage: 'es',
+                definitionsLanguage: 'pl',
+                userLangs: langs('uk', ['en']),
+                locale: 'uk',
+            }),
+        ).toEqual({ ok: true, sourceLanguage: 'pl', targetLanguage: 'es' });
+    });
+
+    it('normalizes explicit names and alias codes', () => {
+        expect(
+            resolveDeckLanguages({
+                wordsLanguage: 'German',
+                definitionsLanguage: 'ua',
+                userLangs: langs(null),
+            }),
+        ).toEqual({ ok: true, sourceLanguage: 'uk', targetLanguage: 'de' });
+    });
+
+    it('rejects an unsupported explicit language instead of silently dropping it', () => {
+        expect(
+            resolveDeckLanguages({ wordsLanguage: 'Klingon', userLangs: langs('uk', ['en']) }),
+        ).toEqual({
+            ok: false,
+            reason: 'UNSUPPORTED_LANGUAGE',
+            details: { field: 'wordsLanguage', value: 'Klingon' },
+        });
+    });
+
+    it('allows a same-language pair only when both sides are explicit', () => {
+        expect(
+            resolveDeckLanguages({
+                wordsLanguage: 'en',
+                definitionsLanguage: 'en',
+                userLangs: langs('uk', ['en']),
+            }),
+        ).toEqual({ ok: true, sourceLanguage: 'en', targetLanguage: 'en' });
+        // Model picked the user's own language as the words language.
+        expect(
+            resolveDeckLanguages({ wordsLanguage: 'uk', userLangs: langs('uk', ['en']) }),
+        ).toEqual({ ok: false, reason: 'SAME_LANGUAGE_PAIR', details: { language: 'uk' } });
+    });
+});
+
+describe('chat.tools / runCreateDeck — languages', () => {
     beforeEach(() => {
         mAi.enrichWords.mockResolvedValue({
             cards: [{ word: 'agua', definition: 'water' }],
@@ -101,11 +192,8 @@ describe('chat.tools / runCreateDeck — language defaults', () => {
         } as never);
     });
 
-    it('uses preference languages when input omits them', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(
-            fakePref({ nativeLanguage: 'uk', learningLanguages: ['pt'] }),
-        );
-        await runCreateDeck('u1', { words: ['agua'] });
+    it('uses profile languages when the model omits them', async () => {
+        await runCreateDeck('u1', { words: ['agua'] }, langs('uk', ['pt']), 'en');
         expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
             words: ['agua'],
             sourceLanguage: 'uk',
@@ -113,25 +201,12 @@ describe('chat.tools / runCreateDeck — language defaults', () => {
         });
     });
 
-    it('falls back to en→es when preferences are empty', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref());
-        await runCreateDeck('u1', { words: ['agua'] });
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
-            words: ['agua'],
-            sourceLanguage: 'en',
-            targetLanguage: 'es',
-        });
-    });
-
-    it('explicit input languages override preferences', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(
-            fakePref({ nativeLanguage: 'uk', learningLanguages: ['pt'] }),
+    it('maps the model-facing wordsLanguage/definitionsLanguage to target/source', async () => {
+        await runCreateDeck(
+            'u1',
+            { words: ['agua'], wordsLanguage: 'ja', definitionsLanguage: 'en' },
+            langs('uk', ['pt']),
         );
-        await runCreateDeck('u1', {
-            words: ['agua'],
-            sourceLanguage: 'en',
-            targetLanguage: 'ja',
-        });
         expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
             words: ['agua'],
             sourceLanguage: 'en',
@@ -139,72 +214,19 @@ describe('chat.tools / runCreateDeck — language defaults', () => {
         });
     });
 
-    it('defaults source to the chat locale, but never falls target back to it (no uk→uk decks)', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref());
-        await runCreateDeck('u1', { words: ['school'] }, 'uk');
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
-            words: ['school'],
-            sourceLanguage: 'uk',
-            targetLanguage: 'en',
+    it('returns a language failure (with details for the model) and creates nothing', async () => {
+        const r = await runCreateDeck('u1', { topic: 'food' }, langs('uk', ['en', 'de']), 'uk');
+        expect(r).toEqual({
+            ok: false,
+            reason: 'WORDS_LANGUAGE_AMBIGUOUS',
+            details: { options: ['en', 'de'] },
         });
-    });
-
-    it('an explicitly requested same-language pair is still honored', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref());
-        await runCreateDeck(
-            'u1',
-            { words: ['слово'], sourceLanguage: 'uk', targetLanguage: 'uk' },
-            'uk',
-        );
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
-            words: ['слово'],
-            sourceLanguage: 'uk',
-            targetLanguage: 'uk',
-        });
-    });
-
-    it('locale sets the source but the learning-language preference still wins for target', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref({ learningLanguages: ['fr'] }));
-        await runCreateDeck('u1', { words: ['слово'] }, 'uk');
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
-            words: ['слово'],
-            sourceLanguage: 'uk',
-            targetLanguage: 'fr',
-        });
-    });
-
-    it('an explicit model-provided language pair overrides the locale', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref());
-        await runCreateDeck(
-            'u1',
-            { words: ['palavra'], sourceLanguage: 'es', targetLanguage: 'pt' },
-            'uk',
-        );
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
-            words: ['palavra'],
-            sourceLanguage: 'es',
-            targetLanguage: 'pt',
-        });
-    });
-
-    it('normalizes full language names / region tags to ISO codes', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(
-            fakePref({ nativeLanguage: 'English', learningLanguages: ['uk-UA'] }),
-        );
-        await runCreateDeck('u1', { words: ['agua'] });
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
-            words: ['agua'],
-            sourceLanguage: 'en',
-            targetLanguage: 'uk',
-        });
+        expect(mAi.generateDeck).not.toHaveBeenCalled();
+        expect(mDecks.create).not.toHaveBeenCalled();
     });
 });
 
 describe('chat.tools / runCreateDeck — words branch', () => {
-    beforeEach(() => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref());
-    });
-
     it('runs enrichWords → decks.create → cards.bulkCreate and returns the deck attachment', async () => {
         mAi.enrichWords.mockResolvedValue({
             cards: [
@@ -214,21 +236,30 @@ describe('chat.tools / runCreateDeck — words branch', () => {
             meta: { requested: 2, enriched: 2, durationMs: 0, tokensInput: 10, tokensOutput: 4 },
         } as never);
         mDecks.create.mockResolvedValue(
-            fakeDeck({ id: 'deck-42', title: 'ES vocabulary' }),
+            fakeDeck({
+                id: 'deck-42',
+                title: 'Spanish vocabulary',
+                sourceLanguage: 'uk',
+                targetLanguage: 'es',
+            }),
         );
 
-        const r = await runCreateDeck('u1', { words: ['agua', 'pan'] });
+        const r = await runCreateDeck('u1', { words: ['agua', 'pan'] }, UK_ES);
 
         expect(r.ok).toBe(true);
         expect((r as { ok: true; attachment: unknown }).attachment).toEqual({
             type: 'deck',
             deckId: 'deck-42',
-            title: 'ES vocabulary',
+            title: 'Spanish vocabulary',
             cardCount: 2,
             action: 'created',
+            sourceLanguage: 'uk',
+            targetLanguage: 'es',
         });
         expect(mDecks.create).toHaveBeenCalledWith('u1', expect.objectContaining({
-            title: 'ES vocabulary',
+            title: 'Spanish vocabulary',
+            sourceLanguage: 'uk',
+            targetLanguage: 'es',
         }));
         expect(mCards.bulkCreate).toHaveBeenCalledWith(
             'u1',
@@ -247,7 +278,7 @@ describe('chat.tools / runCreateDeck — words branch', () => {
             cards: [{ word: 'agua', definition: 'water' }],
             meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
         } as never);
-        await runCreateDeck('u1', { words: ['agua'], title: 'Spanish basics' });
+        await runCreateDeck('u1', { words: ['agua'], title: 'Spanish basics' }, UK_ES);
         expect(mDecks.create).toHaveBeenCalledWith(
             'u1',
             expect.objectContaining({ title: 'Spanish basics' }),
@@ -256,10 +287,6 @@ describe('chat.tools / runCreateDeck — words branch', () => {
 });
 
 describe('chat.tools / runCreateDeck — topic branch', () => {
-    beforeEach(() => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref());
-    });
-
     it('calls generateDeck and persists the returned draft', async () => {
         mAi.generateDeck.mockResolvedValue({
             title: 'Spanish café',
@@ -275,7 +302,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
             fakeDeck({ id: 'deck-7', title: 'Spanish café' }),
         );
 
-        const r = await runCreateDeck('u1', { topic: 'Spanish café vocabulary', count: 2 });
+        const r = await runCreateDeck('u1', { topic: 'Spanish café vocabulary', count: 2 }, UK_ES);
 
         expect(r.ok).toBe(true);
         expect(mAi.generateDeck).toHaveBeenCalledWith('u1', expect.objectContaining({
@@ -288,12 +315,13 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
             title: 'Spanish café',
             cardCount: 2,
             action: 'created',
+            sourceLanguage: 'en',
+            targetLanguage: 'es',
         });
         expect((r as { ok: true; words: string[] }).words).toEqual(['café', 'leche']);
     });
 
     it('persists the resolved language pair, not the model\'s echo of it', async () => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref({ learningLanguages: ['en'] }));
         mAi.generateDeck.mockResolvedValue({
             title: 'Школа',
             description: '',
@@ -304,7 +332,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
         } as never);
         mDecks.create.mockResolvedValue(fakeDeck({ id: 'deck-9', title: 'Школа' }));
 
-        await runCreateDeck('u1', { topic: 'school' }, 'uk');
+        await runCreateDeck('u1', { topic: 'school' }, langs(null, ['en']), 'uk');
 
         expect(mDecks.create).toHaveBeenCalledWith(
             'u1',
@@ -333,7 +361,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
             } as never);
         mDecks.create.mockResolvedValue(fakeDeck({ id: 'deck-8', title: 'Rivers' }));
 
-        const r = await runCreateDeck('u1', { topic: 'river parrots', count: 2 });
+        const r = await runCreateDeck('u1', { topic: 'river parrots', count: 2 }, UK_ES);
 
         expect(mAi.generateDeck).toHaveBeenCalledTimes(2);
         expect(r.ok).toBe(true);
@@ -342,20 +370,16 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
 });
 
 describe('chat.tools / runCreateDeck — error surface', () => {
-    beforeEach(() => {
-        mPrefs.findOrCreate.mockResolvedValue(fakePref());
-    });
-
     it('returns { ok:false, reason: AppError.code } on a known AppError', async () => {
         mAi.enrichWords.mockRejectedValue(new AiBudgetExceededError('enrich', 5));
-        const r = await runCreateDeck('u1', { words: ['agua'] });
+        const r = await runCreateDeck('u1', { words: ['agua'] }, UK_ES);
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toBe('AI_BUDGET_EXCEEDED');
     });
 
     it('returns { ok:false, reason: "INTERNAL" } on an unknown error', async () => {
         mAi.enrichWords.mockRejectedValue(new Error('database imploded'));
-        const r = await runCreateDeck('u1', { words: ['agua'] });
+        const r = await runCreateDeck('u1', { words: ['agua'] }, UK_ES);
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toBe('INTERNAL');
     });
@@ -412,6 +436,8 @@ describe('chat.tools / runAddCards — append to an existing deck', () => {
             cardCount: 7,
             action: 'appended',
             addedCount: 2,
+            sourceLanguage: 'en',
+            targetLanguage: 'fr',
         });
     });
 

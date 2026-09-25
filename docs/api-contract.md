@@ -400,6 +400,9 @@ type ChatAttachment = {
   cardCount: number;                  // the deck's CURRENT total after the tool ran
   action?: 'created' | 'appended';    // 'created' = create_deck, 'appended' = add_cards
   addedCount?: number;                // cards just appended (only on action: 'appended')
+  sourceLanguage?: string;            // the deck's definitions language (ISO 639-1)
+  targetLanguage?: string;            // the deck's words language (ISO 639-1)
+                                      // (both absent on messages saved before 2026-09)
 };
 ```
 
@@ -615,8 +618,10 @@ Example (after `npm run seed`):
 {
   title: string;              // 2–120 chars
   description?: string;       // ≤ 500 chars, default ''
-  sourceLanguage: string;     // 2–10 chars
-  targetLanguage: string;
+  sourceLanguage: string;     // supported language: ISO 639-1 code, region tag
+  targetLanguage: string;     // ("uk-UA"), alias ("ua", "eng") or name ("English",
+                              // "українська") — stored as the ISO 639-1 code.
+                              // Unsupported → 400 "Unrecognized language".
   isPublic?: boolean;         // privacy toggle; **default false** (private)
   coverColor?: string | null; // P2: '#RRGGBB' hex
   glyph?: string | null;      // P2: 1–8 chars (emoji ok)
@@ -950,7 +955,7 @@ replace.
 {
   interests?: string[];            // ≤ 40 items, each ≤ 40 chars
   goal?: string | null;            // 1–120 chars, or null to clear
-  nativeLanguage?: string | null;  // 2–10 chars (ISO 639-1)
+  nativeLanguage?: string | null;  // same rules as Deck languages (see POST /decks)
   learningLanguages?: string[];    // ≤ 10 entries
   avatarHue?: number | null;       // 0..360
   mimiPlacement?: 'left' | 'right' | null;
@@ -1297,7 +1302,7 @@ not persist** — the FE shows the draft and the user accepts via
 // Request
 {
   topic: string;                 // 2–160 chars
-  sourceLanguage?: string;       // default 'en'
+  sourceLanguage?: string;       // default: the user's nativeLanguage, else 'en'
   targetLanguage: string;        // ISO 639-1
   count?: number;                // 1–20, default 8
 }
@@ -1338,7 +1343,8 @@ Request is `multipart/form-data` (not JSON):
 {
   image: File;                   // field name "image" — png/jpeg/webp/gif,
                                   // ≤ AI_IMAGE_MAX_BYTES (default 5 MB)
-  sourceLanguage?: string;       // default 'en' — language of definitions
+  sourceLanguage?: string;       // language of definitions; default: the user's
+                                 // nativeLanguage, else 'en'
   targetLanguage?: string;       // omit to let the model detect it from the image
   count?: number;                // 1–20, default 8 (upper bound — fewer cards
                                   // come back if the image doesn't have that many)
@@ -1570,9 +1576,9 @@ Append a user message and stream the assistant reply.
                                     // deck" appends instead of creating a new deck.
   locale?: string;                  // the chat/UI language, e.g. "uk", "en-US".
                                     // Normalized to an ISO 639-1 code server-side.
-                                    // Drives the reply language and the default
-                                    // create_deck/add_cards language pair when the
-                                    // user doesn't ask for a specific one.
+                                    // Drives the reply language; it is only the
+                                    // last-resort default for a new deck's
+                                    // definitions (see **Language** below).
 }
 ```
 
@@ -1669,21 +1675,38 @@ grounded in what was actually saved rather than re-deriving it from memory.
 The `topic` branch (`generateDeck`) additionally gets one deterministic retry
 if the draft comes back empty or well short of the requested `count`.
 
-**Language:** `create_deck`/`add_cards` resolve source/target languages with
-this precedence: an explicit pair the model passes (honoring a custom request
-like "words in Spanish, definitions in Portuguese") wins; otherwise the
-request's `locale` is the default; otherwise the user's saved preferences;
-otherwise a hardcoded fallback. Every language value (`locale`, model output,
-and `Deck.sourceLanguage`/`targetLanguage`/`Preference` fields) is normalized
-to an ISO 639-1 code (`src/shared/lang.ts`) before persisting — full names like
-"English" are mapped to `en` — so the FE's code-keyed language `<select>`
-always has a match.
+**Language:** `add_cards` always uses the open deck's own pair. For
+`create_deck` the model sees `wordsLanguage` (the language being learned →
+`Deck.targetLanguage`) and `definitionsLanguage` (the language the user knows →
+`Deck.sourceLanguage`), plus the user's profile languages in its system prompt.
+The server resolves the pair (`resolveDeckLanguages` in `chat.tools.ts`):
+
+- An explicit value from the model wins (it carries what the user asked for,
+  e.g. "Spanish words, Polish definitions").
+- Definitions otherwise: `Preference.nativeLanguage` → request `locale` → `en`.
+- Words otherwise: the user's learning language when exactly one remains after
+  excluding the definitions language. Several → `WORDS_LANGUAGE_AMBIGUOUS`
+  (`details.options` lists them); none → `WORDS_LANGUAGE_NEEDED`. The server
+  never invents a language — the model asks the user instead.
+- Words and definitions may only be equal when the model passed both (an
+  explicit monolingual deck); otherwise `SAME_LANGUAGE_PAIR`.
+- An explicit value that isn't a supported language → `UNSUPPORTED_LANGUAGE`
+  (`details: { field, value }`) — never silently replaced.
+
+Every language value is normalized to a supported ISO 639-1 code
+(`src/shared/lang.ts`) — names like "English"/"українська" and aliases like
+"ua"/"eng" map to `en`/`uk` — so the FE's code-keyed language `<select>` always
+has a match. On success, the attachment carries the deck's
+`sourceLanguage`/`targetLanguage`, and later turns feed them back to the model
+so "make another one" keeps the same pair.
 
 If the tool fails (`ok: false`), no attachment is persisted, the model writes a
 text apology (post-tool), and `assistantMessage.attachments` is omitted. The
 user is still charged one `chat` budget unit. The error code lives in
 `tool_result.data.reason` (`AI_BUDGET_EXCEEDED`, `DECK_NOT_FOUND`,
-`NEEDS_WORDS_OR_TOPIC`, `AI_PROVIDER_ERROR`, `INTERNAL`, …).
+`NEEDS_WORDS_OR_TOPIC`, `AI_PROVIDER_ERROR`, `INTERNAL`, the language reasons
+above, …). For the language reasons the model's reply asks the user the
+question that resolves it (e.g. "English or German?").
 
 After an `event: error` the assistant message stays in the database with
 `status: 'partial'` and whatever text we got before the failure. The user
