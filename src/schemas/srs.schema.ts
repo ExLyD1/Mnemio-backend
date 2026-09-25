@@ -22,6 +22,12 @@ export const dueQuerySchema = z.object({
     limit: z.coerce.number().int().positive().max(200).optional(),
 });
 
+// The review queue can legitimately be long (every card due today across every
+// deck), so it allows a higher ceiling than /srs/due's preview list.
+export const queueQuerySchema = z.object({
+    limit: z.coerce.number().int().positive().max(2000).optional(),
+});
+
 export const progressQuerySchema = z.object({
     limit: z.coerce.number().int().positive().max(2000).optional(),
 });

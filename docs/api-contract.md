@@ -22,12 +22,12 @@ unless it says so explicitly.
 | Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` · `GET /decks/:id/export` · `POST /decks/:id/cards/import` |
 | Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
 | Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
-| SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
+| SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/queue` · `GET /srs/progress` |
 | Dashboard | `GET /dashboard` |
 | Achievements | `GET /achievements` · `GET /achievements/unseen` · `POST /achievements/ack` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
-| AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
+| AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
@@ -905,6 +905,27 @@ floored at 1.3.
 ```
 `nextReviewAt ASC` (most-overdue first). Only cards with an existing
 `CardProgress` row appear (i.e. rated at least once and now due).
+
+#### `GET /srs/queue`  *(auth)*
+The review queue, ready to render: each due card with its full card row, its
+progress and its deck title. Prefer this over assembling the queue client-side
+— doing that meant listing every deck and then fetching each deck individually
+(20+ requests per page load), and any deck past the paging bound went missing
+from the queue.
+```ts
+// Query: ?limit?=number(<=2000)  default 500
+
+// 200 Response
+{
+  items: {
+    card: Card;                    // the full card, as GET /decks/:id returns it
+    progress: CardProgress;        // includes deckId
+    deckId: string;
+    deckTitle: string;
+  }[];
+}
+```
+Same due rule and ordering as `GET /srs/due`.
 
 #### `GET /srs/progress`  *(auth)*
 Full progress map for the user. Powers the FE's `srs.progress` store. Capped
