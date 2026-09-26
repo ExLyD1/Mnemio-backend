@@ -1,4 +1,5 @@
 import type {
+    AiCardDraft,
     AiDeckDraft,
     AiProvider,
     AiSuggestion,
@@ -11,8 +12,7 @@ import type {
     SuggestContext,
 } from './ai.provider.js';
 
-const titleCase = (s: string) =>
-    s.replace(/\b([a-z])/g, (m) => m.toUpperCase());
+const titleCase = (s: string) => s.replace(/\b([a-z])/g, (m) => m.toUpperCase());
 
 const PLACEHOLDER_DEFS = [
     'A common everyday word',
@@ -20,7 +20,16 @@ const PLACEHOLDER_DEFS = [
     'A frequently encountered term',
     'A core piece of vocabulary',
     'A practical phrase',
-];
+] as const;
+
+const placeholderDef = (i: number): string =>
+    PLACEHOLDER_DEFS[i % PLACEHOLDER_DEFS.length] ?? PLACEHOLDER_DEFS[0];
+
+// NonNullable: `difficulty` is optional on AiCardDraft, so its property type
+// includes undefined — which exactOptionalPropertyTypes then refuses to assign
+// back to it. This helper always returns a value.
+const difficultyAt = (i: number): NonNullable<AiCardDraft['difficulty']> =>
+    i % 3 === 0 ? 'easy' : i % 3 === 1 ? 'medium' : 'hard';
 
 /**
  * Mock AI provider. Returns deterministic-shaped drafts so the FE can wire the
@@ -43,14 +52,17 @@ export const mockProvider: AiProvider = {
             partOfSpeech: 'noun',
             example: `Example sentence using ${word}.`,
             exampleTranslation: `Translation of example for ${word}.`,
-            tags: input.context ? [input.context.toLowerCase().split(/\s+/)[0]!] : ['mock'],
+            tags: input.context
+                ? [input.context.toLowerCase().split(/\s+/)[0] ?? 'mock']
+                : ['mock'],
             difficulty: 'medium' as const,
         }));
 
         // Fire per-card events so streaming callers can dev against the mock.
-        if (opts?.onCard) {
+        const onCard = opts?.onCard;
+        if (onCard) {
             cards.forEach((card, position) => {
-                opts.onCard!({ type: 'card', position, card });
+                onCard({ type: 'card', position, card });
             });
         }
 
@@ -68,17 +80,12 @@ export const mockProvider: AiProvider = {
     async generateDeck(input, opts) {
         const start = Date.now();
         const count = input.count ?? 8;
-        const cards = Array.from({ length: count }, (_, i) => {
+        const cards = Array.from({ length: count }, (_, i): AiCardDraft => {
             const word = `${titleCase(input.targetLanguage)} term ${i + 1}`;
-            const definition =
-                PLACEHOLDER_DEFS[i % PLACEHOLDER_DEFS.length] ?? PLACEHOLDER_DEFS[0]!;
             return {
                 word,
-                definition,
-                difficulty: (i % 3 === 0 ? 'easy' : i % 3 === 1 ? 'medium' : 'hard') as
-                    | 'easy'
-                    | 'medium'
-                    | 'hard',
+                definition: placeholderDef(i),
+                difficulty: difficultyAt(i),
                 tags: [input.topic.toLowerCase().split(/\s+/).slice(0, 2).join('-') || 'general'],
             };
         });
@@ -91,12 +98,13 @@ export const mockProvider: AiProvider = {
             subject: 'languages',
             glyph: '✨',
         };
-        if (opts?.onEvent) {
-            opts.onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
+        const onEvent = opts?.onEvent;
+        if (onEvent) {
+            onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
             cards.forEach((card, position) =>
-                opts.onEvent!({ type: 'card', position, card } satisfies GenerateDeckEvent),
+                onEvent({ type: 'card', position, card } satisfies GenerateDeckEvent),
             );
-            opts.onEvent({
+            onEvent({
                 type: 'done',
                 meta: { durationMs: Date.now() - start, tokensInput: 0, tokensOutput: 0 },
             } satisfies GenerateDeckEvent);
@@ -114,19 +122,14 @@ export const mockProvider: AiProvider = {
         const noText = input.instructions === 'mock:no-text';
 
         const count = noText ? 0 : (input.count ?? 8);
-        const cards = Array.from({ length: count }, (_, i) => {
+        const cards = Array.from({ length: count }, (_, i): AiCardDraft => {
             const word = `${titleCase(targetLanguage)} image-word ${i + 1}`;
-            const definition =
-                PLACEHOLDER_DEFS[i % PLACEHOLDER_DEFS.length] ?? PLACEHOLDER_DEFS[0]!;
             return {
                 word,
-                definition,
+                definition: placeholderDef(i),
                 example: `[mock] "...${word}..." — the sentence it appeared in.`,
                 exampleTranslation: `[mock] Translation of the example for ${word}.`,
-                difficulty: (i % 3 === 0 ? 'easy' : i % 3 === 1 ? 'medium' : 'hard') as
-                    | 'easy'
-                    | 'medium'
-                    | 'hard',
+                difficulty: difficultyAt(i),
                 tags: ['from-image'],
             };
         });
@@ -141,12 +144,13 @@ export const mockProvider: AiProvider = {
             subject: 'languages',
             glyph: '📷',
         };
-        if (opts?.onEvent) {
-            opts.onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
+        const onEvent = opts?.onEvent;
+        if (onEvent) {
+            onEvent({ type: 'header', deck: header } satisfies GenerateDeckEvent);
             cards.forEach((card, position) =>
-                opts.onEvent!({ type: 'card', position, card } satisfies GenerateDeckEvent),
+                onEvent({ type: 'card', position, card } satisfies GenerateDeckEvent),
             );
-            opts.onEvent({
+            onEvent({
                 type: 'done',
                 meta: { durationMs: Date.now() - start, tokensInput: 0, tokensOutput: 0 },
             } satisfies GenerateDeckEvent);
@@ -195,7 +199,7 @@ export const mockProvider: AiProvider = {
                 ? wantsAdd
                     ? ['Added', ' those cards', ' to your deck.']
                     : ['Done', ' — created your deck.']
-                : ['Sorry', ', I couldn\'t finish that.'];
+                : ['Sorry', ", I couldn't finish that."];
             for (const delta of outro) {
                 opts?.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
             }
@@ -241,8 +245,7 @@ export const mockProvider: AiProvider = {
             }
             if (context === 'deck_detail') {
                 return {
-                    suggestion:
-                        'Add a quick example sentence to each card to make recall easier.',
+                    suggestion: 'Add a quick example sentence to each card to make recall easier.',
                     kind: 'tip',
                     actions: input.deckId
                         ? [{ label: 'Edit deck', href: `/decks/${input.deckId}` }]

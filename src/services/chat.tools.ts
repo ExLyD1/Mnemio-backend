@@ -143,7 +143,7 @@ export const ADD_CARDS_TOOL_DEF = {
             deckTitle: {
                 type: 'string' as const,
                 description:
-                    'The deck the user means. Copy the open deck\'s exact title ' +
+                    "The deck the user means. Copy the open deck's exact title " +
                     'when they said "this deck"/"my deck"; copy the name they ' +
                     'typed when they named one. The app refuses the call if it ' +
                     "isn't the open deck, so never guess.",
@@ -312,8 +312,9 @@ const quotedDeckName = (userMessage?: string): string | null => {
         if (!name) {
             continue;
         }
+        // matchAll always sets `index`, so no fallback is needed here.
         const around = userMessage
-            .slice(Math.max(0, (m.index ?? 0) - 40), (m.index ?? 0) + m[0].length + 40)
+            .slice(Math.max(0, m.index - 40), m.index + m[0].length + 40)
             .toLowerCase();
         if (/deck|колод|набір|сет/.test(around)) {
             return name;
