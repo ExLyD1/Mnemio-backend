@@ -88,7 +88,7 @@ export type DeckFromImageProviderInput = DeckFromImageInput & { image: AiImageIn
 
 export type AiSuggestionAction = {
     label: string;
-    href: string;     // relative FE path
+    href: string; // relative FE path
 };
 
 export type AiSuggestion = {
@@ -159,7 +159,7 @@ export type ChatResult = {
 };
 
 export type AiProvider = {
-    name: string;     // 'mock' | 'anthropic' | …
+    name: string; // 'mock' | 'anthropic' | …
 
     /**
      * Enrich a user-supplied word list. Implementations MUST preserve the
@@ -192,9 +192,12 @@ export type AiProvider = {
         opts?: { onEvent?: (event: GenerateDeckEvent) => void },
     ) => Promise<AiDeckDraft>;
 
-    suggest: (
-        input: { context: SuggestContext; deckId?: string; dueCount: number; streak: number },
-    ) => Promise<AiSuggestion>;
+    suggest: (input: {
+        context: SuggestContext;
+        deckId?: string;
+        dueCount: number;
+        streak: number;
+    }) => Promise<AiSuggestion>;
 
     /**
      * Stream a multi-turn chat reply. `messages` is the full conversation in

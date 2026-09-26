@@ -42,9 +42,13 @@ export const review = (state: SrsState, quality: Quality, now: Date = new Date()
     // Successful recall: advance schedule.
     const nextRepetitions = state.repetitions + 1;
     let nextInterval: number;
-    if (nextRepetitions === 1) nextInterval = 1;
-    else if (nextRepetitions === 2) nextInterval = 6;
-    else nextInterval = Math.round(state.interval * state.easeFactor);
+    if (nextRepetitions === 1) {
+        nextInterval = 1;
+    } else if (nextRepetitions === 2) {
+        nextInterval = 6;
+    } else {
+        nextInterval = Math.round(state.interval * state.easeFactor);
+    }
 
     const nextEase = Math.max(
         MIN_EF,

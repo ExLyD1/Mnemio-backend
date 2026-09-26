@@ -32,16 +32,13 @@ export type UpsertSubscriptionData = {
 };
 
 export const findByUserId = (userId: string): Promise<SubscriptionRow | null> =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (prisma as any).subscription.findUnique({ where: { userId } });
+    prisma.subscription.findUnique({ where: { userId } });
 
 export const findByStripeCustomerId = (stripeCustomerId: string): Promise<SubscriptionRow | null> =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (prisma as any).subscription.findUnique({ where: { stripeCustomerId } });
+    prisma.subscription.findUnique({ where: { stripeCustomerId } });
 
 export const upsertFromStripe = (data: UpsertSubscriptionData): Promise<SubscriptionRow> =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (prisma as any).subscription.upsert({
+    prisma.subscription.upsert({
         where: { userId: data.userId },
         update: {
             status: data.status,
@@ -61,8 +58,7 @@ const ENTITLED_STATUSES: SubscriptionStatus[] = ['trialing', 'active', 'past_due
 
 export const isEntitled = async (userId: string): Promise<boolean> => {
     const now = new Date();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const row = await (prisma as any).subscription.findFirst({
+    const row = await prisma.subscription.findFirst({
         where: {
             userId,
             status: { in: ENTITLED_STATUSES },
@@ -78,10 +74,8 @@ export const recordWebhookEvent = async (
     id: string,
     type: string,
 ): Promise<void> => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (tx as any).stripeWebhookEvent.create({ data: { id, type } });
+    await tx.stripeWebhookEvent.create({ data: { id, type } });
 };
 
 export const findWebhookEvent = (id: string): Promise<{ id: string } | null> =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (prisma as any).stripeWebhookEvent.findUnique({ where: { id }, select: { id: true } });
+    prisma.stripeWebhookEvent.findUnique({ where: { id }, select: { id: true } });

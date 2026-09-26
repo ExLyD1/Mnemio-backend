@@ -7,9 +7,7 @@ export const passwordSchema = z
     .min(8, 'Password must be at least 8 characters')
     .max(128, 'Password is too long');
 
-export const otpCodeSchema = z
-    .string()
-    .regex(/^\d{6}$/, 'OTP must be a 6-digit number');
+export const otpCodeSchema = z.string().regex(/^\d{6}$/, 'OTP must be a 6-digit number');
 
 export const registerSchema = z.object({
     email: emailSchema,

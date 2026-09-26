@@ -9,8 +9,8 @@ export type MailMessage = {
 
 // ---------- console (dev/default) ----------
 
+/* eslint-disable no-console -- the console transport prints by design */
 const sendViaConsole = async (msg: MailMessage): Promise<void> => {
-    // eslint-disable-next-line no-console
     console.log('\n========== [mail:console] ==========');
     console.log(`From:    ${env.MAIL_FROM}`);
     console.log(`To:      ${msg.to}`);
@@ -19,6 +19,7 @@ const sendViaConsole = async (msg: MailMessage): Promise<void> => {
     console.log(msg.text);
     console.log('====================================\n');
 };
+/* eslint-enable no-console */
 
 // ---------- resend ----------
 
@@ -73,7 +74,9 @@ const sendViaResend = async (msg: MailMessage): Promise<void> => {
 // ---------- public api ----------
 
 export const sendMail = async (msg: MailMessage): Promise<void> => {
-    if (env.MAIL_PROVIDER === 'resend') return sendViaResend(msg);
+    if (env.MAIL_PROVIDER === 'resend') {
+        return sendViaResend(msg);
+    }
     return sendViaConsole(msg);
 };
 

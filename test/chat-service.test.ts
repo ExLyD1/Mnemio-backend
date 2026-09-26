@@ -1,14 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as chatRepo from '../src/repositories/chat.repository.js';
 import * as decksRepo from '../src/repositories/decks.repository.js';
+import * as prefsRepo from '../src/repositories/preferences.repository.js';
 import * as budget from '../src/services/ai.budget.service.js';
 import { sendMessage, __setProviderForTesting } from '../src/services/chat.service.js';
-import { AiProviderError, ChatNotFoundError, AiBudgetExceededError } from '../src/shared/errors.js';
+import {
+    AiProviderError,
+    ChatNotFoundError,
+    AiBudgetExceededError,
+    ChatBusyError,
+} from '../src/shared/errors.js';
 import type { AiProvider, ChatResult, ChatStreamEvent } from '../src/services/ai.provider.js';
 
 vi.mock('../src/repositories/chat.repository.js', () => ({
     findConversation: vi.fn(),
     countUserMessages: vi.fn(),
+    claimTurn: vi.fn(),
     createMessage: vi.fn(),
     finalizeAssistantMessage: vi.fn(),
     lastTurnsForModel: vi.fn(),
@@ -18,14 +25,22 @@ vi.mock('../src/repositories/chat.repository.js', () => ({
 vi.mock('../src/repositories/decks.repository.js', () => ({
     findDeckById: vi.fn(),
 }));
+vi.mock('../src/repositories/preferences.repository.js', () => ({
+    findOrCreate: vi.fn(),
+}));
 vi.mock('../src/services/ai.budget.service.js', () => ({
     assertWithinBudget: vi.fn(),
     recordUse: vi.fn(),
+    usageSnapshot: vi.fn(),
 }));
 
 const mockedRepo = vi.mocked(chatRepo);
 const mockedDecksRepo = vi.mocked(decksRepo);
 const mockedBudget = vi.mocked(budget);
+const mockedPrefs = vi.mocked(prefsRepo);
+
+const setProfile = (nativeLanguage: string | null, learningLanguages: string[]) =>
+    mockedPrefs.findOrCreate.mockResolvedValue({ nativeLanguage, learningLanguages } as never);
 
 const conversationRow = (overrides: Record<string, unknown> = {}) => ({
     id: 'conv-1',
@@ -49,9 +64,7 @@ const messageRow = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
 });
 
-const buildProvider = (
-    chatImpl: AiProvider['chat'],
-): AiProvider => ({
+const buildProvider = (chatImpl: AiProvider['chat']): AiProvider => ({
     name: 'test',
     enrichWords: vi.fn() as never,
     generateDeck: vi.fn() as never,
@@ -60,9 +73,40 @@ const buildProvider = (
     chat: chatImpl,
 });
 
+// Every send now claims the conversation's streaming slot in one transaction
+// instead of two createMessage calls. Tests state the rows the claim returns.
+const claim = (userOverrides: Record<string, unknown> = {}, assistantId = 'ai-msg') =>
+    mockedRepo.claimTurn.mockResolvedValue({
+        userRow: messageRow({ id: 'user-msg', ...userOverrides }),
+        placeholder: messageRow({
+            id: assistantId,
+            role: 'assistant',
+            content: '',
+            status: 'streaming',
+        }),
+    } as never);
+
+const usage = (overrides: Record<string, { used: number; cap: number; remaining: number }> = {}) =>
+    mockedBudget.usageSnapshot.mockResolvedValue({
+        plan: 'free',
+        resetsAt: '2026-06-09T00:00:00.000Z',
+        kinds: {
+            enrich: { used: 0, cap: 5, remaining: 5 },
+            generate: { used: 0, cap: 20, remaining: 20 },
+            suggest: { used: 0, cap: 60, remaining: 60 },
+            import: { used: 0, cap: 20, remaining: 20 },
+            chat: { used: 0, cap: 50, remaining: 50 },
+            image: { used: 0, cap: 10, remaining: 10 },
+            ...overrides,
+        },
+    } as never);
+
 beforeEach(() => {
     vi.resetAllMocks();
     __setProviderForTesting(null);
+    setProfile(null, []);
+    claim();
+    usage();
 });
 
 describe('chat.service / sendMessage', () => {
@@ -71,18 +115,18 @@ describe('chat.service / sendMessage', () => {
         await expect(sendMessage('u', 'c', 'hi', () => undefined)).rejects.toBeInstanceOf(
             ChatNotFoundError,
         );
-        expect(mockedRepo.createMessage).not.toHaveBeenCalled();
+        expect(mockedRepo.claimTurn).not.toHaveBeenCalled();
     });
 
     it('returns AI_BUDGET_EXCEEDED before persisting anything', async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedBudget.assertWithinBudget.mockRejectedValue(
-            new AiBudgetExceededError('chat', 50),
+            new AiBudgetExceededError('chat', 50, '2026-06-09T00:00:00.000Z'),
         );
         await expect(sendMessage('u', 'c', 'hi', () => undefined)).rejects.toBeInstanceOf(
             AiBudgetExceededError,
         );
-        expect(mockedRepo.createMessage).not.toHaveBeenCalled();
+        expect(mockedRepo.claimTurn).not.toHaveBeenCalled();
         expect(mockedBudget.recordUse).not.toHaveBeenCalled();
     });
 
@@ -90,18 +134,7 @@ describe('chat.service / sendMessage', () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(0); // first turn → auto-title
         mockedRepo.lastTurnsForModel.mockResolvedValue([]);
-        mockedRepo.createMessage
-            .mockResolvedValueOnce(
-                messageRow({ id: 'user-msg', role: 'user', content: 'Hi Mnemio!' }) as never,
-            )
-            .mockResolvedValueOnce(
-                messageRow({
-                    id: 'ai-msg',
-                    role: 'assistant',
-                    content: '',
-                    status: 'partial',
-                }) as never,
-            );
+        claim({ content: 'Hi Mnemio!' });
         mockedRepo.finalizeAssistantMessage.mockResolvedValue(
             messageRow({
                 id: 'ai-msg',
@@ -130,23 +163,17 @@ describe('chat.service / sendMessage', () => {
         expect(result.assistantMessage.content).toBe('Hello!');
         expect(result.conversationTitle).toBe('Hi Mnemio!');
 
-        // user msg saved first, then assistant placeholder
-        expect(mockedRepo.createMessage.mock.calls[0]?.[0]).toMatchObject({ role: 'user' });
-        expect(mockedRepo.createMessage.mock.calls[1]?.[0]).toMatchObject({
-            role: 'assistant',
-            status: 'partial',
-        });
+        // user msg + placeholder claimed atomically
+        expect(mockedRepo.claimTurn).toHaveBeenCalledWith(
+            expect.objectContaining({ conversationId: 'c', content: 'Hi Mnemio!' }),
+        );
 
         // finalize with the streamed buffer
         expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith(
             expect.objectContaining({ content: 'Hello!', status: 'complete' }),
         );
         // auto-title triggered (first user message)
-        expect(mockedRepo.renameAndTouch).toHaveBeenCalledWith(
-            'c',
-            'Hi Mnemio!',
-            expect.any(Date),
-        );
+        expect(mockedRepo.renameAndTouch).toHaveBeenCalledWith('c', 'Hi Mnemio!', expect.any(Date));
         expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
         // budget recorded only after success
         expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'chat');
@@ -156,11 +183,6 @@ describe('chat.service / sendMessage', () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(0);
         mockedRepo.lastTurnsForModel.mockResolvedValue([]);
-        mockedRepo.createMessage
-            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
-            .mockResolvedValueOnce(
-                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
-            );
         __setProviderForTesting(
             buildProvider(async (_input, opts) => {
                 opts?.onEvent?.({ type: 'token', delta: 'Hello' } as ChatStreamEvent);
@@ -168,9 +190,9 @@ describe('chat.service / sendMessage', () => {
             }),
         );
 
-        await expect(
-            sendMessage('u', 'c', 'Hi', () => undefined),
-        ).rejects.toBeInstanceOf(AiProviderError);
+        await expect(sendMessage('u', 'c', 'Hi', () => undefined)).rejects.toBeInstanceOf(
+            AiProviderError,
+        );
 
         // The placeholder was finalized with the partial buffer, NOT marked complete.
         expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith({
@@ -192,11 +214,6 @@ describe('chat.service / sendMessage', () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1); // already had a turn
         mockedRepo.lastTurnsForModel.mockResolvedValue([]);
-        mockedRepo.createMessage
-            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
-            .mockResolvedValueOnce(
-                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
-            );
         mockedRepo.finalizeAssistantMessage.mockResolvedValue(
             messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
         );
@@ -214,11 +231,6 @@ describe('chat.service / sendMessage', () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([]);
-        mockedRepo.createMessage
-            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
-            .mockResolvedValueOnce(
-                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
-            );
         mockedRepo.finalizeAssistantMessage.mockResolvedValue(
             messageRow({
                 id: 'ai-msg',
@@ -287,11 +299,6 @@ describe('chat.service / sendMessage', () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([]);
-        mockedRepo.createMessage
-            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
-            .mockResolvedValueOnce(
-                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
-            );
         mockedRepo.finalizeAssistantMessage.mockResolvedValue(
             messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
         );
@@ -314,11 +321,6 @@ describe('chat.service / sendMessage', () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([]);
-        mockedRepo.createMessage
-            .mockResolvedValueOnce(messageRow({ id: 'user-msg' }) as never)
-            .mockResolvedValueOnce(
-                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
-            );
         mockedRepo.finalizeAssistantMessage.mockResolvedValue(
             messageRow({ id: 'ai-msg', role: 'assistant', content: 'Привіт!' }) as never,
         );
@@ -332,20 +334,159 @@ describe('chat.service / sendMessage', () => {
 
         await sendMessage('u', 'c', 'Привіт', () => undefined, { locale: 'uk' });
 
-        expect(seenPrompt).toContain('"uk"');
+        expect(seenPrompt).toContain('Always reply in Ukrainian');
+        expect(seenPrompt).toContain('app language: Ukrainian (uk)');
+    });
+
+    it("gives the model the user's profile languages (normalized) in the system prompt", async () => {
+        setProfile('ukrainian', ['en', 'de-DE', 'xx']);
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
+        );
+        let seenPrompt = '';
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenPrompt = input.systemPrompt;
+                return { content: 'ok', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', 'зроби колоду', () => undefined, { locale: 'en' });
+
+        expect(seenPrompt).toContain(
+            'native language: Ukrainian (uk); learning: English (en), German (de); app language: English (en)',
+        );
+    });
+
+    it("re-attaches a previous deck's languages to its assistant turn for the model", async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.countUserMessages.mockResolvedValue(1);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([
+            { role: 'user', content: 'German food words', attachments: null },
+            {
+                role: 'assistant',
+                content: 'Done!',
+                attachments: [
+                    {
+                        type: 'deck',
+                        deckId: 'd1',
+                        title: 'Food',
+                        cardCount: 8,
+                        action: 'created',
+                        sourceLanguage: 'uk',
+                        targetLanguage: 'de',
+                    },
+                ],
+            },
+        ]);
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
+        );
+        let seenMessages: { role: string; content: string }[] = [];
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenMessages = input.messages;
+                return { content: 'ok', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', 'one more', () => undefined);
+
+        expect(seenMessages[0]).toEqual({ role: 'user', content: 'German food words' });
+        expect(seenMessages[1]?.content).toBe(
+            'Done!\n\n(Deck "Food": words in German (de), definitions in Ukrainian (uk))',
+        );
+    });
+
+    // Two sends racing on one conversation produced a second reply that was the
+    // first reply plus its own, twice — the loser is now refused outright.
+    it('refuses a second send while one is still streaming', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.claimTurn.mockResolvedValue(null as never);
+
+        await expect(sendMessage('u', 'c', 'second', () => undefined)).rejects.toBeInstanceOf(
+            ChatBusyError,
+        );
+        expect(mockedBudget.recordUse).not.toHaveBeenCalled();
+    });
+
+    // History is read AFTER the user row is saved, so without an explicit
+    // boundary the current message went to the model twice in a row.
+    it('excludes the current turn from the history it sends the model', async () => {
+        const created = new Date('2026-06-08T10:05:00Z');
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        claim({ createdAt: created });
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
+        );
+        let seenMessages: { role: string; content: string }[] = [];
+        __setProviderForTesting(
+            buildProvider(async (input): Promise<ChatResult> => {
+                seenMessages = input.messages;
+                return { content: 'ok', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+
+        await sendMessage('u', 'c', 'only once please', () => undefined);
+
+        expect(mockedRepo.lastTurnsForModel).toHaveBeenCalledWith('c', expect.any(Number), created);
+        expect(seenMessages.filter((m) => m.content === 'only once please')).toHaveLength(1);
+    });
+
+    it('passes retryOf through so the failed turn is replaced, not duplicated', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ id: 'ai-msg', role: 'assistant', content: 'ok' }) as never,
+        );
+        __setProviderForTesting(
+            buildProvider(async () => ({ content: 'ok', tokensInput: 0, tokensOutput: 0 })),
+        );
+
+        await sendMessage('u', 'c', 'again', () => undefined, { retryOf: 'old-ai-msg' });
+
+        expect(mockedRepo.claimTurn).toHaveBeenCalledWith(
+            expect.objectContaining({ retryOf: 'old-ai-msg' }),
+        );
+    });
+
+    // If the deck was already written, a Retry would create it a second time —
+    // the partial message has to carry the attachment so the FE can hide Retry.
+    it('keeps a successful tool attachment on the partial message when the turn then fails', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        const attachment = { type: 'deck', deckId: 'd1', title: 'Fruits', cardCount: 5 };
+        __setProviderForTesting(
+            buildProvider(async (_input, opts) => {
+                opts?.onEvent?.({
+                    type: 'tool_result',
+                    name: 'create_deck',
+                    ok: true,
+                    data: attachment,
+                } as ChatStreamEvent);
+                throw new AiProviderError(502, 'died after the write');
+            }),
+        );
+
+        await expect(sendMessage('u', 'c', 'make a deck', () => undefined)).rejects.toBeInstanceOf(
+            AiProviderError,
+        );
+
+        expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ status: 'partial', attachments: [attachment] }),
+        );
     });
 
     it('with an attached image: meters under "image" (not "chat"), adds the image clause to the prompt, and attaches the image to only the newest turn', async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([
-            { role: 'user', content: 'earlier text turn' },
+            { role: 'user', content: 'earlier text turn', attachments: null },
         ]);
-        mockedRepo.createMessage
-            .mockResolvedValueOnce(messageRow({ id: 'user-msg', content: '' }) as never)
-            .mockResolvedValueOnce(
-                messageRow({ id: 'ai-msg', role: 'assistant', status: 'partial' }) as never,
-            );
         mockedRepo.finalizeAssistantMessage.mockResolvedValue(
             messageRow({ id: 'ai-msg', role: 'assistant', content: 'Found 3 words.' }) as never,
         );

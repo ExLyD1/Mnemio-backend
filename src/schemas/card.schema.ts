@@ -18,7 +18,9 @@ const mediaUrl = (max: number) =>
         .max(max)
         .refine(
             (v) => {
-                if (v.startsWith('/')) return !v.startsWith('//');
+                if (v.startsWith('/')) {
+                    return !v.startsWith('//');
+                }
                 try {
                     const { protocol } = new URL(v);
                     return protocol === 'http:' || protocol === 'https:';

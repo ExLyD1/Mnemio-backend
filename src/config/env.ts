@@ -57,6 +57,12 @@ const envSchema = z
         AI_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
         ANTHROPIC_API_KEY: z.string().optional(),
         ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
+        // Card CONTENT (enrich / generate / deck-from-image) for decks with a
+        // Ukrainian side. Haiku's Ukrainian came back with Russian words and
+        // broken agreement, and cards are the product — a stronger model is
+        // worth the extra cost on the few calls that write them. Chat replies
+        // stay on ANTHROPIC_MODEL.
+        ANTHROPIC_CONTENT_MODEL_UK: z.string().default('claude-sonnet-5'),
 
         // Per-user daily caps on each AI operation.
         AI_DAILY_ENRICH_CAP_PER_USER: z.coerce.number().int().positive().default(5),
@@ -148,7 +154,10 @@ const envSchema = z
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
+    // The logger isn't built yet — config is validated before the app starts.
+    // eslint-disable-next-line no-console
     console.error('Invalid environment configuration:');
+    // eslint-disable-next-line no-console
     console.error(z.treeifyError(parsed.error));
     process.exit(1);
 }

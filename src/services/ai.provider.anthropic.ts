@@ -25,21 +25,16 @@ import type {
     GenerateDeckEvent,
     SuggestContext,
 } from './ai.provider.js';
-import type {
-    EnrichWordsInput,
-    GenerateDeckInput,
-} from '../schemas/ai.schema.js';
+import type { EnrichWordsInput, GenerateDeckInput } from '../schemas/ai.schema.js';
 import { env } from '../config/env.js';
-import {
-    AiProviderError,
-    AiValidationFailedError,
-} from '../shared/errors.js';
+import { AiProviderError, AiValidationFailedError } from '../shared/errors.js';
 import {
     buildDeckFromImagePrompt,
     buildEnrichWordsPrompt,
     buildGenerateDeckPrompt,
     buildSuggestPrompt,
 } from './ai.prompts.js';
+import { normalizeLang } from '../shared/lang.js';
 
 const cardItemSchema = {
     type: 'object',
@@ -118,7 +113,9 @@ const SUGGEST_TOOL = {
 const client = (() => {
     let cached: Anthropic | null = null;
     return () => {
-        if (cached) return cached;
+        if (cached) {
+            return cached;
+        }
         if (!env.ANTHROPIC_API_KEY) {
             // Should never happen — env.ts refines this when AI_PROVIDER=anthropic.
             throw new AiProviderError(500, 'ANTHROPIC_API_KEY is not configured');
@@ -128,6 +125,27 @@ const client = (() => {
     };
 })();
 
+/** Upstream HTTP status to report for a failed SDK call; 502 when there isn't one. */
+const providerErrorStatus = (err: unknown): number | string => {
+    if (!(err instanceof Anthropic.APIError)) {
+        return 502;
+    }
+    // `instanceof` narrows to APIError<any, …>, so re-type the field before using it.
+    const status: unknown = err.status;
+    return typeof status === 'number' || typeof status === 'string' ? status : 502;
+};
+
+/**
+ * Which model writes a deck's CARD CONTENT. Ukrainian gets the stronger model:
+ * the fast one produced Russian loanwords and broken agreement on the very text
+ * learners study. Everything else — chat replies, suggestions — stays on
+ * ANTHROPIC_MODEL, where quality was fine and latency matters more.
+ */
+export const contentModel = (...langs: (string | undefined)[]): string =>
+    langs.some((l) => l && normalizeLang(l) === 'uk')
+        ? env.ANTHROPIC_CONTENT_MODEL_UK
+        : env.ANTHROPIC_MODEL;
+
 /** Run an Anthropic call and pull the forced tool's input out of the response. */
 const callToolUse = async <T>(args: {
     system: ReturnType<typeof buildEnrichWordsPrompt>['system'];
@@ -135,11 +153,12 @@ const callToolUse = async <T>(args: {
     toolName: string;
     tool: typeof ENRICH_TOOL | typeof DECK_TOOL | typeof SUGGEST_TOOL;
     maxTokens: number;
+    model?: string;
 }): Promise<{ data: T; tokensInput: number; tokensOutput: number }> => {
     let response;
     try {
         response = await client().messages.create({
-            model: env.ANTHROPIC_MODEL,
+            model: args.model ?? env.ANTHROPIC_MODEL,
             max_tokens: args.maxTokens,
             system: args.system,
             messages: [{ role: 'user', content: args.user }],
@@ -147,13 +166,11 @@ const callToolUse = async <T>(args: {
             tool_choice: { type: 'tool', name: args.toolName },
         });
     } catch (err) {
-        const status =
-            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
-        throw new AiProviderError(status, (err as Error).message);
+        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
 
     const toolBlock = response.content.find((b) => b.type === 'tool_use');
-    if (!toolBlock || toolBlock.type !== 'tool_use') {
+    if (toolBlock?.type !== 'tool_use') {
         throw new AiValidationFailedError('Provider returned no tool_use block');
     }
     return {
@@ -169,12 +186,16 @@ const callWithRetry = async <T>(
     validate: (data: T) => boolean,
 ) => {
     const first = await callToolUse<T>(args);
-    if (validate(first.data)) return first;
+    if (validate(first.data)) {
+        return first;
+    }
     const second = await callToolUse<T>({
         ...args,
         user: `${args.user}\n\nRetry: your previous output failed schema validation. Return only the tool call, fully populated.`,
     });
-    if (validate(second.data)) return second;
+    if (validate(second.data)) {
+        return second;
+    }
     throw new AiValidationFailedError();
 };
 
@@ -190,14 +211,13 @@ const isValidCardArray = (data: { cards?: unknown }): boolean =>
             typeof (c as { definition?: unknown }).definition === 'string',
     );
 
-export const alignByInputOrder = (
-    requested: string[],
-    received: AiCardDraft[],
-): AiCardDraft[] => {
+export const alignByInputOrder = (requested: string[], received: AiCardDraft[]): AiCardDraft[] => {
     const byKey = new Map(received.map((c) => [c.word.trim().toLowerCase(), c]));
     return requested.map((word) => {
         const card = byKey.get(word.trim().toLowerCase());
-        if (card) return { ...card, word };
+        if (card) {
+            return { ...card, word };
+        }
         // Provider skipped this word — surface as ai-unfilled.
         return {
             word,
@@ -213,7 +233,9 @@ export const alignByInputOrder = (
  * pulls a partially-populated array property out of it.
  */
 const arrayFromSnapshot = <T>(snapshot: unknown, arrayKey: string): T[] | null => {
-    if (!snapshot || typeof snapshot !== 'object') return null;
+    if (!snapshot || typeof snapshot !== 'object') {
+        return null;
+    }
     const arr = (snapshot as Record<string, unknown>)[arrayKey];
     return Array.isArray(arr) ? (arr as T[]) : null;
 };
@@ -225,6 +247,7 @@ const enrichWords = async (
     const start = Date.now();
     const { system, user } = buildEnrichWordsPrompt(input);
     const maxTokens = Math.min(8000, Math.max(1000, input.words.length * 200));
+    const model = contentModel(input.sourceLanguage, input.targetLanguage);
 
     // Non-streaming fast path: caller doesn't want incremental events.
     if (!opts?.onCard) {
@@ -237,6 +260,7 @@ const enrichWords = async (
                 toolName: ENRICH_TOOL.name,
                 tool: ENRICH_TOOL,
                 maxTokens,
+                model,
             },
             isValidCardArray,
         );
@@ -254,7 +278,9 @@ const enrichWords = async (
         };
     }
 
-    // Streaming path.
+    // Streaming path. Capture the callback: the guard above narrows
+    // `opts.onCard`, but that narrowing doesn't reach into the stream closure.
+    const onCard = opts.onCard;
     let received: AiCardDraft[] = [];
     let emittedCount = 0;
     let tokensInput = 0;
@@ -262,7 +288,7 @@ const enrichWords = async (
 
     try {
         const stream = client().messages.stream({
-            model: env.ANTHROPIC_MODEL,
+            model,
             max_tokens: maxTokens,
             system,
             messages: [{ role: 'user', content: user }],
@@ -272,14 +298,19 @@ const enrichWords = async (
 
         stream.on('inputJson', (_delta, snapshot) => {
             const arr = arrayFromSnapshot<AiCardDraft>(snapshot, 'cards');
-            if (!arr) return;
+            if (!arr) {
+                return;
+            }
             // Only emit cards we haven't yet AND whose definition has fully
             // arrived. The last item in the snapshot may be partial.
             const completeUpToExclusive = arr.length - 1;
             for (let i = emittedCount; i < completeUpToExclusive; i++) {
-                const card = arr[i]!;
+                const card = arr[i];
+                if (card === undefined) {
+                    continue;
+                }
                 if (typeof card.word === 'string' && typeof card.definition === 'string') {
-                    opts.onCard!({ type: 'card', position: i, card });
+                    onCard({ type: 'card', position: i, card });
                     emittedCount = i + 1;
                 }
             }
@@ -294,14 +325,15 @@ const enrichWords = async (
             received = (toolBlock.input as { cards?: AiCardDraft[] }).cards ?? [];
         }
     } catch (err) {
-        const status =
-            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
-        throw new AiProviderError(status, (err as Error).message);
+        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
 
     // Emit any trailing card the snapshot parser hadn't confirmed.
     for (let i = emittedCount; i < received.length; i++) {
-        opts.onCard({ type: 'card', position: i, card: received[i]! });
+        const card = received[i];
+        if (card !== undefined) {
+            onCard({ type: 'card', position: i, card });
+        }
     }
 
     const cards = alignByInputOrder(input.words, received);
@@ -313,7 +345,7 @@ const enrichWords = async (
         tokensInput,
         tokensOutput,
     };
-    opts.onCard({ type: 'done', meta });
+    onCard({ type: 'done', meta });
     return { cards, meta };
 };
 
@@ -334,6 +366,7 @@ const generateDeck = async (
     const start = Date.now();
     const { system, user } = buildGenerateDeckPrompt(input);
     const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
+    const model = contentModel(input.sourceLanguage, input.targetLanguage);
 
     if (!opts?.onEvent) {
         const { data } = await callWithRetry<AiDeckDraft>(
@@ -343,12 +376,15 @@ const generateDeck = async (
                 toolName: DECK_TOOL.name,
                 tool: DECK_TOOL,
                 maxTokens,
+                model,
             },
             isValidDeckDraft,
         );
         return data;
     }
 
+    // Captured so the narrowed callback is visible inside the stream closure.
+    const onEvent = opts.onEvent;
     let emittedHeader = false;
     let emittedCardCount = 0;
     let finalData: AiDeckDraft | null = null;
@@ -357,7 +393,7 @@ const generateDeck = async (
 
     try {
         const stream = client().messages.stream({
-            model: env.ANTHROPIC_MODEL,
+            model,
             max_tokens: maxTokens,
             system,
             messages: [{ role: 'user', content: user }],
@@ -366,7 +402,9 @@ const generateDeck = async (
         });
 
         stream.on('inputJson', (_delta, snapshot) => {
-            if (!snapshot || typeof snapshot !== 'object') return;
+            if (!snapshot || typeof snapshot !== 'object') {
+                return;
+            }
             const parsed = snapshot as Partial<AiDeckDraft>;
             if (
                 !emittedHeader &&
@@ -377,15 +415,18 @@ const generateDeck = async (
             ) {
                 const { cards: _ignored, ...header } = parsed as AiDeckDraft;
                 void _ignored;
-                opts.onEvent!({ type: 'header', deck: header });
+                onEvent({ type: 'header', deck: header });
                 emittedHeader = true;
             }
             if (Array.isArray(parsed.cards)) {
                 const complete = parsed.cards.length - 1;
                 for (let i = emittedCardCount; i < complete; i++) {
-                    const c = parsed.cards[i]!;
+                    const c = parsed.cards[i];
+                    if (c === undefined) {
+                        continue;
+                    }
                     if (typeof c.word === 'string' && typeof c.definition === 'string') {
-                        opts.onEvent!({ type: 'card', position: i, card: c });
+                        onEvent({ type: 'card', position: i, card: c });
                         emittedCardCount = i + 1;
                     }
                 }
@@ -400,9 +441,7 @@ const generateDeck = async (
             finalData = toolBlock.input as AiDeckDraft;
         }
     } catch (err) {
-        const status =
-            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
-        throw new AiProviderError(status, (err as Error).message);
+        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
 
     if (!finalData || !isValidDeckDraft(finalData)) {
@@ -410,9 +449,12 @@ const generateDeck = async (
     }
     // Drain any trailing cards.
     for (let i = emittedCardCount; i < finalData.cards.length; i++) {
-        opts.onEvent({ type: 'card', position: i, card: finalData.cards[i]! });
+        const card = finalData.cards[i];
+        if (card !== undefined) {
+            onEvent({ type: 'card', position: i, card });
+        }
     }
-    opts.onEvent({
+    onEvent({
         type: 'done',
         meta: { durationMs: Date.now() - start, tokensInput, tokensOutput },
     });
@@ -446,11 +488,12 @@ const callImageToolUse = async (args: {
     system: ReturnType<typeof buildDeckFromImagePrompt>['system'];
     content: Anthropic.ContentBlockParam[];
     maxTokens: number;
+    model?: string;
 }): Promise<{ data: AiDeckDraft; tokensInput: number; tokensOutput: number }> => {
     let response;
     try {
         response = await client().messages.create({
-            model: env.ANTHROPIC_MODEL,
+            model: args.model ?? env.ANTHROPIC_MODEL,
             max_tokens: args.maxTokens,
             system: args.system,
             messages: [{ role: 'user', content: args.content }],
@@ -458,12 +501,10 @@ const callImageToolUse = async (args: {
             tool_choice: { type: 'tool', name: DECK_TOOL.name },
         });
     } catch (err) {
-        const status =
-            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
-        throw new AiProviderError(status, (err as Error).message);
+        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
     const toolBlock = response.content.find((b) => b.type === 'tool_use');
-    if (!toolBlock || toolBlock.type !== 'tool_use') {
+    if (toolBlock?.type !== 'tool_use') {
         throw new AiValidationFailedError('Provider returned no tool_use block');
     }
     return {
@@ -484,9 +525,10 @@ const deckFromImage = async (
         { type: 'text', text: user },
     ];
     const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
+    const model = contentModel(input.sourceLanguage, input.targetLanguage);
 
     if (!opts?.onEvent) {
-        let result = await callImageToolUse({ system, content: baseContent, maxTokens });
+        let result = await callImageToolUse({ system, content: baseContent, maxTokens, model });
         if (!isValidImageDeckDraft(result.data)) {
             result = await callImageToolUse({
                 system,
@@ -498,13 +540,18 @@ const deckFromImage = async (
                     },
                 ],
                 maxTokens,
+                model,
             });
-            if (!isValidImageDeckDraft(result.data)) throw new AiValidationFailedError();
+            if (!isValidImageDeckDraft(result.data)) {
+                throw new AiValidationFailedError();
+            }
         }
         return result.data;
     }
 
-    // Streaming path — mirrors generateDeck's inputJson snapshot parsing.
+    // Streaming path — mirrors generateDeck's inputJson snapshot parsing
+    // (including capturing the narrowed callback for the stream closure).
+    const onEvent = opts.onEvent;
     let emittedHeader = false;
     let emittedCardCount = 0;
     let finalData: AiDeckDraft | null = null;
@@ -513,7 +560,7 @@ const deckFromImage = async (
 
     try {
         const stream = client().messages.stream({
-            model: env.ANTHROPIC_MODEL,
+            model,
             max_tokens: maxTokens,
             system,
             messages: [{ role: 'user', content: baseContent }],
@@ -522,7 +569,9 @@ const deckFromImage = async (
         });
 
         stream.on('inputJson', (_delta, snapshot) => {
-            if (!snapshot || typeof snapshot !== 'object') return;
+            if (!snapshot || typeof snapshot !== 'object') {
+                return;
+            }
             const parsed = snapshot as Partial<AiDeckDraft>;
             if (
                 !emittedHeader &&
@@ -533,15 +582,18 @@ const deckFromImage = async (
             ) {
                 const { cards: _ignored, ...header } = parsed as AiDeckDraft;
                 void _ignored;
-                opts.onEvent!({ type: 'header', deck: header });
+                onEvent({ type: 'header', deck: header });
                 emittedHeader = true;
             }
             if (Array.isArray(parsed.cards)) {
                 const complete = parsed.cards.length - 1;
                 for (let i = emittedCardCount; i < complete; i++) {
-                    const c = parsed.cards[i]!;
+                    const c = parsed.cards[i];
+                    if (c === undefined) {
+                        continue;
+                    }
                     if (typeof c.word === 'string' && typeof c.definition === 'string') {
-                        opts.onEvent!({ type: 'card', position: i, card: c });
+                        onEvent({ type: 'card', position: i, card: c });
                         emittedCardCount = i + 1;
                     }
                 }
@@ -556,9 +608,7 @@ const deckFromImage = async (
             finalData = toolBlock.input as AiDeckDraft;
         }
     } catch (err) {
-        const status =
-            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
-        throw new AiProviderError(status, (err as Error).message);
+        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
 
     if (!finalData || !isValidImageDeckDraft(finalData)) {
@@ -566,9 +616,12 @@ const deckFromImage = async (
     }
     // Drain any trailing cards (may be zero — the "no readable text" case).
     for (let i = emittedCardCount; i < finalData.cards.length; i++) {
-        opts.onEvent({ type: 'card', position: i, card: finalData.cards[i]! });
+        const card = finalData.cards[i];
+        if (card !== undefined) {
+            onEvent({ type: 'card', position: i, card });
+        }
     }
-    opts.onEvent({
+    onEvent({
         type: 'done',
         meta: { durationMs: Date.now() - start, tokensInput, tokensOutput },
     });
@@ -640,8 +693,11 @@ const runChatRound = async (params: {
                 ? {
                       tools: params.tools.defs as unknown as Anthropic.Tool[],
                       // 'auto' = model decides. Plain chat keeps working when
-                      // the user isn't asking for a deck.
-                      tool_choice: { type: 'auto' as const },
+                      // the user isn't asking for a deck. Parallel calls are
+                      // off: only the first tool_use block is dispatched, and a
+                      // second one leaves round 2 with an unanswered tool_use id
+                      // (the API then rejects the whole turn).
+                      tool_choice: { type: 'auto' as const, disable_parallel_tool_use: true },
                   }
                 : {}),
         });
@@ -674,9 +730,7 @@ const runChatRound = async (params: {
             rawAssistantBlocks: finalMessage.content,
         };
     } catch (err) {
-        const status =
-            err instanceof Anthropic.APIError ? err.status ?? 502 : 502;
-        throw new AiProviderError(status, (err as Error).message);
+        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
 };
 
@@ -689,7 +743,9 @@ const runChatRound = async (params: {
  * without going through the SDK.
  */
 export const chatTurnContent = (m: ChatTurn): Anthropic.MessageParam['content'] => {
-    if (!m.image) return m.content;
+    if (!m.image) {
+        return m.content;
+    }
     return m.content
         ? [imageContentBlock(m.image), { type: 'text', text: m.content }]
         : [imageContentBlock(m.image)];
@@ -702,7 +758,12 @@ export const chatTurnContent = (m: ChatTurn): Anthropic.MessageParam['content'] 
 // ChatAttachment - see the header comment), so it duck-types the fields it
 // needs and falls back to a generic line if they're missing.
 const fallbackToolConfirmation = (toolName: string, data: unknown): string => {
-    const d = data as { title?: unknown; cardCount?: unknown; action?: unknown; addedCount?: unknown };
+    const d = data as {
+        title?: unknown;
+        cardCount?: unknown;
+        action?: unknown;
+        addedCount?: unknown;
+    };
     if (toolName === 'add_cards' && typeof d.addedCount === 'number') {
         return `Added ${d.addedCount} card${d.addedCount === 1 ? '' : 's'}.`;
     }
@@ -772,7 +833,11 @@ const chat = async (
         outcome = {
             ok: false,
             data: { reason: 'INTERNAL' },
-            resultJson: JSON.stringify({ ok: false, reason: 'INTERNAL', message: (err as Error).message }),
+            resultJson: JSON.stringify({
+                ok: false,
+                reason: 'INTERNAL',
+                message: (err as Error).message,
+            }),
         };
     }
 
@@ -819,7 +884,9 @@ const chat = async (
             ...(opts?.signal ? { signal: opts.signal } : {}),
         });
     } catch (err) {
-        if (!outcome.ok) throw err; // nothing was written — safe to propagate and retry
+        if (!outcome.ok) {
+            throw err;
+        } // nothing was written — safe to propagate and retry
         const fallback = fallbackToolConfirmation(call.name, outcome.data);
         opts?.onEvent?.({ type: 'token', delta: fallback } satisfies ChatStreamEvent);
         round2 = { content: fallback, tokensInput: 0, tokensOutput: 0 };

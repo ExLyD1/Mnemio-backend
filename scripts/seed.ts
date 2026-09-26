@@ -94,7 +94,7 @@ const seed = async () => {
         });
         await prisma.card.createMany({
             data: spec.cards.map((c, i) => ({
-                userId: user!.id,
+                userId: user.id,
                 deckId: deck.id,
                 word: c.word,
                 definition: c.definition,

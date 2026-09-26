@@ -1,10 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { prepareWords } from '../src/services/ai.service.js';
 import { mockProvider } from '../src/services/ai.provider.mock.js';
-import type {
-    EnrichWordsEvent,
-    GenerateDeckEvent,
-} from '../src/services/ai.provider.js';
+import type { EnrichWordsEvent, GenerateDeckEvent } from '../src/services/ai.provider.js';
 
 const baseEnrich = (words: string[]) => ({
     words,
@@ -59,7 +56,7 @@ describe('ai.provider.mock / enrichWords', () => {
             onCard: (e) => events.push(e),
         });
         const cardEvents = events.filter((e) => e.type === 'card');
-        expect(cardEvents.map((e) => (e.type === 'card' ? e.position : -1))).toEqual([0, 1, 2]);
+        expect(cardEvents.map((e) => e.position)).toEqual([0, 1, 2]);
         expect(events.at(-1)?.type).toBe('done');
     });
 

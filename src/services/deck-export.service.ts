@@ -44,9 +44,13 @@ const CSV_HEADERS = [
 
 const toCsvRow = (card: CardModel): string =>
     CSV_HEADERS.map((h) => {
-        if (h === 'tags') return csvEscape((card.tags ?? []).join(';'));
-        const v = card[h as keyof CardModel];
-        if (v === null || v === undefined) return '';
+        if (h === 'tags') {
+            return csvEscape(card.tags.join(';'));
+        }
+        const v = card[h];
+        if (v === null) {
+            return '';
+        }
         return csvEscape(String(v));
     }).join(',');
 
@@ -63,7 +67,9 @@ export const exportDeck = async (
     format: ExportFormat,
 ): Promise<DeckExportResult> => {
     const deck = await decksRepo.findDeckById(deckId, ownerId);
-    if (!deck) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    if (!deck) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
 
     const cards = await cardsRepo.listAllCardsForDeck(deckId);
     const slug = slugify(deck.title);

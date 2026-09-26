@@ -38,16 +38,15 @@ export const fetchLastPracticedDeck = async (userId: string): Promise<DeckModel 
         orderBy: { startedAt: 'desc' },
         select: { deckId: true },
     });
-    if (!session) return null;
+    if (!session) {
+        return null;
+    }
     return prisma.deck.findUnique({ where: { id: session.deckId } });
 };
 
 // The user's most-practiced decks, ranked by number of study sessions
 // (ties broken by most recent session). Powers the home quick-start block.
-export const fetchMostPracticedDecks = async (
-    userId: string,
-    limit = 4,
-): Promise<DeckModel[]> => {
+export const fetchMostPracticedDecks = async (userId: string, limit = 4): Promise<DeckModel[]> => {
     const grouped = await prisma.studySession.groupBy({
         by: ['deckId'],
         where: { userId },
@@ -58,7 +57,9 @@ export const fetchMostPracticedDecks = async (
     });
 
     const ids = grouped.map((g) => g.deckId);
-    if (ids.length === 0) return [];
+    if (ids.length === 0) {
+        return [];
+    }
 
     const decks = await prisma.deck.findMany({ where: { id: { in: ids } } });
     const byId = new Map(decks.map((d) => [d.id, d]));

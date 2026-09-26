@@ -37,8 +37,7 @@ describe('imports.quizlet / extractFromQuizletHtml', () => {
     });
 
     it('returns null when __NEXT_DATA__ is unparseable JSON', () => {
-        const html =
-            '<script id="__NEXT_DATA__" type="application/json">{ not json }</script>';
+        const html = '<script id="__NEXT_DATA__" type="application/json">{ not json }</script>';
         expect(extractFromQuizletHtml(html, '1')).toBeNull();
     });
 
@@ -95,7 +94,10 @@ describe('imports.quizlet / extractFromQuizletHtml', () => {
 
     it('returns null when the term array is empty after filtering', () => {
         const html = wrapNextData({
-            items: [{ word: '', definition: 'water' }, { word: 'pan', definition: '' }],
+            items: [
+                { word: '', definition: 'water' },
+                { word: 'pan', definition: '' },
+            ],
         });
         expect(extractFromQuizletHtml(html, '7')).toBeNull();
     });

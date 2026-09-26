@@ -34,9 +34,7 @@ describe('imports.text / parseText', () => {
     describe('csv quoting', () => {
         it('keeps commas inside quoted definitions', () => {
             const r = parseText('agua,"water, the liquid"', 'csv');
-            expect(r.cards).toEqual([
-                { word: 'agua', definition: 'water, the liquid' },
-            ]);
+            expect(r.cards).toEqual([{ word: 'agua', definition: 'water, the liquid' }]);
         });
 
         it('un-escapes doubled quotes inside a quoted field', () => {

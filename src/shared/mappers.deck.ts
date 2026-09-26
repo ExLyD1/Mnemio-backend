@@ -2,7 +2,7 @@ import type { DeckModel } from '../../generated/prisma/models/Deck.js';
 import type { CardModel } from '../../generated/prisma/models/Card.js';
 
 export type DeckStats = {
-    total: number;       // = cardCount
+    total: number; // = cardCount
     mastered: number;
     learning: number;
     new: number;

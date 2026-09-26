@@ -21,10 +21,7 @@ describe('ai.provider.mock / chat', () => {
         expect(last?.type).toBe('done');
 
         // The returned content matches the concatenated deltas.
-        const concatenated = tokens
-            .filter((e): e is { type: 'token'; delta: string } => e.type === 'token')
-            .map((e) => e.delta)
-            .join('');
+        const concatenated = tokens.map((e) => e.delta).join('');
         expect(result.content).toBe(concatenated);
     });
 
@@ -53,7 +50,10 @@ describe('ai.provider.mock / chat', () => {
         });
         const longReply = await mockProvider.chat({
             messages: [
-                { role: 'user', content: 'this is a much longer prompt that exceeds the threshold' },
+                {
+                    role: 'user',
+                    content: 'this is a much longer prompt that exceeds the threshold',
+                },
             ],
             systemPrompt: '',
             maxOutputTokens: 1024,
@@ -155,7 +155,14 @@ describe('ai.provider.mock / chat — add_cards + no-false-success guarantee', (
         const events: ChatStreamEvent[] = [];
         const runMock = vi.fn().mockResolvedValue({
             ok: true,
-            data: { type: 'deck', deckId: 'd1', title: 'X', cardCount: 7, action: 'appended', addedCount: 2 },
+            data: {
+                type: 'deck',
+                deckId: 'd1',
+                title: 'X',
+                cardCount: 7,
+                action: 'appended',
+                addedCount: 2,
+            },
             resultJson: '{}',
         });
         const result = await mockProvider.chat(
@@ -194,7 +201,14 @@ describe('ai.provider.mock / chat — add_cards + no-false-success guarantee', (
     it('on success, the success line is the post-tool content (preamble still excluded)', async () => {
         const runMock = vi.fn().mockResolvedValue({
             ok: true,
-            data: { type: 'deck', deckId: 'd1', title: 'X', cardCount: 7, action: 'appended', addedCount: 2 },
+            data: {
+                type: 'deck',
+                deckId: 'd1',
+                title: 'X',
+                cardCount: 7,
+                action: 'appended',
+                addedCount: 2,
+            },
             resultJson: '{}',
         });
         const result = await mockProvider.chat({

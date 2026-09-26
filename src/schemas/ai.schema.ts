@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { langSchema } from './lang.schema.js';
 
 export const ENRICH_FIELDS = [
     'phonetic',
@@ -16,26 +17,28 @@ export const enrichWordsSchema = z.object({
         .array(z.string().trim().min(1).max(80))
         .min(1, 'words[] must contain at least one entry')
         .max(200),
-    sourceLanguage: z.string().trim().min(2).max(10),
-    targetLanguage: z.string().trim().min(2).max(10),
+    sourceLanguage: langSchema,
+    targetLanguage: langSchema,
     context: z.string().trim().max(200).optional(),
     fields: z.array(z.enum(ENRICH_FIELDS)).optional(),
 });
 
 export const generateDeckSchema = z.object({
     topic: z.string().trim().min(2).max(160),
-    sourceLanguage: z.string().trim().min(2).max(10).default('en'),
-    targetLanguage: z.string().trim().min(2).max(10),
+    // Omitted → the user's native language (see ai.service), then 'en'.
+    sourceLanguage: langSchema.optional(),
+    targetLanguage: langSchema,
     count: z.coerce.number().int().min(1).max(20).optional(),
 });
 
 // Text fields for POST /ai/deck-from-image (multipart). The image itself is
 // read via request.file() in the controller — not part of this schema.
-// targetLanguage is optional: when omitted, the model detects the image's
-// language and uses that.
+// sourceLanguage is optional: when omitted, the user's native language is
+// used (see ai.service), then 'en'. targetLanguage is optional: when omitted,
+// the model detects the image's language and uses that.
 export const deckFromImageSchema = z.object({
-    sourceLanguage: z.string().trim().min(2).max(10).default('en'),
-    targetLanguage: z.string().trim().min(2).max(10).optional(),
+    sourceLanguage: langSchema.optional(),
+    targetLanguage: langSchema.optional(),
     count: z.coerce.number().int().min(1).max(20).optional(),
     // Free-text refine hint carried over on a re-submit of the same image
     // (e.g. "more words", "harder", "with examples") — the image isn't
@@ -51,7 +54,15 @@ export const suggestSchema = z.object({
 });
 
 export type EnrichWordsInput = z.infer<typeof enrichWordsSchema>;
-export type GenerateDeckInput = z.infer<typeof generateDeckSchema>;
-export type DeckFromImageInput = z.infer<typeof deckFromImageSchema>;
+export type GenerateDeckRequest = z.infer<typeof generateDeckSchema>;
+export type DeckFromImageRequest = z.infer<typeof deckFromImageSchema>;
+// What the provider receives — the service has resolved sourceLanguage.
+// `exclude` is internal (chat's add_cards): the words already in the deck being
+// appended to, so the generator picks different ones. Never accepted over HTTP.
+export type GenerateDeckInput = GenerateDeckRequest & {
+    sourceLanguage: string;
+    exclude?: string[];
+};
+export type DeckFromImageInput = DeckFromImageRequest & { sourceLanguage: string };
 export type SuggestInput = z.infer<typeof suggestSchema>;
 export type EnrichField = (typeof ENRICH_FIELDS)[number];

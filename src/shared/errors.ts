@@ -9,7 +9,12 @@ export class AppError extends Error {
     public readonly code: string;
     public readonly details: Record<string, unknown> | undefined;
 
-    constructor(statusCode: number, code: string, message: string, details?: Record<string, unknown>) {
+    constructor(
+        statusCode: number,
+        code: string,
+        message: string,
+        details?: Record<string, unknown>,
+    ) {
         super(message);
         this.statusCode = statusCode;
         this.code = code;
@@ -31,7 +36,11 @@ export class BadRequestError extends AppError {
 }
 
 export class UnauthorizedError extends AppError {
-    constructor(code = 'UNAUTHORIZED', message = 'Unauthorized', details?: Record<string, unknown>) {
+    constructor(
+        code = 'UNAUTHORIZED',
+        message = 'Unauthorized',
+        details?: Record<string, unknown>,
+    ) {
         super(401, code, message, details);
     }
 }
@@ -55,23 +64,36 @@ export class ConflictError extends AppError {
 }
 
 export class UnprocessableError extends AppError {
-    constructor(code = 'UNPROCESSABLE', message = 'Unprocessable entity', details?: Record<string, unknown>) {
+    constructor(
+        code = 'UNPROCESSABLE',
+        message = 'Unprocessable entity',
+        details?: Record<string, unknown>,
+    ) {
         super(422, code, message, details);
     }
 }
 
 export class RateLimitedError extends AppError {
-    constructor(code = 'RATE_LIMITED', message = 'Too many requests', details?: Record<string, unknown>) {
+    constructor(
+        code = 'RATE_LIMITED',
+        message = 'Too many requests',
+        details?: Record<string, unknown>,
+    ) {
         super(429, code, message, details);
     }
 }
 
 // AI-specific errors (P2 follow-up: real LLM provider wiring).
+//
+// `resetsAt` (ISO, next UTC midnight) is part of the contract: the FE renders
+// the real reset time instead of the assistant improvising "try again in a
+// moment" — nothing here is ever retried automatically.
 export class AiBudgetExceededError extends RateLimitedError {
-    constructor(kind: string, capPerDay: number) {
+    constructor(kind: string, capPerDay: number, resetsAt: string) {
         super('AI_BUDGET_EXCEEDED', `Daily AI ${kind} cap of ${capPerDay} reached`, {
             kind,
             capPerDay,
+            resetsAt,
         });
     }
 }
@@ -116,7 +138,7 @@ export class AiImageUnsupportedTypeError extends BadRequestError {
 
 // External imports (Quizlet HTML scrape, paste-text, deck CSV/JSON).
 export class ImportBadUrlError extends BadRequestError {
-    constructor(message = "URL must be a quizlet.com set link, e.g. https://quizlet.com/<id>/...") {
+    constructor(message = 'URL must be a quizlet.com set link, e.g. https://quizlet.com/<id>/...') {
         super('IMPORT_BAD_URL', message);
     }
 }
@@ -140,10 +162,11 @@ export class ImportUpstreamError extends AppError {
 }
 
 export class ImportBudgetExceededError extends RateLimitedError {
-    constructor(capPerDay: number) {
+    constructor(capPerDay: number, resetsAt: string) {
         super('IMPORT_BUDGET_EXCEEDED', `Daily import cap of ${capPerDay} reached`, {
             kind: 'import',
             capPerDay,
+            resetsAt,
         });
     }
 }
@@ -153,6 +176,15 @@ export class ImportBudgetExceededError extends RateLimitedError {
 export class ChatNotFoundError extends NotFoundError {
     constructor() {
         super('CHAT_NOT_FOUND', 'Conversation not found');
+    }
+}
+
+// A reply is already streaming in this conversation (another tab, a retried
+// POST). Two concurrent sends used to interleave and corrupt the stored
+// assistant message, so the second one is refused instead.
+export class ChatBusyError extends ConflictError {
+    constructor() {
+        super('CHAT_BUSY', 'This conversation is already generating a reply');
     }
 }
 

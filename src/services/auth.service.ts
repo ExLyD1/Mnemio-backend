@@ -101,7 +101,7 @@ const emitAccountCreated = (user: User, method: 'email' | 'google'): void => {
     analytics.track(user.id, 'account_created', { method });
     analytics.setUserProps(user.id, {
         plan: 'free',
-        signup_date: (user.createdAt ?? new Date()).toISOString(),
+        signup_date: user.createdAt.toISOString(),
     });
 };
 
@@ -151,7 +151,9 @@ export const verifyEmail = async (
     ctx: RequestContext,
 ): Promise<AuthResult> => {
     const user = await authRepo.findUserById(input.userId);
-    if (!user) throw new BadRequestError('AUTH_INVALID_CODE', 'Invalid verification code');
+    if (!user) {
+        throw new BadRequestError('AUTH_INVALID_CODE', 'Invalid verification code');
+    }
 
     if (user.emailVerifiedAt) {
         // Idempotent: already verified — just issue tokens.
@@ -208,7 +210,9 @@ export const resendOtp = async (
     ctx: RequestContext,
 ): Promise<{ ok: true; cooldownSeconds: number }> => {
     const user = await authRepo.findUserById(input.userId);
-    if (!user) throw new BadRequestError('AUTH_INVALID_USER', 'Invalid user');
+    if (!user) {
+        throw new BadRequestError('AUTH_INVALID_USER', 'Invalid user');
+    }
     if (user.emailVerifiedAt) {
         return { ok: true, cooldownSeconds: 0 };
     }
@@ -246,7 +250,7 @@ export const login = async (
     ctx: RequestContext,
 ): Promise<AuthResult> => {
     const user = await authRepo.findUserByEmail(input.email);
-    if (!user || !user.passwordHash) {
+    if (!user?.passwordHash) {
         await authRepo.writeAuditLog({
             event: 'login.fail',
             ip: ctx.ip ?? null,
@@ -303,13 +307,19 @@ export const classifyRefreshRecord = (
     record: { revokedAt: Date | null; replacedById: string | null; expiresAt: Date } | null,
     now: Date,
 ): RefreshRecordState => {
-    if (!record) return 'invalid';
+    if (!record) {
+        return 'invalid';
+    }
     if (record.revokedAt) {
         // A token revoked by LOGOUT (replacedById == null) is never re-issuable:
         // presenting it again is either a stale client or a genuine replay.
-        if (record.replacedById === null) return 'reused';
+        if (record.replacedById === null) {
+            return 'reused';
+        }
         // Past its own 30-day life it is dead regardless of why it was revoked.
-        if (record.expiresAt < now) return 'reused';
+        if (record.expiresAt < now) {
+            return 'reused';
+        }
         const withinGrace = now.getTime() - record.revokedAt.getTime() <= REFRESH_REUSE_GRACE_MS;
         // A ROTATED token that is still inside its lifetime is a rotation
         // artifact, not theft. Two tabs racing land inside the grace window;
@@ -319,7 +329,9 @@ export const classifyRefreshRecord = (
         // device, which users experienced as "I get logged out the next day".
         return withinGrace ? 'rotated_grace' : 'rotated_stale';
     }
-    if (record.expiresAt < now) return 'invalid';
+    if (record.expiresAt < now) {
+        return 'invalid';
+    }
     return 'valid';
 };
 
@@ -357,7 +369,9 @@ export const refresh = async (
     }
 
     const user = await authRepo.findUserById(record.userId);
-    if (!user) throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid refresh token');
+    if (!user) {
+        throw new UnauthorizedError('AUTH_INVALID_REFRESH', 'Invalid refresh token');
+    }
 
     const [tokens, welcome, plan] = await Promise.all([
         issueTokens(fastify, user, ctx),
@@ -384,7 +398,9 @@ export const refresh = async (
 // ---------- Logout ----------
 
 export const logout = async (refreshToken: string | null): Promise<void> => {
-    if (!refreshToken) return; // Idempotent — clearing the cookie is enough.
+    if (!refreshToken) {
+        return;
+    } // Idempotent — clearing the cookie is enough.
     const record = await authRepo.findRefreshTokenByHash(hashToken(refreshToken));
     if (record && !record.revokedAt) {
         await authRepo.revokeRefreshToken(record.id);
@@ -496,6 +512,8 @@ export const me = async (
         getWelcomeState(userId),
         entitlementService.getPlan(userId),
     ]);
-    if (!user) throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'User no longer exists');
+    if (!user) {
+        throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'User no longer exists');
+    }
     return { user: toPublicUser(user), needsProfile: needsProfile(user), welcome, plan };
 };

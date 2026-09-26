@@ -22,12 +22,12 @@ import {
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
 import {
+    toPublicCard,
     toPublicDeckWithAuthor,
     buildStats,
     type PublicDeckWithAuthor,
     type PublicCard,
 } from '../shared/mappers.deck.js';
-import { toPublicCard } from '../shared/mappers.deck.js';
 import type { DiscoverListQuery, DiscoverSort } from '../schemas/discover.schema.js';
 
 const decodeDiscoverCursor = (raw: string | undefined) => {
@@ -35,8 +35,7 @@ const decodeDiscoverCursor = (raw: string | undefined) => {
     return c ? { sortValue: c.ts, id: c.id } : null;
 };
 
-const encodeDiscoverCursor = (sortValue: string, id: string) =>
-    encodeCursor({ ts: sortValue, id });
+const encodeDiscoverCursor = (sortValue: string, id: string) => encodeCursor({ ts: sortValue, id });
 
 // ---------- /public/discover/decks ----------
 
@@ -59,9 +58,11 @@ export const listPublicDecks = async (
         discoverRepo.countPublicDecks({ q: query.q, lang: query.lang, subject: query.subject }),
     ]);
 
+    // The repo fetches limit + 1 rows; an extra row means another page exists,
+    // and the last row of this page is where it starts.
+    const last = rows.length > limit ? rows[limit - 1] : undefined;
     let nextCursor: string | null = null;
-    if (rows.length > limit) {
-        const last = rows[limit - 1]!;
+    if (last) {
         nextCursor =
             sort === 'recent'
                 ? encodeDiscoverCursor(last.updatedAt.toISOString(), last.id)
@@ -79,7 +80,9 @@ export const listPublicDecks = async (
 
 // ---------- /public/discover/categories ----------
 
-export const publicCategories = async (): Promise<{ items: { subject: string; count: number }[] }> => {
+export const publicCategories = async (): Promise<{
+    items: { subject: string; count: number }[];
+}> => {
     const items = await discoverRepo.categories();
     return { items };
 };
@@ -93,7 +96,9 @@ export const getPublicDeck = async (
     deckId: string,
 ): Promise<{ deck: PublicDeckWithAuthor; cards: PublicCard[] }> => {
     const row = await discoverRepo.findPublicDeckById(deckId);
-    if (!row) throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
+    if (!row) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
+    }
 
     const cards = await cardsRepo.listAllCardsForDeck(deckId);
     return {
@@ -106,7 +111,7 @@ export const getPublicDeck = async (
 
 export type SitemapDeck = {
     id: string;
-    updatedAt: string;  // ISO — drives <lastmod> in sitemap.xml
+    updatedAt: string; // ISO — drives <lastmod> in sitemap.xml
 };
 
 // Deliberately a minimal projection: the FE generates sitemap.xml from this

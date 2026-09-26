@@ -24,7 +24,9 @@ export const assertGoogleConfigured = (): {
 };
 
 const getClient = (): Google => {
-    if (client) return client;
+    if (client) {
+        return client;
+    }
     const { clientId, clientSecret, redirectUrl } = assertGoogleConfigured();
     client = new Google(clientId, clientSecret, redirectUrl);
     return client;
@@ -57,10 +59,7 @@ export const exchangeCodeAndFetchProfile = async (
         headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!res.ok) {
-        throw new BadRequestError(
-            'OAUTH_USERINFO_FAILED',
-            'Could not fetch profile from Google',
-        );
+        throw new BadRequestError('OAUTH_USERINFO_FAILED', 'Could not fetch profile from Google');
     }
     const raw = (await res.json()) as Record<string, unknown>;
     const sub = typeof raw.sub === 'string' ? raw.sub : null;

@@ -8,8 +8,12 @@ import { env } from '../config/env.js';
 let initialized = false;
 
 export const initSentry = (): void => {
-    if (initialized) return;
-    if (!env.SENTRY_DSN) return;
+    if (initialized) {
+        return;
+    }
+    if (!env.SENTRY_DSN) {
+        return;
+    }
 
     Sentry.init({
         dsn: env.SENTRY_DSN,
@@ -22,6 +26,8 @@ export const initSentry = (): void => {
 };
 
 export const captureUnexpected = (err: unknown): void => {
-    if (!initialized) return;
+    if (!initialized) {
+        return;
+    }
     Sentry.captureException(err);
 };

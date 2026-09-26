@@ -7,30 +7,25 @@ import {
 } from './achievements.catalog.js';
 
 export type PublicAchievement = {
-    id: string;        // = key (FE has no need for a UUID here)
+    id: string; // = key (FE has no need for a UUID here)
     key: string;
     name: string;
     description: string;
     iconKey: string;
     earned: boolean;
     earnedAt: string | null;
-    progress: number;  // 0..100
+    progress: number; // 0..100
 };
 
 const collectStats = async (userId: string): Promise<AchievementStats> => {
-    const [
-        sessionsCompleted,
-        perfectSessions,
-        cardsRated,
-        cardsCreated,
-        distinctTargetLanguages,
-    ] = await Promise.all([
-        repo.countSessionsCompleted(userId),
-        repo.countPerfectSessions(userId),
-        repo.countCardsRated(userId),
-        repo.countCardsCreated(userId),
-        repo.countDistinctTargetLanguages(userId),
-    ]);
+    const [sessionsCompleted, perfectSessions, cardsRated, cardsCreated, distinctTargetLanguages] =
+        await Promise.all([
+            repo.countSessionsCompleted(userId),
+            repo.countPerfectSessions(userId),
+            repo.countCardsRated(userId),
+            repo.countCardsCreated(userId),
+            repo.countDistinctTargetLanguages(userId),
+        ]);
     return {
         sessionsCompleted,
         perfectSessions,
@@ -93,7 +88,9 @@ export const listUnseen = async (userId: string): Promise<PublicAchievement[]> =
 // actually acked.
 export const acknowledge = async (userId: string, keys?: string[]): Promise<string[]> => {
     const targetKeys = keys ?? (await repo.findUnseen(userId)).map((u) => u.key);
-    if (targetKeys.length === 0) return [];
+    if (targetKeys.length === 0) {
+        return [];
+    }
     await repo.markNotified(userId, targetKeys);
     return targetKeys;
 };
@@ -109,7 +106,9 @@ export const evaluate = async (
     trigger: AchievementTriggers,
 ): Promise<PublicAchievement[]> => {
     const candidates = ACHIEVEMENTS.filter((a) => a.triggers.includes(trigger));
-    if (candidates.length === 0) return [];
+    if (candidates.length === 0) {
+        return [];
+    }
 
     const [unlocks, stats] = await Promise.all([
         repo.findUserAchievements(userId),
@@ -122,7 +121,7 @@ export const evaluate = async (
 
     for (const a of candidates) {
         const u = unlockByKey.get(a.key);
-        const wasEarned = u?.earnedAt != null;
+        const wasEarned = Boolean(u?.earnedAt);
         const progress = a.progress(stats);
         const isEarnedNow = a.isEarned(stats);
 

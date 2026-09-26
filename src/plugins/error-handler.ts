@@ -30,8 +30,31 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
         if (error.validation) {
             return reply.status(400).send({
                 code: 'VALIDATION_ERROR',
-                message: error.message ?? 'Validation failed',
+                message: error.message || 'Validation failed',
                 details: { issues: error.validation },
+            });
+        }
+
+        // Errors raised by Fastify itself or a plugin: they already carry a
+        // real HTTP status (an empty JSON body on DELETE is a 400,
+        // @fastify/rate-limit is a 429, an oversized payload is a 413). These
+        // used to fall through to the catch-all and surface as an opaque 500 —
+        // which is what made conversation deletion look server-broken.
+        const pluginStatus = typeof error.statusCode === 'number' ? error.statusCode : 0;
+        if (pluginStatus >= 400 && pluginStatus < 500) {
+            const body = error as unknown as { code?: string; message?: string };
+            const code =
+                pluginStatus === 429
+                    ? 'RATE_LIMITED'
+                    : pluginStatus === 404
+                      ? 'NOT_FOUND'
+                      : pluginStatus === 413
+                        ? 'PAYLOAD_TOO_LARGE'
+                        : 'BAD_REQUEST';
+            return reply.status(pluginStatus).send({
+                code,
+                message: body.message ?? 'Request rejected',
+                ...(body.code ? { details: { fastifyCode: body.code } } : {}),
             });
         }
 
@@ -51,11 +74,17 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
         // errors are domain-expected and would just be noise in Sentry.
         captureUnexpected(error);
 
-        const message = env.NODE_ENV === 'production' ? 'Internal server error' : (error.message ?? 'Internal error');
+        const message =
+            env.NODE_ENV === 'production'
+                ? 'Internal server error'
+                : error.message || 'Internal error';
         return reply.status(500).send({ code: 'INTERNAL', message });
     });
 
     fastify.setNotFoundHandler((request, reply) => {
-        reply.status(404).send({ code: 'NOT_FOUND', message: `Route ${request.method} ${request.url} not found` });
+        reply.status(404).send({
+            code: 'NOT_FOUND',
+            message: `Route ${request.method} ${request.url} not found`,
+        });
     });
 };

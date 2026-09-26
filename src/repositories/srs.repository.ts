@@ -79,6 +79,26 @@ export const findDueCards = async (userId: string, limit: number): Promise<DueCa
     `;
 };
 
+/**
+ * The full review queue in ONE query: every due card with its card row, its
+ * progress and its deck title.
+ *
+ * The client used to build this itself — list every deck (paging at 100), then
+ * GET each deck individually to find the cards — which was 20+ requests on each
+ * /review and /dashboard mount.
+ */
+export const findDueQueue = (userId: string, limit: number) =>
+    prisma.cardProgress.findMany({
+        where: {
+            userId,
+            nextReviewAt: { lte: new Date() },
+            card: { deck: { OR: [{ authorId: userId }, { isPublic: true }] } },
+        },
+        orderBy: { nextReviewAt: 'asc' },
+        take: limit,
+        include: { card: { include: { deck: { select: { id: true, title: true } } } } },
+    });
+
 // `deckId` comes along via the card relation. Without it the FE could not tell
 // which deck a progress row belonged to, so it fetched every deck individually
 // to rebuild a card->deck map — 21 requests per /review mount, and any deck past

@@ -11,7 +11,7 @@ export const updateMe = async (request: FastifyRequest, reply: FastifyReply) => 
 
 export const deleteMe = async (request: FastifyRequest, reply: FastifyReply) => {
     await usersService.deleteMe(request.currentUser.sub, {
-        ip: request.ip ?? null,
+        ip: request.ip || null,
         userAgent: request.headers['user-agent'] ?? null,
     });
     // Cascade already revokes the refresh token row; also clear the cookie

@@ -9,8 +9,7 @@ export type UpdateMePatch = {
 
 export const findUserById = (id: string) => prisma.user.findUnique({ where: { id } });
 
-export const findByUsername = (username: string) =>
-    prisma.user.findUnique({ where: { username } });
+export const findByUsername = (username: string) => prisma.user.findUnique({ where: { username } });
 
 export const updateUser = (id: string, patch: UpdateMePatch) =>
     prisma.user.update({

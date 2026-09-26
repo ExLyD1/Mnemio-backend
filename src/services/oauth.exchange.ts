@@ -18,7 +18,9 @@ const newCode = (): string => crypto.randomBytes(24).toString('base64url');
 const reapStale = () => {
     const now = Date.now();
     for (const [k, v] of store) {
-        if (v.expiresAt < now) store.delete(k);
+        if (v.expiresAt < now) {
+            store.delete(k);
+        }
     }
 };
 
@@ -33,8 +35,12 @@ export const stash = (result: AuthResult): string => {
 
 export const consume = (code: string): AuthResult | null => {
     const entry = store.get(code);
-    if (!entry) return null;
+    if (!entry) {
+        return null;
+    }
     store.delete(code);
-    if (entry.expiresAt < Date.now()) return null;
+    if (entry.expiresAt < Date.now()) {
+        return null;
+    }
     return entry.result;
 };

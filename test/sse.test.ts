@@ -1,11 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { wantsSse } from '../src/shared/sse.js';
+import { startSse, wantsSse } from '../src/shared/sse.js';
 
 describe('shared/sse / wantsSse negotiation', () => {
     it('opts in on Accept: text/event-stream', () => {
-        expect(
-            wantsSse({ headers: { accept: 'text/event-stream' }, query: {} }),
-        ).toBe(true);
+        expect(wantsSse({ headers: { accept: 'text/event-stream' }, query: {} })).toBe(true);
     });
 
     it('opts in on a comma-separated Accept header that includes event-stream', () => {
@@ -17,15 +15,13 @@ describe('shared/sse / wantsSse negotiation', () => {
         ).toBe(true);
     });
 
-    it('opts in on ?stream=1 (escape hatch for clients that can\'t set Accept)', () => {
+    it("opts in on ?stream=1 (escape hatch for clients that can't set Accept)", () => {
         expect(wantsSse({ headers: {}, query: { stream: '1' } })).toBe(true);
         expect(wantsSse({ headers: {}, query: { stream: 'true' } })).toBe(true);
     });
 
     it('falls back to non-streaming on a plain JSON Accept', () => {
-        expect(
-            wantsSse({ headers: { accept: 'application/json' }, query: {} }),
-        ).toBe(false);
+        expect(wantsSse({ headers: { accept: 'application/json' }, query: {} })).toBe(false);
     });
 
     it('falls back to non-streaming on missing Accept and missing ?stream', () => {
@@ -33,14 +29,11 @@ describe('shared/sse / wantsSse negotiation', () => {
     });
 
     it('is case-insensitive on the Accept header', () => {
-        expect(
-            wantsSse({ headers: { accept: 'TEXT/EVENT-STREAM' }, query: {} }),
-        ).toBe(true);
+        expect(wantsSse({ headers: { accept: 'TEXT/EVENT-STREAM' }, query: {} })).toBe(true);
     });
 });
 
 // Also exercise startSse via a fake reply.
-import { startSse } from '../src/shared/sse.js';
 
 describe('shared/sse / startSse', () => {
     it('writes event + data frames and ends', () => {
@@ -59,9 +52,14 @@ describe('shared/sse / startSse', () => {
         sse.write('card', { type: 'card', position: 0, word: 'agua' });
         sse.end();
 
-        expect(raw.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream; charset=utf-8');
+        expect(raw.setHeader).toHaveBeenCalledWith(
+            'Content-Type',
+            'text/event-stream; charset=utf-8',
+        );
         expect(raw.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
-        expect(writes.join('')).toMatch(/^event: card\ndata: \{"type":"card","position":0,"word":"agua"\}\n\n$/);
+        expect(writes.join('')).toMatch(
+            /^event: card\ndata: \{"type":"card","position":0,"word":"agua"\}\n\n$/,
+        );
         expect(raw.end).toHaveBeenCalled();
     });
 
@@ -72,7 +70,9 @@ describe('shared/sse / startSse', () => {
             setHeader: vi.fn(),
             flushHeaders: vi.fn(),
             on: (event: string, fn: () => void) => {
-                if (event === 'close') closeHandler = fn;
+                if (event === 'close') {
+                    closeHandler = fn;
+                }
             },
             write: (chunk: string) => {
                 writes.push(chunk);

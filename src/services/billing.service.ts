@@ -33,9 +33,15 @@ const getStripe = (): Stripe => {
     return new Stripe(env.STRIPE_SECRET_KEY);
 };
 
-const getOrCreateCustomer = async (stripe: Stripe, userId: string, email: string): Promise<string> => {
+const getOrCreateCustomer = async (
+    stripe: Stripe,
+    userId: string,
+    email: string,
+): Promise<string> => {
     const existing = await subscriptionRepo.findByUserId(userId);
-    if (existing?.stripeCustomerId) return existing.stripeCustomerId;
+    if (existing?.stripeCustomerId) {
+        return existing.stripeCustomerId;
+    }
 
     const customer = await stripe.customers.create({ email, metadata: { userId } });
     return customer.id;
@@ -50,7 +56,10 @@ export const createCheckoutSession = async (
 
     const priceId = plan === 'annual' ? env.STRIPE_PRICE_ANNUAL : env.STRIPE_PRICE_MONTHLY;
     if (!priceId) {
-        throw new BadRequestError('BILLING_PRICE_NOT_CONFIGURED', `Stripe price for plan "${plan}" is not configured`);
+        throw new BadRequestError(
+            'BILLING_PRICE_NOT_CONFIGURED',
+            `Stripe price for plan "${plan}" is not configured`,
+        );
     }
 
     const stripeCustomerId = await getOrCreateCustomer(stripe, userId, email);
@@ -99,16 +108,24 @@ export const createPortalSession = async (userId: string): Promise<{ url: string
 // ---------- Webhook handler ----------
 
 const planFromPriceId = (priceId: string): string => {
-    if (priceId === env.STRIPE_PRICE_ANNUAL) return 'annual';
-    if (priceId === env.STRIPE_PRICE_MONTHLY) return 'monthly';
+    if (priceId === env.STRIPE_PRICE_ANNUAL) {
+        return 'annual';
+    }
+    if (priceId === env.STRIPE_PRICE_MONTHLY) {
+        return 'monthly';
+    }
     return 'unknown';
 };
 
 // Narrow to the analytics contract's BillingPlan; null when the price isn't one
 // of our configured plans (so we skip emitting rather than send 'unknown').
 const billingPlanFromPriceId = (priceId: string): 'monthly' | 'annual' | null => {
-    if (priceId === env.STRIPE_PRICE_ANNUAL) return 'annual';
-    if (priceId === env.STRIPE_PRICE_MONTHLY) return 'monthly';
+    if (priceId === env.STRIPE_PRICE_ANNUAL) {
+        return 'annual';
+    }
+    if (priceId === env.STRIPE_PRICE_MONTHLY) {
+        return 'monthly';
+    }
     return null;
 };
 
@@ -125,10 +142,14 @@ const handleSubscriptionUpsert = async (
     ctx: { isCreated: boolean; previousStatus?: string | undefined },
 ): Promise<AnalyticsEmit[]> => {
     const item = sub.items.data[0];
-    if (!item) return [];
+    if (!item) {
+        return [];
+    }
 
     const userId = sub.metadata['userId'];
-    if (!userId) return [];
+    if (!userId) {
+        return [];
+    }
 
     const data: subscriptionRepo.UpsertSubscriptionData = {
         userId,
@@ -144,8 +165,7 @@ const handleSubscriptionUpsert = async (
         trialEnd: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (tx as any).subscription.upsert({
+    await tx.subscription.upsert({
         where: { userId },
         update: {
             status: data.status,
@@ -162,7 +182,9 @@ const handleSubscriptionUpsert = async (
     });
 
     const billingPlan = billingPlanFromPriceId(item.price.id);
-    if (!billingPlan) return [];
+    if (!billingPlan) {
+        return [];
+    }
     const price = centsToUnits(item.price.unit_amount);
     const emits: AnalyticsEmit[] = [];
 
@@ -186,19 +208,27 @@ const handleCheckoutCompleted = async (
     session: Stripe.Checkout.Session,
 ): Promise<AnalyticsEmit[]> => {
     const userId = session.metadata?.['userId'];
-    if (!userId) return [];
+    if (!userId) {
+        return [];
+    }
 
     const subRef = session.subscription;
     const subId = typeof subRef === 'string' ? subRef : subRef?.id;
-    if (!subId) return [];
+    if (!subId) {
+        return [];
+    }
 
     const stripe = getStripe();
     const sub = await stripe.subscriptions.retrieve(subId);
     const item = sub.items.data[0];
-    if (!item) return [];
+    if (!item) {
+        return [];
+    }
 
     const billingPlan = billingPlanFromPriceId(item.price.id);
-    if (!billingPlan) return [];
+    if (!billingPlan) {
+        return [];
+    }
 
     const status: 'trialing' | 'active' = sub.status === 'trialing' ? 'trialing' : 'active';
     const price = centsToUnits(item.price.unit_amount);
@@ -218,25 +248,34 @@ const handleInvoicePaymentSucceeded = async (
     tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
     invoice: Stripe.Invoice,
 ): Promise<AnalyticsEmit[]> => {
-    const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
-    if (!customerId) return [];
+    const customerId =
+        typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+    if (!customerId) {
+        return [];
+    }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const existing = await (tx as any).subscription.findUnique({ where: { stripeCustomerId: customerId } });
-    if (!existing) return [];
+    const existing = await tx.subscription.findUnique({
+        where: { stripeCustomerId: customerId },
+    });
+    if (!existing) {
+        return [];
+    }
 
     // In Stripe v22, the subscription reference is on invoice.parent.subscription_details.subscription.
     const subRef = invoice.parent?.subscription_details?.subscription;
     const subId = typeof subRef === 'string' ? subRef : subRef?.id;
-    if (!subId) return [];
+    if (!subId) {
+        return [];
+    }
 
     const stripe = getStripe();
     const stripeSub = await stripe.subscriptions.retrieve(subId);
     const item = stripeSub.items.data[0];
-    if (!item) return [];
+    if (!item) {
+        return [];
+    }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (tx as any).subscription.update({
+    await tx.subscription.update({
         where: { stripeCustomerId: customerId },
         data: {
             status: 'active',
@@ -249,11 +288,15 @@ const handleInvoicePaymentSucceeded = async (
 
     // Renewal (recurring cycle), not the first invoice → subscription_renewed.
     // The first invoice is 'subscription_create' and is covered by checkout.
-    if (invoice.billing_reason !== 'subscription_cycle') return [];
+    if (invoice.billing_reason !== 'subscription_cycle') {
+        return [];
+    }
     const billingPlan = billingPlanFromPriceId(item.price.id);
-    if (!billingPlan) return [];
+    if (!billingPlan) {
+        return [];
+    }
     const price = centsToUnits(invoice.amount_paid);
-    const userId = existing.userId as string;
+    const userId = existing.userId;
     return [
         () => analytics.track(userId, 'subscription_renewed', { billing_plan: billingPlan, price }),
     ];
@@ -263,11 +306,13 @@ const handleInvoicePaymentFailed = async (
     tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
     invoice: Stripe.Invoice,
 ): Promise<void> => {
-    const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
-    if (!customerId) return;
+    const customerId =
+        typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+    if (!customerId) {
+        return;
+    }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (tx as any).subscription.updateMany({
+    await tx.subscription.updateMany({
         where: { stripeCustomerId: customerId },
         data: { status: 'past_due' },
     });
@@ -277,22 +322,21 @@ const handleSubscriptionDeleted = async (
     tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
     sub: Stripe.Subscription,
 ): Promise<AnalyticsEmit[]> => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (tx as any).subscription.updateMany({
+    await tx.subscription.updateMany({
         where: { stripeSubId: sub.id },
         data: { status: 'expired' },
     });
 
     const userId = sub.metadata['userId'];
-    if (!userId) return [];
+    if (!userId) {
+        return [];
+    }
 
     const item = sub.items.data[0];
     const billingPlan = item ? billingPlanFromPriceId(item.price.id) : null;
     const reason = sub.cancellation_details?.reason ?? undefined;
 
-    const emits: AnalyticsEmit[] = [
-        () => analytics.setUserProps(userId, { plan: 'free' }),
-    ];
+    const emits: AnalyticsEmit[] = [() => analytics.setUserProps(userId, { plan: 'free' })];
     if (billingPlan) {
         emits.push(() =>
             analytics.track(userId, 'subscription_canceled', {
@@ -323,33 +367,33 @@ export const handleWebhookEvent = async (
     }
 
     const duplicate = await subscriptionRepo.findWebhookEvent(event.id);
-    if (duplicate) return [];
+    if (duplicate) {
+        return [];
+    }
 
     return prisma.$transaction(async (tx): Promise<AnalyticsEmit[]> => {
         await subscriptionRepo.recordWebhookEvent(tx, event.id, event.type);
 
         switch (event.type) {
             case 'checkout.session.completed':
-                return handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
+                return handleCheckoutCompleted(event.data.object);
             case 'customer.subscription.created':
-                return handleSubscriptionUpsert(tx, event.data.object as Stripe.Subscription, {
+                return handleSubscriptionUpsert(tx, event.data.object, {
                     isCreated: true,
                 });
             case 'customer.subscription.updated': {
-                const previousStatus = (
-                    event.data.previous_attributes as Partial<Stripe.Subscription> | undefined
-                )?.status;
-                return handleSubscriptionUpsert(tx, event.data.object as Stripe.Subscription, {
+                const previousStatus = event.data.previous_attributes?.status;
+                return handleSubscriptionUpsert(tx, event.data.object, {
                     isCreated: false,
                     previousStatus,
                 });
             }
             case 'customer.subscription.deleted':
-                return handleSubscriptionDeleted(tx, event.data.object as Stripe.Subscription);
+                return handleSubscriptionDeleted(tx, event.data.object);
             case 'invoice.payment_succeeded':
-                return handleInvoicePaymentSucceeded(tx, event.data.object as Stripe.Invoice);
+                return handleInvoicePaymentSucceeded(tx, event.data.object);
             case 'invoice.payment_failed':
-                await handleInvoicePaymentFailed(tx, event.data.object as Stripe.Invoice);
+                await handleInvoicePaymentFailed(tx, event.data.object);
                 return [];
             default:
                 return [];

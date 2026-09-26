@@ -76,7 +76,11 @@ export const buildApp = async (): Promise<FastifyInstance> => {
         timeWindow: '1 minute',
         // Match our standard { code, message, details } envelope so the FE
         // doesn't need to special-case 429s from @fastify/rate-limit.
+        // statusCode matters: @fastify/rate-limit throws this object, and the
+        // error handler reads statusCode to decide the response. Without it the
+        // 429 fell through to the catch-all and reached the client as a 500.
         errorResponseBuilder: (_req, context) => ({
+            statusCode: 429,
             code: 'RATE_LIMITED',
             message: `Rate limit exceeded, retry in ${context.after}.`,
             details: { retryAfter: context.after, max: context.max },
@@ -96,14 +100,13 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     });
 
     // Serve uploaded files from MEDIA_DIR under MEDIA_PUBLIC_BASE. Production
-    // moves this to S3 via presigned URLs (see media.service.ts comment).
-    if (env.MEDIA_STORAGE === 'local') {
-        await fastify.register(fastifyStatic, {
-            root: path.resolve(env.MEDIA_DIR),
-            prefix: `${env.MEDIA_PUBLIC_BASE}/`,
-            decorateReply: false,
-        });
-    }
+    // moves this to S3 via presigned URLs (see media.service.ts comment); gate
+    // this on env.MEDIA_STORAGE once a second storage option exists.
+    await fastify.register(fastifyStatic, {
+        root: path.resolve(env.MEDIA_DIR),
+        prefix: `${env.MEDIA_PUBLIC_BASE}/`,
+        decorateReply: false,
+    });
 
     await registerCookies(fastify);
     await registerJwt(fastify);

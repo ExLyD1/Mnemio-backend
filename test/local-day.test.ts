@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-    computeStreak,
-    dayKeyToDate,
-    localDayDate,
-    normalizeTz,
-} from '../src/services/tz.js';
+import { computeStreak, dayKeyToDate, localDayDate, normalizeTz } from '../src/services/tz.js';
 import { buildDailySeries, overviewWindows } from '../src/services/stats.service.js';
 
 // Owner decision (Sep 2026): streaks / practice days / daily series follow the

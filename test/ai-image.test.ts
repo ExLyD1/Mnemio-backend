@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mockProvider } from '../src/services/ai.provider.mock.js';
 import type { DeckFromImageProviderInput, GenerateDeckEvent } from '../src/services/ai.provider.js';
+import type * as EnvModule from '../src/config/env.js';
+
+vi.mock('../src/repositories/preferences.repository.js', () => ({
+    findOrCreate: vi.fn().mockResolvedValue({ nativeLanguage: 'uk', learningLanguages: ['de'] }),
+}));
 
 vi.mock('../src/services/ai.budget.service.js', () => ({
     assertWithinBudget: vi.fn().mockResolvedValue(undefined),
@@ -12,13 +17,13 @@ vi.mock('../src/services/ai.budget.service.js', () => ({
 // that may set AI_PROVIDER=anthropic with a real key (which would otherwise
 // make these tests fire real, billed network calls).
 vi.mock('../src/config/env.js', async () => {
-    const actual = await vi.importActual<typeof import('../src/config/env.js')>(
-        '../src/config/env.js',
-    );
+    const actual = await vi.importActual<typeof EnvModule>('../src/config/env.js');
     return { ...actual, env: { ...actual.env, AI_PROVIDER: 'mock' } };
 });
 
-const baseInput = (overrides: Partial<DeckFromImageProviderInput> = {}): DeckFromImageProviderInput => ({
+const baseInput = (
+    overrides: Partial<DeckFromImageProviderInput> = {},
+): DeckFromImageProviderInput => ({
     sourceLanguage: 'en',
     targetLanguage: 'es',
     image: { mediaType: 'image/png', dataBase64: 'ZmFrZQ==' },
@@ -45,9 +50,7 @@ describe('ai.provider.mock / deckFromImage', () => {
     });
 
     it('returns an empty cards array for the deterministic no-text fixture', async () => {
-        const draft = await mockProvider.deckFromImage(
-            baseInput({ instructions: 'mock:no-text' }),
-        );
+        const draft = await mockProvider.deckFromImage(baseInput({ instructions: 'mock:no-text' }));
         expect(draft.cards).toEqual([]);
     });
 
@@ -65,10 +68,7 @@ describe('ai.provider.mock / deckFromImage', () => {
 describe('ai.service / deckFromImage', () => {
     it('maps an empty draft to note: "no_text"', async () => {
         const { deckFromImage } = await import('../src/services/ai.service.js');
-        const result = await deckFromImage(
-            'user-1',
-            baseInput({ instructions: 'mock:no-text' }),
-        );
+        const result = await deckFromImage('user-1', baseInput({ instructions: 'mock:no-text' }));
         expect(result.draft.cards).toEqual([]);
         expect(result.note).toBe('no_text');
     });
@@ -78,5 +78,23 @@ describe('ai.service / deckFromImage', () => {
         const result = await deckFromImage('user-1', baseInput({ count: 3 }));
         expect(result.draft.cards.length).toBe(3);
         expect(result.note).toBeUndefined();
+    });
+});
+
+describe('ai.service / deckFromImage — definitions language', () => {
+    it("defaults definitions to the user's native language, not 'en', when none is sent", async () => {
+        const { deckFromImage } = await import('../src/services/ai.service.js');
+        const events: GenerateDeckEvent[] = [];
+        const { sourceLanguage: _omit, ...input } = baseInput({ count: 1 });
+        const { draft } = await deckFromImage('u1', input, { onEvent: (e) => events.push(e) });
+        expect(draft.sourceLanguage).toBe('uk');
+        const header = events.find((e) => e.type === 'header');
+        expect(header?.type === 'header' && header.deck.sourceLanguage).toBe('uk');
+    });
+
+    it('keeps an explicitly requested definitions language', async () => {
+        const { deckFromImage } = await import('../src/services/ai.service.js');
+        const { draft } = await deckFromImage('u1', baseInput({ sourceLanguage: 'pl', count: 1 }));
+        expect(draft.sourceLanguage).toBe('pl');
     });
 });

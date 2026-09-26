@@ -6,11 +6,19 @@ import {
     suggestSchema,
 } from '../schemas/ai.schema.js';
 import * as aiService from '../services/ai.service.js';
+import * as budget from '../services/ai.budget.service.js';
 import { startSse, wantsSse } from '../shared/sse.js';
 import { AppError, BadRequestError } from '../shared/errors.js';
 import { multipartTextFields, readAiImage } from '../shared/ai-image.js';
 import type { GenerateDeckEvent } from '../services/ai.provider.js';
 import { requestTz } from '../shared/request-tz.js';
+
+// Today's AI allowance for the signed-in user. The chat composer shows it so
+// the limit is visible BEFORE it's hit — previously nothing in the app could
+// read a cap, so users met one only as a failed message.
+export const usage = async (request: FastifyRequest, reply: FastifyReply) => {
+    reply.send(await budget.usageSnapshot(request.currentUser.sub));
+};
 
 export const enrichWords = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = enrichWordsSchema.parse(request.body);

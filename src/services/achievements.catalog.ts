@@ -7,23 +7,23 @@
  * progress bars even before the achievement is earned.
  */
 export type AchievementTriggers =
-    | 'session_complete'   // fired from POST /sessions/:id/complete
-    | 'rate'               // fired from POST /srs/rate
-    | 'card_create';       // fired from POST /decks/:id/cards (single + bulk)
+    | 'session_complete' // fired from POST /sessions/:id/complete
+    | 'rate' // fired from POST /srs/rate
+    | 'card_create'; // fired from POST /decks/:id/cards (single + bulk)
 
 export type AchievementStats = {
     sessionsCompleted: number;
     cardsRated: number;
     cardsCreated: number;
-    perfectSessions: number;          // 100% accuracy, ≥5 cards
-    distinctTargetLanguages: number;  // # of distinct target langs across owned decks
+    perfectSessions: number; // 100% accuracy, ≥5 cards
+    distinctTargetLanguages: number; // # of distinct target langs across owned decks
 };
 
 export type AchievementDef = {
     key: string;
     name: string;
     description: string;
-    iconKey: string;                 // FE owns the actual asset mapping
+    iconKey: string; // FE owns the actual asset mapping
     triggers: AchievementTriggers[];
     isEarned: (s: AchievementStats) => boolean;
     progress: (s: AchievementStats) => number;

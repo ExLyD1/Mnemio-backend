@@ -1,8 +1,19 @@
 import { z } from 'zod';
 
 const RESERVED_USERNAMES = new Set([
-    'admin', 'administrator', 'root', 'system', 'support', 'help',
-    'mnemio', 'api', 'me', 'user', 'login', 'register', 'auth',
+    'admin',
+    'administrator',
+    'root',
+    'system',
+    'support',
+    'help',
+    'mnemio',
+    'api',
+    'me',
+    'user',
+    'login',
+    'register',
+    'auth',
 ]);
 
 export const usernameSchema = z

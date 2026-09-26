@@ -33,8 +33,12 @@ const fetchQuizletHtml = async (setId: string): Promise<string> => {
             headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
             signal: controller.signal,
         });
-        if (res.status === 404) throw new ImportNotFoundError();
-        if (!res.ok) throw new ImportUpstreamError(res.status);
+        if (res.status === 404) {
+            throw new ImportNotFoundError();
+        }
+        if (!res.ok) {
+            throw new ImportUpstreamError(res.status);
+        }
 
         // Cap the response body so a misconfigured upstream can't OOM us.
         const reader = res.body?.getReader();
@@ -44,10 +48,12 @@ const fetchQuizletHtml = async (setId: string): Promise<string> => {
         }
         const chunks: Uint8Array[] = [];
         let total = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
+
+        for (;;) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+                break;
+            }
             total += value.byteLength;
             if (total > env.IMPORT_MAX_BYTES) {
                 // Abort the stream; we don't trust the rest.
@@ -72,13 +78,17 @@ export const importQuizletByUrl = async (
     rawUrl: string,
 ): Promise<QuizletImportResult> => {
     const parsed = parseQuizletUrl(rawUrl);
-    if (!parsed) throw new ImportBadUrlError();
+    if (!parsed) {
+        throw new ImportBadUrlError();
+    }
 
     await budget.assertWithinBudget(userId, 'import');
 
     const html = await fetchQuizletHtml(parsed.setId);
     const extracted = extractFromQuizletHtml(html, parsed.setId);
-    if (!extracted) throw new ImportParseFailedError();
+    if (!extracted) {
+        throw new ImportParseFailedError();
+    }
 
     await budget.recordUse(userId, 'import');
     return {

@@ -1,28 +1,12 @@
 import { z } from 'zod';
-import { normalizeLang } from '../shared/lang.js';
-
-// Accepts free-form language input ("English", "uk-UA") and normalizes to an
-// ISO 639-1 code so the FE's code-keyed <select> always has a match.
-const langSchema = z
-    .string()
-    .trim()
-    .min(2, 'Language code is required')
-    .max(10)
-    .transform((v, ctx) => {
-        const code = normalizeLang(v);
-        if (!code) {
-            ctx.addIssue({ code: 'custom', message: 'Unrecognized language' });
-            return z.NEVER;
-        }
-        return code;
-    });
+import { langSchema } from './lang.schema.js';
 
 // P2 cosmetic / discovery fields. All optional; default to null when unset.
 const coverColorSchema = z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, 'coverColor must be a #RRGGBB hex string');
-const glyphSchema = z.string().trim().min(1).max(8);     // emoji or short symbol
-const subjectSchema = z.string().trim().min(1).max(40);  // e.g. 'languages', 'science'
+const glyphSchema = z.string().trim().min(1).max(8); // emoji or short symbol
+const subjectSchema = z.string().trim().min(1).max(40); // e.g. 'languages', 'science'
 
 export const deckBaseSchema = z.object({
     title: z.string().trim().min(2, 'Title must be at least 2 characters').max(120),

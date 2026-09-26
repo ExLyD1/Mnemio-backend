@@ -22,12 +22,12 @@ unless it says so explicitly.
 | Decks | `GET /decks` · `POST /decks` · `GET /decks/:id` · `PATCH /decks/:id` · `DELETE /decks/:id` · `GET /decks/:id/export` · `POST /decks/:id/cards/import` |
 | Cards | `POST /decks/:id/cards` · `POST /decks/:id/cards/bulk` · `PATCH /cards/:id` · `DELETE /cards/:id` |
 | Sessions | `POST /sessions` · `PATCH /sessions/:id` · `POST /sessions/:id/complete` · `POST /sessions/:id/exit` · `POST /sessions/:id/resume` · `GET /sessions/active` · `GET /sessions/incomplete` |
-| SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/progress` |
+| SRS | `POST /srs/rate` · `GET /srs/due` · `GET /srs/queue` · `GET /srs/progress` |
 | Dashboard | `GET /dashboard` |
 | Achievements | `GET /achievements` · `GET /achievements/unseen` · `POST /achievements/ack` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
-| AI | `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
+| AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
@@ -153,9 +153,10 @@ type ApiError = {
 | `AUTH_EMAIL_UNVERIFIED_LINK` | `/auth/oauth/google/callback` | The user already has an unverified password account with that email; tell them to verify it first or use a different Google account. |
 | `NOT_READY` | `GET /ready` | 503 — DB ping failed. Ops-only; FE doesn't call `/ready`. |
 | `CHAT_NOT_FOUND` | any `/chat/conversations/:id*` | 404 — conversation missing or owned by someone else. |
+| `CHAT_BUSY` | `POST /chat/conversations/:id/messages` | 409 — a reply is already streaming in this conversation (another tab). Nothing was written; wait for it to finish. |
 | `PREMIUM_REQUIRED` | any gated endpoint | 403 — feature requires an active subscription. Show paywall/upgrade modal. |
 | `BILLING_NOT_CONFIGURED` | any `/billing/*` | 400 — Stripe keys absent on this deployment. Hide billing UI entirely. |
-| `BILLING_NO_SUBSCRIPTION` | `GET /billing/subscription` · `POST /billing/portal` | 404 — user has no subscription row. Treat the same as `plan: 'free'`. |
+| `BILLING_NO_SUBSCRIPTION` | `POST /billing/portal` | 404 — user has no subscription row. Treat the same as `plan: 'free'`. `GET /billing/subscription` returns `200 null` instead. |
 | `BILLING_PRICE_NOT_CONFIGURED` | `POST /billing/checkout` | 400 — specific plan price ID missing in env. Fall back to the other plan or show "unavailable". |
 
 **429 envelope:** `@fastify/rate-limit` is now configured with our standard
@@ -375,7 +376,11 @@ type Conversation = {
 };
 
 type ChatMessageRole = 'user' | 'assistant' | 'system';
-type ChatMessageStatus = 'complete' | 'partial';   // 'partial' when a stream got cut
+type ChatMessageStatus = 'complete' | 'partial' | 'streaming';
+// 'partial'   — the stream was cut; the content so far is saved, and the FE may
+//               offer Retry (send `retryOf` so the failed pair is replaced).
+// 'streaming' — a reply is being generated for this row right now. Show the
+//               typing indicator and re-fetch; never render it as interrupted.
 
 type ChatMessage = {
   id: string;
@@ -400,6 +405,11 @@ type ChatAttachment = {
   cardCount: number;                  // the deck's CURRENT total after the tool ran
   action?: 'created' | 'appended';    // 'created' = create_deck, 'appended' = add_cards
   addedCount?: number;                // cards just appended (only on action: 'appended')
+  skippedCount?: number;              // requested words already in the deck, so not
+                                      // duplicated (only on action: 'appended')
+  sourceLanguage?: string;            // the deck's definitions language (ISO 639-1)
+  targetLanguage?: string;            // the deck's words language (ISO 639-1)
+                                      // (both absent on messages saved before 2026-09)
 };
 ```
 
@@ -615,8 +625,10 @@ Example (after `npm run seed`):
 {
   title: string;              // 2–120 chars
   description?: string;       // ≤ 500 chars, default ''
-  sourceLanguage: string;     // 2–10 chars
-  targetLanguage: string;
+  sourceLanguage: string;     // supported language: ISO 639-1 code, region tag
+  targetLanguage: string;     // ("uk-UA"), alias ("ua", "eng") or name ("English",
+                              // "українська") — stored as the ISO 639-1 code.
+                              // Unsupported → 400 "Unrecognized language".
   isPublic?: boolean;         // privacy toggle; **default false** (private)
   coverColor?: string | null; // P2: '#RRGGBB' hex
   glyph?: string | null;      // P2: 1–8 chars (emoji ok)
@@ -894,6 +906,27 @@ floored at 1.3.
 `nextReviewAt ASC` (most-overdue first). Only cards with an existing
 `CardProgress` row appear (i.e. rated at least once and now due).
 
+#### `GET /srs/queue`  *(auth)*
+The review queue, ready to render: each due card with its full card row, its
+progress and its deck title. Prefer this over assembling the queue client-side
+— doing that meant listing every deck and then fetching each deck individually
+(20+ requests per page load), and any deck past the paging bound went missing
+from the queue.
+```ts
+// Query: ?limit?=number(<=2000)  default 500
+
+// 200 Response
+{
+  items: {
+    card: Card;                    // the full card, as GET /decks/:id returns it
+    progress: CardProgress;        // includes deckId
+    deckId: string;
+    deckTitle: string;
+  }[];
+}
+```
+Same due rule and ordering as `GET /srs/due`.
+
 #### `GET /srs/progress`  *(auth)*
 Full progress map for the user. Powers the FE's `srs.progress` store. Capped
 at 2000 entries (well above the MVP perf budget of 200 decks × 1000 cards =
@@ -950,7 +983,7 @@ replace.
 {
   interests?: string[];            // ≤ 40 items, each ≤ 40 chars
   goal?: string | null;            // 1–120 chars, or null to clear
-  nativeLanguage?: string | null;  // 2–10 chars (ISO 639-1)
+  nativeLanguage?: string | null;  // same rules as Deck languages (see POST /decks)
   learningLanguages?: string[];    // ≤ 10 entries
   avatarHue?: number | null;       // 0..360
   mimiPlacement?: 'left' | 'right' | null;
@@ -1297,7 +1330,7 @@ not persist** — the FE shows the draft and the user accepts via
 // Request
 {
   topic: string;                 // 2–160 chars
-  sourceLanguage?: string;       // default 'en'
+  sourceLanguage?: string;       // default: the user's nativeLanguage, else 'en'
   targetLanguage: string;        // ISO 639-1
   count?: number;                // 1–20, default 8
 }
@@ -1338,7 +1371,8 @@ Request is `multipart/form-data` (not JSON):
 {
   image: File;                   // field name "image" — png/jpeg/webp/gif,
                                   // ≤ AI_IMAGE_MAX_BYTES (default 5 MB)
-  sourceLanguage?: string;       // default 'en' — language of definitions
+  sourceLanguage?: string;       // language of definitions; default: the user's
+                                 // nativeLanguage, else 'en'
   targetLanguage?: string;       // omit to let the model detect it from the image
   count?: number;                // 1–20, default 8 (upper bound — fewer cards
                                   // come back if the image doesn't have that many)
@@ -1441,6 +1475,23 @@ Always single-response (small payload, no streaming needed).
 covers **both** `POST /ai/deck-from-image` and any chat turn with an attached
 image (a chat turn with an image is metered as `image`, not `chat`).
 
+**`GET /ai/usage`** *(auth)* reports today's consumption for every kind, so the
+UI can show a limit before the user hits it:
+```ts
+// 200 Response
+{
+  plan: 'free' | 'premium';
+  resetsAt: string;                 // ISO — next UTC midnight; counters are per UTC day
+  kinds: Record<
+    'enrich' | 'generate' | 'suggest' | 'import' | 'chat' | 'image',
+    { used: number; cap: number; remaining: number }
+  >;
+}
+```
+Every `429 AI_BUDGET_EXCEEDED` also carries `details.resetsAt` alongside
+`details.kind` and `details.capPerDay`. Show the real reset time; nothing is
+retried automatically.
+
 Free and premium caps are independently configurable via env
 (`AI_DAILY_*_CAP_PER_USER` for free, `AI_DAILY_*_CAP_PREMIUM_PER_USER` for
 premium). The cap used is determined server-side from the caller's active
@@ -1519,7 +1570,9 @@ plain JSON. SSE-or-JSON negotiation is the same `Accept: text/event-stream`
 + `?stream=1` switch the other AI endpoints use.
 
 #### `GET /chat/conversations`  *(auth)*
-Sidebar list. Cursor-paginated by `lastMessageAt DESC, id DESC`.
+Sidebar list. Cursor-paginated by `lastMessageAt DESC, id DESC`. Conversations
+with no messages are omitted — the FE creates a conversation before it sends
+the first message, so a failed first send must not leave a ghost row behind.
 ```ts
 // Query: ?cursor?=string&limit?=number(<=100)   default limit 20
 // 200 Response: Page<Conversation>
@@ -1536,8 +1589,10 @@ first and sends the user's first message in a follow-up call.
 ```
 
 #### `GET /chat/conversations/:id`  *(auth)*
-Fetch the conversation header plus its most recent 50 messages
-(`createdAt ASC, id ASC`).
+Fetch the conversation header plus its most recent 50 messages, returned
+oldest-first. A message with `status: 'streaming'` means a reply is being
+generated right now: render the typing indicator and re-fetch until it
+settles, rather than treating an empty assistant row as a failure.
 ```ts
 // 200 Response: { conversation: Conversation; messages: ChatMessage[] }
 // Errors: 404 CHAT_NOT_FOUND
@@ -1552,7 +1607,8 @@ Rename. Replaces the auto-generated title.
 ```
 
 #### `DELETE /chat/conversations/:id`  *(auth)*
-Hard delete. Cascades to all messages.
+Hard delete. Cascades to all messages. Send no body and no `Content-Type` —
+an empty JSON body is rejected by Fastify (400, not 500 since 2026-09).
 ```ts
 // 204 No Content
 // Errors: 404 CHAT_NOT_FOUND
@@ -1570,11 +1626,21 @@ Append a user message and stream the assistant reply.
                                     // deck" appends instead of creating a new deck.
   locale?: string;                  // the chat/UI language, e.g. "uk", "en-US".
                                     // Normalized to an ISO 639-1 code server-side.
-                                    // Drives the reply language and the default
-                                    // create_deck/add_cards language pair when the
-                                    // user doesn't ask for a specific one.
+                                    // Drives the reply language; it is only the
+                                    // last-resort default for a new deck's
+                                    // definitions (see **Language** below).
+  retryOf?: string;                  // uuid of the caller's own 'partial' assistant
+                                    // message. That message and the user message
+                                    // before it are DELETED, then this turn runs —
+                                    // so a retry replaces the failed pair instead
+                                    // of appending a duplicate one.
 }
 ```
+
+**One reply at a time.** A conversation may only have one turn generating at
+once. A second concurrent send (another tab, a re-POST) is rejected with
+`409 CHAT_BUSY` and writes nothing; retry once the first reply finishes. An
+abandoned generation (process died) is released after 3 minutes.
 
 **Image attachment (multipart/form-data)** — same endpoint, sent as
 `multipart/form-data` instead of JSON when the user drops an image into the
@@ -1669,21 +1735,38 @@ grounded in what was actually saved rather than re-deriving it from memory.
 The `topic` branch (`generateDeck`) additionally gets one deterministic retry
 if the draft comes back empty or well short of the requested `count`.
 
-**Language:** `create_deck`/`add_cards` resolve source/target languages with
-this precedence: an explicit pair the model passes (honoring a custom request
-like "words in Spanish, definitions in Portuguese") wins; otherwise the
-request's `locale` is the default; otherwise the user's saved preferences;
-otherwise a hardcoded fallback. Every language value (`locale`, model output,
-and `Deck.sourceLanguage`/`targetLanguage`/`Preference` fields) is normalized
-to an ISO 639-1 code (`src/shared/lang.ts`) before persisting — full names like
-"English" are mapped to `en` — so the FE's code-keyed language `<select>`
-always has a match.
+**Language:** `add_cards` always uses the open deck's own pair. For
+`create_deck` the model sees `wordsLanguage` (the language being learned →
+`Deck.targetLanguage`) and `definitionsLanguage` (the language the user knows →
+`Deck.sourceLanguage`), plus the user's profile languages in its system prompt.
+The server resolves the pair (`resolveDeckLanguages` in `chat.tools.ts`):
+
+- An explicit value from the model wins (it carries what the user asked for,
+  e.g. "Spanish words, Polish definitions").
+- Definitions otherwise: `Preference.nativeLanguage` → request `locale` → `en`.
+- Words otherwise: the user's learning language when exactly one remains after
+  excluding the definitions language. Several → `WORDS_LANGUAGE_AMBIGUOUS`
+  (`details.options` lists them); none → `WORDS_LANGUAGE_NEEDED`. The server
+  never invents a language — the model asks the user instead.
+- Words and definitions may only be equal when the model passed both (an
+  explicit monolingual deck); otherwise `SAME_LANGUAGE_PAIR`.
+- An explicit value that isn't a supported language → `UNSUPPORTED_LANGUAGE`
+  (`details: { field, value }`) — never silently replaced.
+
+Every language value is normalized to a supported ISO 639-1 code
+(`src/shared/lang.ts`) — names like "English"/"українська" and aliases like
+"ua"/"eng" map to `en`/`uk` — so the FE's code-keyed language `<select>` always
+has a match. On success, the attachment carries the deck's
+`sourceLanguage`/`targetLanguage`, and later turns feed them back to the model
+so "make another one" keeps the same pair.
 
 If the tool fails (`ok: false`), no attachment is persisted, the model writes a
 text apology (post-tool), and `assistantMessage.attachments` is omitted. The
 user is still charged one `chat` budget unit. The error code lives in
 `tool_result.data.reason` (`AI_BUDGET_EXCEEDED`, `DECK_NOT_FOUND`,
-`NEEDS_WORDS_OR_TOPIC`, `AI_PROVIDER_ERROR`, `INTERNAL`, …).
+`NEEDS_WORDS_OR_TOPIC`, `AI_PROVIDER_ERROR`, `INTERNAL`, the language reasons
+above, …). For the language reasons the model's reply asks the user the
+question that resolves it (e.g. "English or German?").
 
 After an `event: error` the assistant message stays in the database with
 `status: 'partial'` and whatever text we got before the failure. The user
@@ -1850,8 +1933,10 @@ fine).
 #### `GET /billing/subscription`  *(auth)*
 Current subscription details.
 ```ts
-// 200 Response: Subscription
-// 404 BILLING_NO_SUBSCRIPTION — user has no subscription row (plan: 'free')
+// 200 Response: Subscription | null   // null = never subscribed (plan: 'free').
+//                                     // Being on the free plan is the normal
+//                                     // case, not an error — this used to 404
+//                                     // on every page load.
 ```
 
 #### `POST /billing/portal`  *(auth)*

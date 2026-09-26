@@ -20,10 +20,7 @@ export const categories = async (_request: FastifyRequest, reply: FastifyReply) 
     reply.send(result);
 };
 
-export const copy = async (
-    request: FastifyRequest<{ Params: IdParams }>,
-    reply: FastifyReply,
-) => {
+export const copy = async (request: FastifyRequest<{ Params: IdParams }>, reply: FastifyReply) => {
     const deck = await discoverService.copy(request.currentUser.sub, request.params.id);
     reply.code(201).send(deck);
 };

@@ -28,7 +28,7 @@ export const clearRefreshCookie = (reply: FastifyReply): void => {
 };
 
 export const readRefreshCookie = (request: FastifyRequest): string | null => {
-    const value = request.cookies?.[REFRESH_COOKIE_NAME];
+    const value = request.cookies[REFRESH_COOKIE_NAME];
     return value && value.length > 0 ? value : null;
 };
 
@@ -70,11 +70,17 @@ export const setOAuthCookies = (
 export const readOAuthCookies = (
     request: FastifyRequest,
 ): { state: string; codeVerifier: string; returnOrigin: string | null } | null => {
-    const state = request.cookies?.[OAUTH_STATE];
-    const codeVerifier = request.cookies?.[OAUTH_VERIFIER];
-    if (!state || !codeVerifier) return null;
-    const returnOrigin = request.cookies?.[OAUTH_RETURN_ORIGIN];
-    return { state, codeVerifier, returnOrigin: returnOrigin && returnOrigin.length > 0 ? returnOrigin : null };
+    const state = request.cookies[OAUTH_STATE];
+    const codeVerifier = request.cookies[OAUTH_VERIFIER];
+    if (!state || !codeVerifier) {
+        return null;
+    }
+    const returnOrigin = request.cookies[OAUTH_RETURN_ORIGIN];
+    return {
+        state,
+        codeVerifier,
+        returnOrigin: returnOrigin && returnOrigin.length > 0 ? returnOrigin : null,
+    };
 };
 
 export const clearOAuthCookies = (reply: FastifyReply): void => {

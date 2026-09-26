@@ -39,7 +39,7 @@ export const multipartTextFields = (file: MultipartFile): Record<string, string>
     for (const entry of Object.values(file.fields)) {
         const list = Array.isArray(entry) ? entry : [entry];
         for (const part of list) {
-            if (part && part.type === 'field' && typeof part.value === 'string') {
+            if (part?.type === 'field' && typeof part.value === 'string') {
                 out[part.fieldname] = part.value;
             }
         }

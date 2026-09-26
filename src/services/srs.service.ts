@@ -4,6 +4,7 @@ import * as activityRepo from '../repositories/activity.repository.js';
 import * as achievementsService from './achievements.service.js';
 import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
+import { toPublicCard, type PublicCard } from '../shared/mappers.deck.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { initialState, review } from './sm2.js';
 import { DEFAULT_TZ } from './tz.js';
@@ -44,7 +45,9 @@ export const rate = async (
     // ratings never touch the owner's progress. Private decks stay 403 for
     // non-owners, which also re-locks the moment isPublic flips to false.
     const card = await cardsRepo.findCardWithOwner(input.cardId);
-    if (!card) throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
+    if (!card) {
+        throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
+    }
     if (card.deck.authorId !== ownerId && !card.deck.isPublic) {
         throw new ForbiddenError('CARD_FORBIDDEN', 'You do not own this card');
     }
@@ -86,7 +89,9 @@ export const rate = async (
 
     // Only a brand-new progress row can be the user's first-ever review; skip
     // the probe on re-reviews of an already-seen card so it can't double-fire.
-    if (!existing) void milestone.checkFirstReview(ownerId);
+    if (!existing) {
+        void milestone.checkFirstReview(ownerId);
+    }
 
     return {
         cardId: saved.cardId,
@@ -121,6 +126,36 @@ export const progress = async (ownerId: string, limit = 2000): Promise<PublicCar
         easeFactor: r.easeFactor,
         nextReviewAt: r.nextReviewAt.toISOString(),
         lastReviewedAt: r.lastReviewedAt ? r.lastReviewedAt.toISOString() : null,
+    }));
+};
+
+export type QueueItem = {
+    card: PublicCard;
+    progress: PublicCardProgress;
+    deckId: string;
+    deckTitle: string;
+};
+
+/**
+ * The review queue, ready to render: card + progress + deck title in one
+ * response. Replaces the client-side fan-out (list all decks, then fetch each
+ * deck) that cost 20+ requests per page load.
+ */
+export const queue = async (ownerId: string, limit = 500): Promise<QueueItem[]> => {
+    const rows = await srsRepo.findDueQueue(ownerId, limit);
+    return rows.map((r) => ({
+        card: toPublicCard(r.card),
+        progress: {
+            cardId: r.cardId,
+            deckId: r.card.deckId,
+            repetitions: r.repetitions,
+            interval: r.interval,
+            easeFactor: r.easeFactor,
+            nextReviewAt: r.nextReviewAt.toISOString(),
+            lastReviewedAt: r.lastReviewedAt ? r.lastReviewedAt.toISOString() : null,
+        },
+        deckId: r.card.deckId,
+        deckTitle: r.card.deck.title,
     }));
 };
 

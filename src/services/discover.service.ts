@@ -10,12 +10,12 @@ import {
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
 import {
+    toPublicDeck,
     toPublicDeckWithAuthor,
     buildStats,
     type PublicDeckWithAuthor,
     type PublicDeck,
 } from '../shared/mappers.deck.js';
-import { toPublicDeck } from '../shared/mappers.deck.js';
 import type { DiscoverListQuery, DiscoverSort } from '../schemas/discover.schema.js';
 
 const decodeDiscoverCursor = (raw: string | undefined) => {
@@ -23,8 +23,7 @@ const decodeDiscoverCursor = (raw: string | undefined) => {
     return c ? { sortValue: c.ts, id: c.id } : null;
 };
 
-const encodeDiscoverCursor = (sortValue: string, id: string) =>
-    encodeCursor({ ts: sortValue, id });
+const encodeDiscoverCursor = (sortValue: string, id: string) => encodeCursor({ ts: sortValue, id });
 
 const attachStats = async (
     viewerId: string | null,
@@ -56,9 +55,11 @@ export const list = async (
         discoverRepo.countPublicDecks({ q: query.q, lang: query.lang, subject: query.subject }),
     ]);
 
+    // The repo fetches limit + 1 rows; an extra row means another page exists,
+    // and the last row of this page is where it starts.
+    const last = rows.length > limit ? rows[limit - 1] : undefined;
     let nextCursor: string | null = null;
-    if (rows.length > limit) {
-        const last = rows[limit - 1]!;
+    if (last) {
         nextCursor =
             sort === 'recent'
                 ? encodeDiscoverCursor(last.updatedAt.toISOString(), last.id)
@@ -84,7 +85,9 @@ export const categories = async (): Promise<{ items: { subject: string; count: n
 
 export const copy = async (viewerId: string, sourceDeckId: string): Promise<PublicDeck> => {
     const source = await discoverRepo.findPublicDeckById(sourceDeckId);
-    if (!source) throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
+    if (!source) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
+    }
 
     // Atomic: clone deck + cards + bump source copyCount.
     const newDeckId = await prisma.$transaction(async (tx) => {
@@ -95,7 +98,7 @@ export const copy = async (viewerId: string, sourceDeckId: string): Promise<Publ
                 description: source.description,
                 sourceLanguage: source.sourceLanguage,
                 targetLanguage: source.targetLanguage,
-                isPublic: false,             // clones default to private
+                isPublic: false, // clones default to private
                 coverColor: source.coverColor,
                 glyph: source.glyph,
                 subject: source.subject,
@@ -143,6 +146,9 @@ export const copy = async (viewerId: string, sourceDeckId: string): Promise<Publ
     void milestone.checkFirstDeck(viewerId);
 
     const fresh = await prisma.deck.findUnique({ where: { id: newDeckId } });
+    if (!fresh) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
     const stats = await deckStatsRepo.aggregateDeckStats(viewerId, [newDeckId]);
-    return toPublicDeck(fresh!, buildStats(fresh!.cardCount, stats[0]));
+    return toPublicDeck(fresh, buildStats(fresh.cardCount, stats[0]));
 };
