@@ -3,8 +3,7 @@ import { env } from '../config/env.js';
 
 const REFRESH_BYTES = 32; // 256 bits
 
-export const generateOpaqueToken = (): string =>
-    randomBytes(REFRESH_BYTES).toString('base64url');
+export const generateOpaqueToken = (): string => randomBytes(REFRESH_BYTES).toString('base64url');
 
 export const hashToken = (token: string): string =>
     createHash('sha256').update(token).digest('hex');

@@ -61,11 +61,16 @@ describe('chat.prompt — deck languages', () => {
             'native language: Ukrainian (uk); learning: English (en), German (de); app language: Ukrainian (uk)',
         );
         const bare = buildChatSystemPrompt();
-        expect(bare).toContain('native language: not set; learning: not set; app language: not set');
+        expect(bare).toContain(
+            'native language: not set; learning: not set; app language: not set',
+        );
     });
 
     it('tells the model to ask instead of guessing when the words language is unclear', () => {
-        const prompt = buildChatSystemPrompt(undefined, 'uk', false, { native: 'uk', learning: [] });
+        const prompt = buildChatSystemPrompt(undefined, 'uk', false, {
+            native: 'uk',
+            learning: [],
+        });
         expect(prompt).toContain('do NOT call a tool. Ask one short question');
         expect(prompt).toContain('wordsLanguage');
         expect(prompt).toContain('definitionsLanguage');

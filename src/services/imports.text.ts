@@ -14,14 +14,20 @@ export type TextParseResult = {
 //   else            → newline (term, definition, term, definition, …)
 const detectFormat = (text: string): 'tsv' | 'csv' | 'newline' => {
     const firstLine = text.split(/\r?\n/).find((l) => l.trim().length > 0) ?? '';
-    if (firstLine.includes('\t')) return 'tsv';
-    if (firstLine.includes(',')) return 'csv';
+    if (firstLine.includes('\t')) {
+        return 'tsv';
+    }
+    if (firstLine.includes(',')) {
+        return 'csv';
+    }
     return 'newline';
 };
 
 const splitOnce = (line: string, sep: string): [string, string] | null => {
     const idx = line.indexOf(sep);
-    if (idx < 0) return null;
+    if (idx < 0) {
+        return null;
+    }
     return [line.slice(0, idx), line.slice(idx + 1)];
 };
 
@@ -69,8 +75,11 @@ const parseCsvLine = (line: string): [string, string] | null => {
         }
     }
     out.push(cur);
-    if (out.length < 2) return null;
-    return [out[0]!.trim(), out[1]!.trim()];
+    const [word, definition] = out;
+    if (word === undefined || definition === undefined) {
+        return null;
+    }
+    return [word.trim(), definition.trim()];
 };
 
 const parseCsv = (text: string): AiCardDraft[] => {
@@ -92,8 +101,8 @@ const parseNewline = (text: string): AiCardDraft[] => {
         .filter(Boolean);
     const out: AiCardDraft[] = [];
     for (let i = 0; i + 1 < lines.length; i += 2) {
-        const word = lines[i]!;
-        const definition = lines[i + 1]!;
+        const word = lines[i];
+        const definition = lines[i + 1];
         if (word && definition) {
             out.push({ word, definition });
         }

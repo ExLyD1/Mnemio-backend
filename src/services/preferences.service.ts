@@ -12,13 +12,27 @@ export const update = async (
     input: UpdatePreferencesInput,
 ): Promise<PublicPreference> => {
     const patch: repo.PreferencePatch = {};
-    if (input.interests !== undefined) patch.interests = input.interests;
-    if (input.goal !== undefined) patch.goal = input.goal;
-    if (input.nativeLanguage !== undefined) patch.nativeLanguage = input.nativeLanguage;
-    if (input.learningLanguages !== undefined) patch.learningLanguages = input.learningLanguages;
-    if (input.avatarHue !== undefined) patch.avatarHue = input.avatarHue;
-    if (input.mimiPlacement !== undefined) patch.mimiPlacement = input.mimiPlacement;
-    if (input.favorites !== undefined) patch.favorites = input.favorites;
+    if (input.interests !== undefined) {
+        patch.interests = input.interests;
+    }
+    if (input.goal !== undefined) {
+        patch.goal = input.goal;
+    }
+    if (input.nativeLanguage !== undefined) {
+        patch.nativeLanguage = input.nativeLanguage;
+    }
+    if (input.learningLanguages !== undefined) {
+        patch.learningLanguages = input.learningLanguages;
+    }
+    if (input.avatarHue !== undefined) {
+        patch.avatarHue = input.avatarHue;
+    }
+    if (input.mimiPlacement !== undefined) {
+        patch.mimiPlacement = input.mimiPlacement;
+    }
+    if (input.favorites !== undefined) {
+        patch.favorites = input.favorites;
+    }
     const row = await repo.update(userId, patch);
     return toPublicPreference(row);
 };

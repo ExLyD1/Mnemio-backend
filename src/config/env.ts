@@ -154,7 +154,10 @@ const envSchema = z
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
+    // The logger isn't built yet — config is validated before the app starts.
+    // eslint-disable-next-line no-console
     console.error('Invalid environment configuration:');
+    // eslint-disable-next-line no-console
     console.error(z.treeifyError(parsed.error));
     process.exit(1);
 }

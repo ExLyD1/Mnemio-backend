@@ -46,10 +46,7 @@ export const active = async (request: FastifyRequest, reply: FastifyReply) => {
     reply.send({ session });
 };
 
-export const exit = async (
-    request: FastifyRequest<{ Params: IdParams }>,
-    reply: FastifyReply,
-) => {
+export const exit = async (request: FastifyRequest<{ Params: IdParams }>, reply: FastifyReply) => {
     const session = await sessionsService.exit(request.currentUser.sub, request.params.id);
     reply.send(session);
 };

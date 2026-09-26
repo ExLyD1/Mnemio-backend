@@ -100,14 +100,13 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     });
 
     // Serve uploaded files from MEDIA_DIR under MEDIA_PUBLIC_BASE. Production
-    // moves this to S3 via presigned URLs (see media.service.ts comment).
-    if (env.MEDIA_STORAGE === 'local') {
-        await fastify.register(fastifyStatic, {
-            root: path.resolve(env.MEDIA_DIR),
-            prefix: `${env.MEDIA_PUBLIC_BASE}/`,
-            decorateReply: false,
-        });
-    }
+    // moves this to S3 via presigned URLs (see media.service.ts comment); gate
+    // this on env.MEDIA_STORAGE once a second storage option exists.
+    await fastify.register(fastifyStatic, {
+        root: path.resolve(env.MEDIA_DIR),
+        prefix: `${env.MEDIA_PUBLIC_BASE}/`,
+        decorateReply: false,
+    });
 
     await registerCookies(fastify);
     await registerJwt(fastify);

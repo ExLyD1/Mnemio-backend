@@ -29,7 +29,9 @@ export const get = async (userId: string): Promise<DashboardResponse> => {
     // Aggregate per-deck SRS stats once across the union of every deck we return
     // so each deck card carries the same stats shape as elsewhere in the app.
     const deckRows: DeckModel[] = [...recentDecksRows, ...mostPracticedRows];
-    if (lastPracticedRow) deckRows.push(lastPracticedRow);
+    if (lastPracticedRow) {
+        deckRows.push(lastPracticedRow);
+    }
     const uniqueIds = [...new Set(deckRows.map((d) => d.id))];
 
     const deckStatsRows = await deckStatsRepo.aggregateDeckStats(userId, uniqueIds);

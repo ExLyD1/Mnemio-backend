@@ -16,13 +16,13 @@ vi.mock('../src/services/ai.budget.service.js', () => ({
 // that may set AI_PROVIDER=anthropic with a real key (which would otherwise
 // make these tests fire real, billed network calls).
 vi.mock('../src/config/env.js', async () => {
-    const actual = await vi.importActual<typeof import('../src/config/env.js')>(
-        '../src/config/env.js',
-    );
+    const actual = await vi.importActual<typeof EnvModule>('../src/config/env.js');
     return { ...actual, env: { ...actual.env, AI_PROVIDER: 'mock' } };
 });
 
-const baseInput = (overrides: Partial<DeckFromImageProviderInput> = {}): DeckFromImageProviderInput => ({
+const baseInput = (
+    overrides: Partial<DeckFromImageProviderInput> = {},
+): DeckFromImageProviderInput => ({
     sourceLanguage: 'en',
     targetLanguage: 'es',
     image: { mediaType: 'image/png', dataBase64: 'ZmFrZQ==' },
@@ -49,9 +49,7 @@ describe('ai.provider.mock / deckFromImage', () => {
     });
 
     it('returns an empty cards array for the deterministic no-text fixture', async () => {
-        const draft = await mockProvider.deckFromImage(
-            baseInput({ instructions: 'mock:no-text' }),
-        );
+        const draft = await mockProvider.deckFromImage(baseInput({ instructions: 'mock:no-text' }));
         expect(draft.cards).toEqual([]);
     });
 
@@ -69,10 +67,7 @@ describe('ai.provider.mock / deckFromImage', () => {
 describe('ai.service / deckFromImage', () => {
     it('maps an empty draft to note: "no_text"', async () => {
         const { deckFromImage } = await import('../src/services/ai.service.js');
-        const result = await deckFromImage(
-            'user-1',
-            baseInput({ instructions: 'mock:no-text' }),
-        );
+        const result = await deckFromImage('user-1', baseInput({ instructions: 'mock:no-text' }));
         expect(result.draft.cards).toEqual([]);
         expect(result.note).toBe('no_text');
     });

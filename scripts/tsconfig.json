@@ -1,0 +1,7 @@
+{
+    // Lets ESLint's type-aware rules see the scripts; the root tsconfig only
+    // includes src/. Not used by tsx or the build.
+    "extends": "../tsconfig.json",
+    "compilerOptions": { "noEmit": true },
+    "include": ["./**/*.ts", "../src/**/*.ts", "../generated/prisma/**/*.ts"]
+}

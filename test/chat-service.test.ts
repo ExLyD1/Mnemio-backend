@@ -64,9 +64,7 @@ const messageRow = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
 });
 
-const buildProvider = (
-    chatImpl: AiProvider['chat'],
-): AiProvider => ({
+const buildProvider = (chatImpl: AiProvider['chat']): AiProvider => ({
     name: 'test',
     enrichWords: vi.fn() as never,
     generateDeck: vi.fn() as never,
@@ -77,10 +75,7 @@ const buildProvider = (
 
 // Every send now claims the conversation's streaming slot in one transaction
 // instead of two createMessage calls. Tests state the rows the claim returns.
-const claim = (
-    userOverrides: Record<string, unknown> = {},
-    assistantId = 'ai-msg',
-) =>
+const claim = (userOverrides: Record<string, unknown> = {}, assistantId = 'ai-msg') =>
     mockedRepo.claimTurn.mockResolvedValue({
         userRow: messageRow({ id: 'user-msg', ...userOverrides }),
         placeholder: messageRow({
@@ -178,11 +173,7 @@ describe('chat.service / sendMessage', () => {
             expect.objectContaining({ content: 'Hello!', status: 'complete' }),
         );
         // auto-title triggered (first user message)
-        expect(mockedRepo.renameAndTouch).toHaveBeenCalledWith(
-            'c',
-            'Hi Mnemio!',
-            expect.any(Date),
-        );
+        expect(mockedRepo.renameAndTouch).toHaveBeenCalledWith('c', 'Hi Mnemio!', expect.any(Date));
         expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
         // budget recorded only after success
         expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'chat');
@@ -199,9 +190,9 @@ describe('chat.service / sendMessage', () => {
             }),
         );
 
-        await expect(
-            sendMessage('u', 'c', 'Hi', () => undefined),
-        ).rejects.toBeInstanceOf(AiProviderError);
+        await expect(sendMessage('u', 'c', 'Hi', () => undefined)).rejects.toBeInstanceOf(
+            AiProviderError,
+        );
 
         // The placeholder was finalized with the partial buffer, NOT marked complete.
         expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith({
@@ -347,7 +338,7 @@ describe('chat.service / sendMessage', () => {
         expect(seenPrompt).toContain('app language: Ukrainian (uk)');
     });
 
-    it('gives the model the user\'s profile languages (normalized) in the system prompt', async () => {
+    it("gives the model the user's profile languages (normalized) in the system prompt", async () => {
         setProfile('ukrainian', ['en', 'de-DE', 'xx']);
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
@@ -370,7 +361,7 @@ describe('chat.service / sendMessage', () => {
         );
     });
 
-    it('re-attaches a previous deck\'s languages to its assistant turn for the model', async () => {
+    it("re-attaches a previous deck's languages to its assistant turn for the model", async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([

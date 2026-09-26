@@ -206,10 +206,7 @@ export const buildGenerateDeckPrompt = (input: GenerateDeckInput) => {
     return { system, user: lines.join('\n') };
 };
 
-const deckFromImageSystem = (
-    rawSource: string,
-    rawTarget?: string,
-): string => {
+const deckFromImageSystem = (rawSource: string, rawTarget?: string): string => {
     const sourceLanguage = promptLang(rawSource);
     const targetLanguage = rawTarget ? promptLang(rawTarget) : undefined;
     return `

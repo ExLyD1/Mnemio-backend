@@ -66,7 +66,9 @@ export const assertWithinBudget = async (
         const resetsAt = aiUsageRepo.nextResetAt().toISOString();
         // 'import' gets its own error code so the FE can distinguish AI vs
         // import quotas — the user might be capped on one and free on the other.
-        if (kind === 'import') throw new ImportBudgetExceededError(cap, resetsAt);
+        if (kind === 'import') {
+            throw new ImportBudgetExceededError(cap, resetsAt);
+        }
         // Fire the paywall-funnel event at the un-bypassable guard — exactly
         // once, before the throw, for the three contract AI features.
         const aiFeature = AI_FEATURE_BY_KIND[kind];

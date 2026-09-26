@@ -244,13 +244,9 @@ const toolsForUser = (
     run: async (call): Promise<ChatToolOutcome> => {
         if (call.name === 'create_deck') {
             return toOutcome(
-                await runCreateDeck(
-                    userId,
-                    call.input as CreateDeckToolInput,
-                    userLangs,
-                    locale,
-                    { userMessage },
-                ),
+                await runCreateDeck(userId, call.input as CreateDeckToolInput, userLangs, locale, {
+                    userMessage,
+                }),
             );
         }
         if (call.name === 'add_cards' && deckCtx) {
@@ -340,7 +336,6 @@ export const sendMessage = async (
         plan: usage.plan,
     };
 
-
     // Persist the user message and claim the conversation's streaming slot in
     // one transaction — if anything below fails, we still have what they typed,
     // and a second concurrent send is refused rather than interleaved.
@@ -358,10 +353,7 @@ export const sendMessage = async (
     // Is this the auto-title turn? Counted after the claim and scoped to rows
     // older than this one, so a retry (which deleted the failed pair) still
     // titles the conversation.
-    const priorUserCount = await chatRepo.countUserMessages(
-        conversationId,
-        userRowDb.createdAt,
-    );
+    const priorUserCount = await chatRepo.countUserMessages(conversationId, userRowDb.createdAt);
     const isAutoTitleTurn = priorUserCount === 0;
 
     onFrame({

@@ -7,7 +7,9 @@ import { BadRequestError, UnauthorizedError } from '../shared/errors.js';
 export const checkout = async (request: FastifyRequest, reply: FastifyReply) => {
     const { plan } = checkoutSchema.parse(request.body);
     const user = await authRepo.findUserById(request.currentUser.sub);
-    if (!user) throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'User no longer exists');
+    if (!user) {
+        throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'User no longer exists');
+    }
     const result = await billingService.createCheckoutSession(user.id, user.email, plan);
     reply.code(201).send(result);
 };
@@ -35,5 +37,7 @@ export const webhook = async (request: FastifyRequest, reply: FastifyReply) => {
     // ACK Stripe FIRST, then fire analytics — a Mixpanel hiccup must never delay
     // or fail the webhook acknowledgement (Stripe would retry an un-ACKed event).
     await reply.send({ received: true });
-    for (const emit of emits) emit();
+    for (const emit of emits) {
+        emit();
+    }
 };

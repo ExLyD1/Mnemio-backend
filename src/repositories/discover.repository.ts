@@ -1,4 +1,4 @@
-import { Prisma } from '../../generated/prisma/client.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 
 const AUTHOR_SELECT = { select: { id: true, username: true, fullName: true } } as const;
@@ -20,7 +20,9 @@ export type ListPublicDecksParams = {
     sort: DiscoverCursorKind;
 };
 
-const baseWhere = (params: Pick<ListPublicDecksParams, 'q' | 'lang' | 'subject'>): Prisma.DeckWhereInput => {
+const baseWhere = (
+    params: Pick<ListPublicDecksParams, 'q' | 'lang' | 'subject'>,
+): Prisma.DeckWhereInput => {
     const where: Prisma.DeckWhereInput = { isPublic: true };
     if (params.q && params.q.length > 0) {
         where.OR = [
@@ -31,20 +33,15 @@ const baseWhere = (params: Pick<ListPublicDecksParams, 'q' | 'lang' | 'subject'>
     if (params.lang) {
         // Match either source or target language — FE filter is "language",
         // not a directional pair.
-        where.AND = [
-            { OR: [{ sourceLanguage: params.lang }, { targetLanguage: params.lang }] },
-        ];
+        where.AND = [{ OR: [{ sourceLanguage: params.lang }, { targetLanguage: params.lang }] }];
     }
-    if (params.subject) where.subject = params.subject;
+    if (params.subject) {
+        where.subject = params.subject;
+    }
     return where;
 };
 
-export const listPublicDecks = ({
-    limit,
-    cursor,
-    sort,
-    ...rest
-}: ListPublicDecksParams) => {
+export const listPublicDecks = ({ limit, cursor, sort, ...rest }: ListPublicDecksParams) => {
     const where = baseWhere(rest);
 
     if (cursor) {
@@ -53,10 +50,7 @@ export const listPublicDecks = ({
             where.AND = [
                 ...((where.AND as Prisma.DeckWhereInput[] | undefined) ?? []),
                 {
-                    OR: [
-                        { updatedAt: { lt: ts } },
-                        { updatedAt: ts, id: { lt: cursor.id } },
-                    ],
+                    OR: [{ updatedAt: { lt: ts } }, { updatedAt: ts, id: { lt: cursor.id } }],
                 },
             ];
         } else {
@@ -64,10 +58,7 @@ export const listPublicDecks = ({
             where.AND = [
                 ...((where.AND as Prisma.DeckWhereInput[] | undefined) ?? []),
                 {
-                    OR: [
-                        { copyCount: { lt: cc } },
-                        { copyCount: cc, id: { lt: cursor.id } },
-                    ],
+                    OR: [{ copyCount: { lt: cc } }, { copyCount: cc, id: { lt: cursor.id } }],
                 },
             ];
         }

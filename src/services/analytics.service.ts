@@ -16,8 +16,12 @@ import type { AnalyticsEventName, PropsFor, UserProps } from '../analytics/event
 let client: ReturnType<typeof Mixpanel.init> | null = null;
 
 export const initAnalytics = (): void => {
-    if (client) return;
-    if (!env.MIXPANEL_TOKEN) return;
+    if (client) {
+        return;
+    }
+    if (!env.MIXPANEL_TOKEN) {
+        return;
+    }
 
     client = Mixpanel.init(
         env.MIXPANEL_TOKEN,
@@ -34,7 +38,9 @@ export const track = <N extends AnalyticsEventName>(
     name: N,
     props: PropsFor<N>,
 ): void => {
-    if (!client) return;
+    if (!client) {
+        return;
+    }
     try {
         client.track(name, { distinct_id: userId, ...props });
     } catch {
@@ -44,7 +50,9 @@ export const track = <N extends AnalyticsEventName>(
 
 /** Set allowlisted people-profile properties. Only call with props we own. */
 export const setUserProps = (userId: string, props: Partial<UserProps>): void => {
-    if (!client) return;
+    if (!client) {
+        return;
+    }
     try {
         client.people.set(userId, props);
     } catch {

@@ -39,9 +39,10 @@ describe('backfill precedence — COALESCE(lastReviewedAt, updatedAt, createdAt)
     // Mirrors the migration's backfill UPDATE for existing mastered rows.
     const coalesce = (
         lastReviewedAt: Date | null,
-        updatedAt: Date,
+        updatedAt: Date | null,
         createdAt: Date,
-    ): Date => lastReviewedAt ?? updatedAt ?? createdAt;
+    ): Date =>
+        lastReviewedAt ?? updatedAt ?? createdAt;
 
     const lr = D('2026-05-01T00:00:00Z');
     const up = D('2026-05-02T00:00:00Z');
@@ -123,11 +124,11 @@ describe('buildCumulativeMasteredSeries — the mastery curve', () => {
         const lateNight = [D('2026-07-11T02:30:00.000Z')];
 
         it('buckets into the previous local day for a negative-offset zone', () => {
-            const points = buildCumulativeMasteredSeries(
-                lateNight,
-                'America/New_York',
-                ['2026-07-09', '2026-07-10', '2026-07-11'],
-            );
+            const points = buildCumulativeMasteredSeries(lateNight, 'America/New_York', [
+                '2026-07-09',
+                '2026-07-10',
+                '2026-07-11',
+            ]);
             expect(points).toEqual([
                 { label: '2026-07-09', value: 0 },
                 { label: '2026-07-10', value: 1 }, // lands on the 10th in NY
@@ -136,11 +137,11 @@ describe('buildCumulativeMasteredSeries — the mastery curve', () => {
         });
 
         it('buckets into the same UTC day for a positive-offset zone', () => {
-            const points = buildCumulativeMasteredSeries(
-                lateNight,
-                'Asia/Tokyo',
-                ['2026-07-09', '2026-07-10', '2026-07-11'],
-            );
+            const points = buildCumulativeMasteredSeries(lateNight, 'Asia/Tokyo', [
+                '2026-07-09',
+                '2026-07-10',
+                '2026-07-11',
+            ]);
             expect(points).toEqual([
                 { label: '2026-07-09', value: 0 },
                 { label: '2026-07-10', value: 0 },

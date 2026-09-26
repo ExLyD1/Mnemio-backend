@@ -30,7 +30,9 @@ const statsByDeckId = async (
     cardCountById: Map<string, number>,
 ): Promise<Map<string, DeckStats>> => {
     const out = new Map<string, DeckStats>();
-    if (deckIds.length === 0) return out;
+    if (deckIds.length === 0) {
+        return out;
+    }
     const rows = await deckStatsRepo.aggregateDeckStats(ownerId, deckIds);
     const aggById = new Map(rows.map((r) => [r.deckId, r]));
     for (const deckId of deckIds) {
@@ -93,7 +95,12 @@ export const getOne = async (
     viewerId: string,
     deckId: string,
     query: DeckDetailQuery,
-): Promise<{ deck: PublicDeck; cards: PublicCard[]; role: 'owner' | 'viewer'; isOwner: boolean }> => {
+): Promise<{
+    deck: PublicDeck;
+    cards: PublicCard[];
+    role: 'owner' | 'viewer';
+    isOwner: boolean;
+}> => {
     const deck = await decksRepo.findDeckByIdUnscoped(deckId);
     // A non-owner may read only a public deck. A private deck looks "not found"
     // to everyone but its owner, preserving the no-leak guarantee — and this
@@ -125,24 +132,46 @@ export const update = async (
     input: UpdateDeckInput,
 ): Promise<PublicDeck> => {
     const patch: decksRepo.DeckUpdateData = {};
-    if (input.title !== undefined) patch.title = input.title;
-    if (input.description !== undefined) patch.description = input.description;
-    if (input.sourceLanguage !== undefined) patch.sourceLanguage = input.sourceLanguage;
-    if (input.targetLanguage !== undefined) patch.targetLanguage = input.targetLanguage;
-    if (input.isPublic !== undefined) patch.isPublic = input.isPublic;
-    if (input.coverColor !== undefined) patch.coverColor = input.coverColor;
-    if (input.glyph !== undefined) patch.glyph = input.glyph;
-    if (input.subject !== undefined) patch.subject = input.subject;
+    if (input.title !== undefined) {
+        patch.title = input.title;
+    }
+    if (input.description !== undefined) {
+        patch.description = input.description;
+    }
+    if (input.sourceLanguage !== undefined) {
+        patch.sourceLanguage = input.sourceLanguage;
+    }
+    if (input.targetLanguage !== undefined) {
+        patch.targetLanguage = input.targetLanguage;
+    }
+    if (input.isPublic !== undefined) {
+        patch.isPublic = input.isPublic;
+    }
+    if (input.coverColor !== undefined) {
+        patch.coverColor = input.coverColor;
+    }
+    if (input.glyph !== undefined) {
+        patch.glyph = input.glyph;
+    }
+    if (input.subject !== undefined) {
+        patch.subject = input.subject;
+    }
 
     const { count } = await decksRepo.updateDeck(deckId, ownerId, patch);
-    if (count === 0) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    if (count === 0) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
 
     const fresh = await decksRepo.findDeckById(deckId, ownerId);
-    if (!fresh) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    if (!fresh) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
     return toPublicDeck(fresh);
 };
 
 export const remove = async (ownerId: string, deckId: string): Promise<void> => {
     const { count } = await decksRepo.deleteDeck(deckId, ownerId);
-    if (count === 0) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    if (count === 0) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
 };

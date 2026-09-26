@@ -11,11 +11,7 @@ import { startSse, wantsSse } from '../shared/sse.js';
 import { AppError, BadRequestError } from '../shared/errors.js';
 import { multipartTextFields, readAiImage } from '../shared/ai-image.js';
 import type { AiImageInput } from '../services/ai.provider.js';
-import {
-    DEFAULT_LIMIT,
-    decodeCursor,
-    parseLimit,
-} from '../shared/pagination.js';
+import { DEFAULT_LIMIT, decodeCursor, parseLimit } from '../shared/pagination.js';
 
 type IdParams = { id: string };
 
@@ -30,10 +26,7 @@ export const listConversations = async (request: FastifyRequest, reply: FastifyR
 
 export const createConversation = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = createConversationSchema.parse(request.body ?? {});
-    const conversation = await chatService.createConversation(
-        request.currentUser.sub,
-        input.title,
-    );
+    const conversation = await chatService.createConversation(request.currentUser.sub, input.title);
     // Optional firstMessage path: defer to sendMessage so the same SSE
     // protocol applies. The FE typically POSTs the firstMessage on a
     // separate call, so we keep the two flows distinct here.

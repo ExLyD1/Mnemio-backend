@@ -109,7 +109,7 @@ describe('deck-import / JSON', () => {
         );
     });
 
-    it('rejects JSON that doesn\'t match the card shape', async () => {
+    it("rejects JSON that doesn't match the card shape", async () => {
         const json = JSON.stringify([{ foo: 'bar' }]);
         await expect(importIntoDeck('u1', 'd1', 'json', json)).rejects.toBeInstanceOf(
             ImportParseFailedError,

@@ -17,8 +17,8 @@ const start = async () => {
         }
     };
 
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
     try {
         await app.listen({ host: env.HOST, port: env.PORT });
@@ -28,4 +28,4 @@ const start = async () => {
     }
 };
 
-start();
+void start();

@@ -9,13 +9,14 @@ export const generateOtpCode = (): string => {
     return n.toString().padStart(6, '0');
 };
 
-export const hashOtp = (code: string): string =>
-    createHash('sha256').update(code).digest('hex');
+export const hashOtp = (code: string): string => createHash('sha256').update(code).digest('hex');
 
 export const verifyOtp = (code: string, codeHash: string): boolean => {
     const a = Buffer.from(hashOtp(code), 'hex');
     const b = Buffer.from(codeHash, 'hex');
-    if (a.length !== b.length) return false;
+    if (a.length !== b.length) {
+        return false;
+    }
     return timingSafeEqual(a, b);
 };
 

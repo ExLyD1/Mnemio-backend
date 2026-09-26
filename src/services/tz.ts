@@ -19,13 +19,21 @@ export const tzDayKey = (at: Date, tz: string): string =>
         day: '2-digit',
     }).format(at);
 
+// 'YYYY-MM-DD' → [year, month (1-12), day]. A missing part reads as NaN, which
+// is exactly what Number(undefined) would give, so a malformed key still ends
+// up as an Invalid Date downstream rather than throwing here.
+const splitDayKey = (key: string): [number, number, number] => {
+    const [y = NaN, m = NaN, d = NaN] = key.split('-').map(Number);
+    return [y, m, d];
+};
+
 // The `days` consecutive local day keys ending on `end`'s local day, oldest
 // first — the x-axis scaffold for a per-day series (mirrors how getSeries walks
 // one point per day). Calendar arithmetic runs on a UTC anchor purely as a
 // day counter (Date.UTC has no DST), so it never skips or repeats a label.
 export const tzDayKeysEndingOn = (end: Date, tz: string, days: number): string[] => {
-    const [y, m, d] = tzDayKey(end, tz).split('-').map(Number);
-    const anchor = Date.UTC(y!, m! - 1, d!);
+    const [y, m, d] = splitDayKey(tzDayKey(end, tz));
+    const anchor = Date.UTC(y, m - 1, d);
     const keys: string[] = [];
     for (let i = days - 1; i >= 0; i--) {
         const dt = new Date(anchor - i * 86_400_000);
@@ -44,9 +52,12 @@ export const tzDayKeysEndingOn = (end: Date, tz: string, days: number): string[]
 // authoritatively by comparing local day keys — never by this bound. That keeps
 // us correct regardless of the tz's UTC offset or a DST shift at the edge.
 export const tzWindowLowerBoundUtc = (end: Date, tz: string, days: number): Date => {
-    const keys = tzDayKeysEndingOn(end, tz, days);
-    const [y, m, d] = keys[0]!.split('-').map(Number);
-    return new Date(Date.UTC(y!, m! - 1, d!) - 86_400_000);
+    const [firstKey] = tzDayKeysEndingOn(end, tz, days);
+    if (firstKey === undefined) {
+        throw new RangeError(`tzWindowLowerBoundUtc: days must be at least 1, got ${days}`);
+    }
+    const [y, m, d] = splitDayKey(firstKey);
+    return new Date(Date.UTC(y, m - 1, d) - 86_400_000);
 };
 
 // ---------- Per-user local-day bucketing for the DailyActivity rollup ----------
@@ -72,9 +83,13 @@ export const isValidTimeZone = (tz: string): boolean => {
 // Anything missing/invalid falls back to UTC (the pre-existing behaviour), so a
 // bad or absent header can never break a write.
 export const normalizeTz = (raw: unknown): string => {
-    if (typeof raw !== 'string') return DEFAULT_TZ;
+    if (typeof raw !== 'string') {
+        return DEFAULT_TZ;
+    }
     const tz = raw.trim();
-    if (tz.length === 0 || tz.length > 64) return DEFAULT_TZ;
+    if (tz.length === 0 || tz.length > 64) {
+        return DEFAULT_TZ;
+    }
     return isValidTimeZone(tz) ? tz : DEFAULT_TZ;
 };
 
@@ -95,7 +110,9 @@ export const computeStreak = (
 ): number => {
     const active = new Set(rows.filter((r) => r.reviews > 0).map((r) => dateToDayKey(r.date)));
     const cursor = dayKeyToDate(todayKey);
-    if (!active.has(dateToDayKey(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+    if (!active.has(dateToDayKey(cursor))) {
+        cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
     let streak = 0;
     while (active.has(dateToDayKey(cursor))) {
         streak += 1;

@@ -20,6 +20,11 @@ export default [
             'node_modules/**',
             'eslint.config.js',
             'nuxt.config.ts',
+            // Gitignored build output: the Prisma client and the compiled
+            // prisma.config artifacts (the source is prisma.config.ts).
+            'generated/**',
+            'prisma.config.js',
+            'prisma.config.d.ts',
         ],
     },
 
@@ -108,6 +113,30 @@ export default [
             '@typescript-eslint/restrict-template-expressions': 'error',
             '@typescript-eslint/only-throw-error': 'error',
             '@typescript-eslint/consistent-type-imports': 'error',
+        },
+    },
+
+    // ── 5. Tests — mocks and parsed JSON bodies are untyped by nature ────────
+    // test/ and scripts/ each have a tsconfig.json extending the root one, so
+    // the project service can type-check them (the root tsconfig only
+    // includes src/).
+    {
+        files: ['test/**/*.ts'],
+        rules: {
+            '@typescript-eslint/no-non-null-assertion': 'off',
+            '@typescript-eslint/no-unsafe-assignment': 'off',
+            '@typescript-eslint/no-unsafe-member-access': 'off',
+            '@typescript-eslint/no-unsafe-call': 'off',
+            '@typescript-eslint/no-unsafe-return': 'off',
+            '@typescript-eslint/no-unsafe-argument': 'off',
+        },
+    },
+
+    // ── 6. CLI scripts print their progress ──────────────────────────────────
+    {
+        files: ['scripts/**/*.ts'],
+        rules: {
+            'no-console': 'off',
         },
     },
 ];

@@ -1,4 +1,4 @@
-import { Prisma } from '../../generated/prisma/client.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 
 export const findCardById = (id: string) => prisma.card.findUnique({ where: { id } });
@@ -25,10 +25,7 @@ export const listCardsByPosition = ({ deckId, limit, cursor }: ListCardsParams) 
         const pos = Number.parseInt(cursor.ts, 10);
         where.AND = [
             {
-                OR: [
-                    { position: { gt: pos } },
-                    { position: pos, id: { gt: cursor.id } },
-                ],
+                OR: [{ position: { gt: pos } }, { position: pos, id: { gt: cursor.id } }],
             },
         ];
     }
@@ -92,11 +89,9 @@ export type CardUpdate = Partial<{
     position: number;
 }>;
 
-export const createCard = (data: CardCreate) =>
-    prisma.card.create({ data });
+export const createCard = (data: CardCreate) => prisma.card.create({ data });
 
-export const createCardsBulk = (rows: CardCreate[]) =>
-    prisma.card.createMany({ data: rows });
+export const createCardsBulk = (rows: CardCreate[]) => prisma.card.createMany({ data: rows });
 
 export const updateCard = (id: string, patch: CardUpdate) =>
     prisma.card.update({ where: { id }, data: patch });

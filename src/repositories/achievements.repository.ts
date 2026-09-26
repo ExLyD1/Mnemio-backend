@@ -52,8 +52,7 @@ export const countCardsRated = async (userId: string): Promise<number> => {
     return prisma.cardProgress.count({ where: { userId } });
 };
 
-export const countCardsCreated = (userId: string) =>
-    prisma.card.count({ where: { userId } });
+export const countCardsCreated = (userId: string) => prisma.card.count({ where: { userId } });
 
 export const countDistinctTargetLanguages = async (userId: string): Promise<number> => {
     const rows = await prisma.deck.findMany({

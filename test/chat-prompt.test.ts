@@ -89,9 +89,7 @@ describe('chat.prompt / Ukrainian', () => {
 
 describe('chat.prompt / autoTitle', () => {
     it('returns short messages verbatim', () => {
-        expect(autoTitle('How do you say cat in Spanish?')).toBe(
-            'How do you say cat in Spanish?',
-        );
+        expect(autoTitle('How do you say cat in Spanish?')).toBe('How do you say cat in Spanish?');
     });
 
     it('trims surrounding whitespace', () => {

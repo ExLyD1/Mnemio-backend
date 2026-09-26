@@ -54,8 +54,6 @@ describe('mail.service / sendViaResend', () => {
             err.name = 'AbortError';
             return Promise.reject(err);
         });
-        await expect(sendOtpEmail('a@b.test', '000000')).rejects.toThrow(
-            /Resend send timed out/,
-        );
+        await expect(sendOtpEmail('a@b.test', '000000')).rejects.toThrow(/Resend send timed out/);
     });
 });

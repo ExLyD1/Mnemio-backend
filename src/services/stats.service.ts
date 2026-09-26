@@ -55,8 +55,22 @@ const aggregateRange = (rows: { reviews: number; correct: number }[]) =>
     );
 
 const pctChange = (current: number, previous: number): number => {
-    if (previous === 0) return current > 0 ? 100 : 0;
+    if (previous === 0) {
+        return current > 0 ? 100 : 0;
+    }
     return Math.round(((current - previous) / previous) * 100);
+};
+
+// The inclusive @db.Date bounds [first, last] of a window of local day keys,
+// for a DailyActivity range query. Every window here is non-empty (range days
+// are 7/30/90/365), so the throw only guards that invariant.
+const dayWindowBounds = (keys: string[]): [Date, Date] => {
+    const first = keys[0];
+    const last = keys[keys.length - 1];
+    if (first === undefined || last === undefined) {
+        throw new RangeError('dayWindowBounds: empty day-key window');
+    }
+    return [dayKeyToDate(first), dayKeyToDate(last)];
 };
 
 // Pure: the current and previous `days`-long windows of local day keys.
@@ -84,17 +98,11 @@ export const overview = async (
         currentRows = await activityRepo.allDays(userId);
     } else {
         const { current, previous } = overviewWindows(now, tz, days);
+        const [currentFrom, currentTo] = dayWindowBounds(current);
+        const [previousFrom, previousTo] = dayWindowBounds(previous);
         [currentRows, previousRows] = await Promise.all([
-            activityRepo.rangeDays(
-                userId,
-                dayKeyToDate(current[0]!),
-                dayKeyToDate(current[current.length - 1]!),
-            ),
-            activityRepo.rangeDays(
-                userId,
-                dayKeyToDate(previous[0]!),
-                dayKeyToDate(previous[previous.length - 1]!),
-            ),
+            activityRepo.rangeDays(userId, currentFrom, currentTo),
+            activityRepo.rangeDays(userId, previousFrom, previousTo),
         ]);
     }
 
@@ -153,11 +161,8 @@ export const series = async (
 ): Promise<{ range: StatsRange; points: StatsSeriesPoint[] }> => {
     const days = rangeDays(range) ?? ALL_RANGE_SERIES_DAYS;
     const labels = tzDayKeysEndingOn(new Date(), tz, days);
-    const rows = await activityRepo.rangeDays(
-        userId,
-        dayKeyToDate(labels[0]!),
-        dayKeyToDate(labels[labels.length - 1]!),
-    );
+    const [from, to] = dayWindowBounds(labels);
+    const rows = await activityRepo.rangeDays(userId, from, to);
     return { range, points: buildDailySeries(rows, labels) };
 };
 
@@ -183,14 +188,16 @@ export const activity = async (userId: string, tz: string = DEFAULT_TZ): Promise
 
     // yearHeat: 53 columns (weeks, oldest → newest), 7 rows (Sun..Sat).
     const cols = 53;
-    const yearHeat: number[][] = Array.from({ length: cols }, () => Array(7).fill(0));
+    const yearHeat: number[][] = Array.from({ length: cols }, () =>
+        new Array<number>(7).fill(0),
+    );
     const cursor = new Date(yearStart);
     // Align cursor to start-of-week (Sunday).
     cursor.setUTCDate(cursor.getUTCDate() - cursor.getUTCDay());
-    for (let c = 0; c < cols; c++) {
+    for (const week of yearHeat) {
         for (let r = 0; r < 7; r++) {
             const iso = dateToDayKey(cursor);
-            yearHeat[c]![r] = byDate.get(iso) ?? 0;
+            week[r] = byDate.get(iso) ?? 0;
             cursor.setUTCDate(cursor.getUTCDate() + 1);
         }
     }
@@ -200,7 +207,9 @@ export const activity = async (userId: string, tz: string = DEFAULT_TZ): Promise
     monthStart.setUTCDate(1);
     const monthLabel = `${monthStart.getUTCFullYear()}-${String(monthStart.getUTCMonth() + 1).padStart(2, '0')}`;
     const monthDays: ({ date: string; reviews: number } | null)[] = [];
-    for (let i = 0; i < monthStart.getUTCDay(); i++) monthDays.push(null);
+    for (let i = 0; i < monthStart.getUTCDay(); i++) {
+        monthDays.push(null);
+    }
 
     const monthCursor = new Date(monthStart);
     while (monthCursor.getUTCMonth() === monthStart.getUTCMonth()) {
@@ -248,7 +257,9 @@ export const decks = async (userId: string): Promise<StatsDeckRow[]> => {
         where: { authorId: userId },
         orderBy: { updatedAt: 'desc' },
     });
-    if (decksRows.length === 0) return [];
+    if (decksRows.length === 0) {
+        return [];
+    }
 
     const stats = await deckStatsRepo.aggregateDeckStats(
         userId,
@@ -309,7 +320,9 @@ export const bucketDurationByTzDay = (
     const sums = new Map<string, number>();
     for (const r of rows) {
         const key = tzDayKey(r.completedAt, tz);
-        if (!allowed.has(key)) continue;
+        if (!allowed.has(key)) {
+            continue;
+        }
         sums.set(key, (sums.get(key) ?? 0) + Math.max(0, r.durationMs));
     }
     return labels.map((label) => ({ label, value: sums.get(label) ?? 0 }));
@@ -355,7 +368,9 @@ export const aggregateDecksStudied = (
         { title: string; sessionCount: number; cardsReviewed: number; lastMs: number }
     >();
     for (const r of rows) {
-        if (labelSet && !labelSet.has(tzDayKey(r.completedAt, tz))) continue;
+        if (labelSet && !labelSet.has(tzDayKey(r.completedAt, tz))) {
+            continue;
+        }
         const cur = byDeck.get(r.deckId) ?? {
             title: r.title,
             sessionCount: 0,
@@ -424,8 +439,10 @@ export const buildCumulativeMasteredSeries = (
     tz: string,
     labels: string[],
 ): StatsSeriesPoint[] => {
-    if (labels.length === 0) return [];
-    const firstDay = labels[0]!;
+    const firstDay = labels[0];
+    if (firstDay === undefined) {
+        return [];
+    }
     const inWindow = new Set(labels);
 
     let baseline = 0; // mastered strictly before the window's first day

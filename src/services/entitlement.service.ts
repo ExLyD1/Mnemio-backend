@@ -3,7 +3,9 @@ import { PremiumRequiredError } from '../shared/errors.js';
 
 export const assertPremium = async (userId: string): Promise<void> => {
     const entitled = await subscriptionRepo.isEntitled(userId);
-    if (!entitled) throw new PremiumRequiredError();
+    if (!entitled) {
+        throw new PremiumRequiredError();
+    }
 };
 
 export const getPlan = async (userId: string): Promise<'free' | 'premium'> => {

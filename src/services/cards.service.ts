@@ -29,13 +29,17 @@ const buildCardCreateFields = (
 
 const assertOwnsDeck = async (deckId: string, ownerId: string) => {
     const deck = await decksRepo.findDeckById(deckId, ownerId);
-    if (!deck) throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    if (!deck) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
     return deck;
 };
 
 const assertOwnsCard = async (cardId: string, ownerId: string) => {
     const card = await cardsRepo.findCardWithOwner(cardId);
-    if (!card) throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
+    if (!card) {
+        throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
+    }
     if (card.deck.authorId !== ownerId) {
         throw new ForbiddenError('CARD_FORBIDDEN', 'You do not own this card');
     }
@@ -90,19 +94,45 @@ export const update = async (
 ): Promise<PublicCard> => {
     await assertOwnsCard(cardId, ownerId);
     const patch: cardsRepo.CardUpdate = {};
-    if (input.word !== undefined) patch.word = input.word;
-    if (input.definition !== undefined) patch.definition = input.definition;
-    if (input.phonetic !== undefined) patch.phonetic = input.phonetic;
-    if (input.reading !== undefined) patch.reading = input.reading;
-    if (input.partOfSpeech !== undefined) patch.partOfSpeech = input.partOfSpeech;
-    if (input.example !== undefined) patch.example = input.example;
-    if (input.exampleTranslation !== undefined) patch.exampleTranslation = input.exampleTranslation;
-    if (input.tags !== undefined) patch.tags = input.tags;
-    if (input.difficulty !== undefined) patch.difficulty = input.difficulty;
-    if (input.type !== undefined) patch.type = input.type;
-    if (input.audioUrl !== undefined) patch.audioUrl = input.audioUrl;
-    if (input.imageUrl !== undefined) patch.imageUrl = input.imageUrl;
-    if (input.position !== undefined) patch.position = input.position;
+    if (input.word !== undefined) {
+        patch.word = input.word;
+    }
+    if (input.definition !== undefined) {
+        patch.definition = input.definition;
+    }
+    if (input.phonetic !== undefined) {
+        patch.phonetic = input.phonetic;
+    }
+    if (input.reading !== undefined) {
+        patch.reading = input.reading;
+    }
+    if (input.partOfSpeech !== undefined) {
+        patch.partOfSpeech = input.partOfSpeech;
+    }
+    if (input.example !== undefined) {
+        patch.example = input.example;
+    }
+    if (input.exampleTranslation !== undefined) {
+        patch.exampleTranslation = input.exampleTranslation;
+    }
+    if (input.tags !== undefined) {
+        patch.tags = input.tags;
+    }
+    if (input.difficulty !== undefined) {
+        patch.difficulty = input.difficulty;
+    }
+    if (input.type !== undefined) {
+        patch.type = input.type;
+    }
+    if (input.audioUrl !== undefined) {
+        patch.audioUrl = input.audioUrl;
+    }
+    if (input.imageUrl !== undefined) {
+        patch.imageUrl = input.imageUrl;
+    }
+    if (input.position !== undefined) {
+        patch.position = input.position;
+    }
 
     const updated = await cardsRepo.updateCard(cardId, patch);
     return toPublicCard(updated);

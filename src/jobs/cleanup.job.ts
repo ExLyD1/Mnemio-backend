@@ -29,12 +29,16 @@ export const runCleanupOnce = async (log: FastifyBaseLogger): Promise<void> => {
 
 export const registerCleanupJob = (log: FastifyBaseLogger): (() => void) | undefined => {
     // Tests run in band — a daily cron would just be noise + extra DB load.
-    if (env.NODE_ENV === 'test') return undefined;
+    if (env.NODE_ENV === 'test') {
+        return undefined;
+    }
 
     const task = cron.schedule(CRON_EXPR, () => {
         void runCleanupOnce(log);
     });
 
     log.info({ schedule: CRON_EXPR, graceDays: GRACE_DAYS }, 'cleanup job scheduled');
-    return () => task.stop();
+    return () => {
+        void task.stop();
+    };
 };

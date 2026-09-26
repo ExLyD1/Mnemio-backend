@@ -266,11 +266,14 @@ describe('chat.tools / runCreateDeck — words branch', () => {
             sourceLanguage: 'uk',
             targetLanguage: 'es',
         });
-        expect(mDecks.create).toHaveBeenCalledWith('u1', expect.objectContaining({
-            title: 'Spanish vocabulary',
-            sourceLanguage: 'uk',
-            targetLanguage: 'es',
-        }));
+        expect(mDecks.create).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({
+                title: 'Spanish vocabulary',
+                sourceLanguage: 'uk',
+                targetLanguage: 'es',
+            }),
+        );
         expect(mCards.bulkCreate).toHaveBeenCalledWith(
             'u1',
             'deck-42',
@@ -308,17 +311,18 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
                 { word: 'leche', definition: 'milk' },
             ],
         } as never);
-        mDecks.create.mockResolvedValue(
-            fakeDeck({ id: 'deck-7', title: 'Spanish café' }),
-        );
+        mDecks.create.mockResolvedValue(fakeDeck({ id: 'deck-7', title: 'Spanish café' }));
 
         const r = await runCreateDeck('u1', { topic: 'Spanish café vocabulary', count: 2 }, UK_ES);
 
         expect(r.ok).toBe(true);
-        expect(mAi.generateDeck).toHaveBeenCalledWith('u1', expect.objectContaining({
-            topic: 'Spanish café vocabulary',
-            count: 2,
-        }));
+        expect(mAi.generateDeck).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({
+                topic: 'Spanish café vocabulary',
+                count: 2,
+            }),
+        );
         expect((r as { ok: true; attachment: unknown }).attachment).toEqual({
             type: 'deck',
             deckId: 'deck-7',
@@ -331,7 +335,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
         expect((r as { ok: true; words: string[] }).words).toEqual(['café', 'leche']);
     });
 
-    it('persists the resolved language pair, not the model\'s echo of it', async () => {
+    it("persists the resolved language pair, not the model's echo of it", async () => {
         mAi.generateDeck.mockResolvedValue({
             title: 'Школа',
             description: '',
@@ -417,11 +421,15 @@ const fakeDeckRow = (overrides: Record<string, unknown> = {}) =>
     }) as never;
 
 describe('chat.tools / runAddCards — append to an existing deck', () => {
-    it('uses the DECK\'s languages, appends via bulkCreate, returns an appended attachment', async () => {
+    it("uses the DECK's languages, appends via bulkCreate, returns an appended attachment", async () => {
         // 1st call = ownership + languages; 2nd = fresh cardCount after append.
         mDecksRepo.findDeckById
-            .mockResolvedValueOnce(fakeDeckRow({ sourceLanguage: 'en', targetLanguage: 'fr', cardCount: 5 }))
-            .mockResolvedValueOnce(fakeDeckRow({ sourceLanguage: 'en', targetLanguage: 'fr', cardCount: 7 }));
+            .mockResolvedValueOnce(
+                fakeDeckRow({ sourceLanguage: 'en', targetLanguage: 'fr', cardCount: 5 }),
+            )
+            .mockResolvedValueOnce(
+                fakeDeckRow({ sourceLanguage: 'en', targetLanguage: 'fr', cardCount: 7 }),
+            );
         mAi.enrichWords.mockResolvedValue({
             cards: [
                 { word: 'eau', definition: 'water' },
@@ -535,7 +543,9 @@ describe('chat.tools / runAddCards — duplicates', () => {
     const deckWithApple = () => {
         mDecksRepo.findDeckById
             .mockResolvedValueOnce(fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 1 }))
-            .mockResolvedValueOnce(fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 2 }));
+            .mockResolvedValueOnce(
+                fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 2 }),
+            );
         mCardsRepo.listAllCardsForDeck.mockResolvedValue([{ word: 'Apple ' }] as never);
     };
 
@@ -552,9 +562,12 @@ describe('chat.tools / runAddCards — duplicates', () => {
         });
 
         // Only the new word is sent for enrichment — no AI spend on a duplicate.
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', expect.objectContaining({
-            words: ['peach'],
-        }));
+        expect(mAi.enrichWords).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({
+                words: ['peach'],
+            }),
+        );
         expect(r).toMatchObject({
             ok: true,
             skipped: ['apple'],

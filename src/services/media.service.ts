@@ -48,7 +48,7 @@ const extensionFromMime = (mime: string): string => {
 };
 
 export type StoredFile = {
-    url: string;       // public URL — what FE stores in audioUrl/imageUrl/avatarUrl
+    url: string; // public URL — what FE stores in audioUrl/imageUrl/avatarUrl
     kind: MediaKind;
     size: number;
     mimeType: string;
@@ -78,10 +78,8 @@ export const uploadFile = async (
     let bytesWritten = 0;
     const limit = MAX_BYTES[kind];
     const writeStream = createWriteStream(fullPath);
-    let overflow = false;
     file.file.on('data', (chunk: Buffer) => {
         bytesWritten += chunk.length;
-        if (bytesWritten > limit) overflow = true;
     });
 
     try {
@@ -91,7 +89,7 @@ export const uploadFile = async (
         throw err;
     }
 
-    if (overflow || file.file.truncated) {
+    if (bytesWritten > limit || file.file.truncated) {
         await fs.unlink(fullPath).catch(() => {});
         throw new UnprocessableError(
             'MEDIA_TOO_LARGE',

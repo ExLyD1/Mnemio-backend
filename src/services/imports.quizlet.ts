@@ -10,7 +10,9 @@ const QUIZLET_URL_RE = /^https?:\/\/(?:www\.)?quizlet\.com\/(\d+)\b/i;
 
 export const parseQuizletUrl = (url: string): { setId: string } | null => {
     const m = QUIZLET_URL_RE.exec(url.trim());
-    if (!m || !m[1]) return null;
+    if (!m?.[1]) {
+        return null;
+    }
     return { setId: m[1] };
 };
 
@@ -19,17 +21,37 @@ export const parseQuizletUrl = (url: string): { setId: string } | null => {
 // walk for the cards. The shape isn't stable; if Quizlet reshuffles it the
 // extractor returns null and the route surfaces IMPORT_PARSE_FAILED so the
 // FE can fall back to the paste-text flow.
-const NEXT_DATA_RE =
-    /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]+?)<\/script>/i;
+const NEXT_DATA_RE = /<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]+?)<\/script>/i;
 
 const extractNextData = (html: string): unknown | null => {
     const m = NEXT_DATA_RE.exec(html);
-    if (!m || !m[1]) return null;
+    if (!m?.[1]) {
+        return null;
+    }
     try {
         return JSON.parse(m[1]);
     } catch {
         return null;
     }
+};
+
+const isTermLike = (v: unknown): boolean => {
+    if (!v || typeof v !== 'object') {
+        return false;
+    }
+    const o = v as Record<string, unknown>;
+    const hasWord = typeof o.word === 'string' || typeof o.term === 'string';
+    const hasDef = typeof o.definition === 'string';
+    return hasWord && hasDef;
+};
+
+// Only ever called on values that passed isTermLike, so `word` (or `term`) and
+// `definition` are strings; the '' fallbacks just keep this total on its own.
+const toTerm = (v: unknown): { word: string; definition: string } => {
+    const o = v as Record<string, unknown>;
+    const word = typeof o.word === 'string' ? o.word : typeof o.term === 'string' ? o.term : '';
+    const definition = typeof o.definition === 'string' ? o.definition : '';
+    return { word: word.trim(), definition: definition.trim() };
 };
 
 // Walk an arbitrary JSON value looking for the first array whose elements
@@ -42,7 +64,9 @@ const findTermArray = (
     value: unknown,
     depth = 0,
 ): { word: string; definition: string }[] | null => {
-    if (depth > 12 || value === null || value === undefined) return null;
+    if (depth > 12 || value === null || value === undefined) {
+        return null;
+    }
 
     if (Array.isArray(value)) {
         if (value.length > 0 && value.every((it) => isTermLike(it))) {
@@ -50,7 +74,9 @@ const findTermArray = (
         }
         for (const item of value) {
             const found = findTermArray(item, depth + 1);
-            if (found) return found;
+            if (found) {
+                return found;
+            }
         }
         return null;
     }
@@ -58,25 +84,12 @@ const findTermArray = (
     if (typeof value === 'object') {
         for (const v of Object.values(value as Record<string, unknown>)) {
             const found = findTermArray(v, depth + 1);
-            if (found) return found;
+            if (found) {
+                return found;
+            }
         }
     }
     return null;
-};
-
-const isTermLike = (v: unknown): boolean => {
-    if (!v || typeof v !== 'object') return false;
-    const o = v as Record<string, unknown>;
-    const hasWord = typeof o.word === 'string' || typeof o.term === 'string';
-    const hasDef = typeof o.definition === 'string';
-    return hasWord && hasDef;
-};
-
-const toTerm = (v: unknown): { word: string; definition: string } => {
-    const o = v as Record<string, unknown>;
-    const word = (typeof o.word === 'string' ? o.word : (o.term as string)) ?? '';
-    const definition = (o.definition as string) ?? '';
-    return { word: word.trim(), definition: definition.trim() };
 };
 
 const findTitle = (root: unknown): string => {
@@ -86,12 +99,16 @@ const findTitle = (root: unknown): string => {
     while (seen.length > 0 && depth < 8) {
         const next: unknown[] = [];
         for (const node of seen) {
-            if (!node || typeof node !== 'object') continue;
+            if (!node || typeof node !== 'object') {
+                continue;
+            }
             const o = node as Record<string, unknown>;
             if (typeof o.title === 'string' && o.title.trim().length > 0) {
                 return o.title.trim();
             }
-            for (const v of Object.values(o)) next.push(v);
+            for (const v of Object.values(o)) {
+                next.push(v);
+            }
         }
         seen.length = 0;
         seen.push(...next);
@@ -105,13 +122,19 @@ export const extractFromQuizletHtml = (
     setId: string,
 ): QuizletExtractResult | null => {
     const data = extractNextData(html);
-    if (data === null) return null;
+    if (data === null) {
+        return null;
+    }
     const terms = findTermArray(data);
-    if (!terms || terms.length === 0) return null;
+    if (!terms || terms.length === 0) {
+        return null;
+    }
     const title = findTitle(data);
     const cards: AiCardDraft[] = terms
         .filter((t) => t.word.length > 0 && t.definition.length > 0)
         .map((t) => ({ word: t.word, definition: t.definition }));
-    if (cards.length === 0) return null;
+    if (cards.length === 0) {
+        return null;
+    }
     return { setId, title, cards };
 };

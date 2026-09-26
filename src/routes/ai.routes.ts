@@ -11,11 +11,7 @@ const aiRoutes = async (fastify: FastifyInstance) => {
     // Cheap read (one indexed row per kind) — not under the generation limit.
     fastify.get('/ai/usage', aiController.usage);
 
-    fastify.post(
-        '/ai/enrich-words',
-        { config: { rateLimit: aiLimit } },
-        aiController.enrichWords,
-    );
+    fastify.post('/ai/enrich-words', { config: { rateLimit: aiLimit } }, aiController.enrichWords);
     fastify.post(
         '/ai/generate-deck',
         { config: { rateLimit: aiLimit } },
@@ -26,11 +22,7 @@ const aiRoutes = async (fastify: FastifyInstance) => {
         { config: { rateLimit: aiLimit } },
         aiController.deckFromImage,
     );
-    fastify.post(
-        '/ai/suggest',
-        { config: { rateLimit: aiLimit } },
-        aiController.suggest,
-    );
+    fastify.post('/ai/suggest', { config: { rateLimit: aiLimit } }, aiController.suggest);
 };
 
 export default aiRoutes;

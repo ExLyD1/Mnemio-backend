@@ -9,7 +9,12 @@ export class AppError extends Error {
     public readonly code: string;
     public readonly details: Record<string, unknown> | undefined;
 
-    constructor(statusCode: number, code: string, message: string, details?: Record<string, unknown>) {
+    constructor(
+        statusCode: number,
+        code: string,
+        message: string,
+        details?: Record<string, unknown>,
+    ) {
         super(message);
         this.statusCode = statusCode;
         this.code = code;
@@ -31,7 +36,11 @@ export class BadRequestError extends AppError {
 }
 
 export class UnauthorizedError extends AppError {
-    constructor(code = 'UNAUTHORIZED', message = 'Unauthorized', details?: Record<string, unknown>) {
+    constructor(
+        code = 'UNAUTHORIZED',
+        message = 'Unauthorized',
+        details?: Record<string, unknown>,
+    ) {
         super(401, code, message, details);
     }
 }
@@ -55,13 +64,21 @@ export class ConflictError extends AppError {
 }
 
 export class UnprocessableError extends AppError {
-    constructor(code = 'UNPROCESSABLE', message = 'Unprocessable entity', details?: Record<string, unknown>) {
+    constructor(
+        code = 'UNPROCESSABLE',
+        message = 'Unprocessable entity',
+        details?: Record<string, unknown>,
+    ) {
         super(422, code, message, details);
     }
 }
 
 export class RateLimitedError extends AppError {
-    constructor(code = 'RATE_LIMITED', message = 'Too many requests', details?: Record<string, unknown>) {
+    constructor(
+        code = 'RATE_LIMITED',
+        message = 'Too many requests',
+        details?: Record<string, unknown>,
+    ) {
         super(429, code, message, details);
     }
 }
@@ -121,7 +138,7 @@ export class AiImageUnsupportedTypeError extends BadRequestError {
 
 // External imports (Quizlet HTML scrape, paste-text, deck CSV/JSON).
 export class ImportBadUrlError extends BadRequestError {
-    constructor(message = "URL must be a quizlet.com set link, e.g. https://quizlet.com/<id>/...") {
+    constructor(message = 'URL must be a quizlet.com set link, e.g. https://quizlet.com/<id>/...') {
         super('IMPORT_BAD_URL', message);
     }
 }

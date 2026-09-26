@@ -43,12 +43,17 @@ export const registerJwt = async (fastify: FastifyInstance) => {
     });
 
     fastify.decorate('requireVerified', async (request: FastifyRequest) => {
-        if (!request.currentUser) {
+        // Typed as always present, but only set once `authenticate` has run.
+        const current = request.currentUser as JwtPayload | undefined;
+        if (!current) {
             try {
                 await request.jwtVerify();
                 request.currentUser = request.user;
             } catch {
-                throw new UnauthorizedError('AUTH_INVALID_TOKEN', 'Invalid or expired access token');
+                throw new UnauthorizedError(
+                    'AUTH_INVALID_TOKEN',
+                    'Invalid or expired access token',
+                );
             }
         }
         if (!request.currentUser.emailVerified) {

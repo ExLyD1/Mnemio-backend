@@ -43,7 +43,9 @@ describe('SM-2 (matches frontend useSpacedRepetition.ts)', () => {
         it('easeFactor is floored at 1.3', () => {
             // Force EF down by failing many times.
             let s = initialState(REF_NOW);
-            for (let i = 0; i < 20; i++) s = review(s, 0, REF_NOW);
+            for (let i = 0; i < 20; i++) {
+                s = review(s, 0, REF_NOW);
+            }
             expect(s.easeFactor).toBe(1.3);
         });
     });

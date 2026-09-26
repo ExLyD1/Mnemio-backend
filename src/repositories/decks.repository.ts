@@ -1,4 +1,4 @@
-import { Prisma } from '../../generated/prisma/client.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 
 export type ListDecksParams = {
@@ -23,10 +23,7 @@ const buildListWhere = ({ ownerId, cursor, q }: Omit<ListDecksParams, 'limit'>) 
         // Keyset: rows with updatedAt < cursor.ts OR (updatedAt = ts AND id < cursor.id)
         where.AND = [
             {
-                OR: [
-                    { updatedAt: { lt: ts } },
-                    { updatedAt: ts, id: { lt: cursor.id } },
-                ],
+                OR: [{ updatedAt: { lt: ts } }, { updatedAt: ts, id: { lt: cursor.id } }],
             },
         ];
     }
@@ -65,8 +62,7 @@ export const listDeckTitles = (ownerId: string, max = 500) =>
 // readable/studyable by a non-owner only when `isPublic` is true. Used by the
 // public-deck study paths (deck detail, session start) where the viewer may not
 // be the owner.
-export const findDeckByIdUnscoped = (id: string) =>
-    prisma.deck.findUnique({ where: { id } });
+export const findDeckByIdUnscoped = (id: string) => prisma.deck.findUnique({ where: { id } });
 
 export type DeckCreateData = {
     title: string;

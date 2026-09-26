@@ -130,7 +130,9 @@ describe('error-handler / unexpected errors', () => {
             // either the generic production text, or the dev passthrough.
             const msg = res.json().message as string;
             expect(typeof msg).toBe('string');
-            if (msg !== 'secret db string') expect(msg).toBe('Internal server error');
+            if (msg !== 'secret db string') {
+                expect(msg).toBe('Internal server error');
+            }
         } finally {
             process.env.NODE_ENV = prev;
         }

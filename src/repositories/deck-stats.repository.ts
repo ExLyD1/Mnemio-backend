@@ -26,7 +26,9 @@ export const aggregateDeckStats = async (
     userId: string,
     deckIds: string[],
 ): Promise<DeckStatsRow[]> => {
-    if (deckIds.length === 0) return [];
+    if (deckIds.length === 0) {
+        return [];
+    }
 
     const rows = await prisma.$queryRaw<
         { deckId: string; mastered: bigint; learning: bigint; due: bigint }[]

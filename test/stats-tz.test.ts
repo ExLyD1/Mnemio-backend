@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { tzDayKey, tzDayKeysEndingOn, tzWindowLowerBoundUtc } from '../src/services/tz.js';
-import {
-    bucketDurationByTzDay,
-    aggregateDecksStudied,
-} from '../src/services/stats.service.js';
+import { bucketDurationByTzDay, aggregateDecksStudied } from '../src/services/stats.service.js';
 import { resolveDurationMs } from '../src/services/sessions.service.js';
 
 // A session finished at 02:30 UTC — the same instant lands on different local
@@ -106,13 +103,32 @@ describe('bucketDurationByTzDay (item 2) — study-time series', () => {
 
 describe('aggregateDecksStudied (item 4)', () => {
     const rows = [
-        { deckId: 'a', title: 'Alpha', cardsStudied: 10, completedAt: new Date('2026-07-11T02:30:00Z') },
-        { deckId: 'a', title: 'Alpha', cardsStudied: 5, completedAt: new Date('2026-07-09T09:00:00Z') },
-        { deckId: 'b', title: 'Beta', cardsStudied: 8, completedAt: new Date('2026-07-10T12:00:00Z') },
+        {
+            deckId: 'a',
+            title: 'Alpha',
+            cardsStudied: 10,
+            completedAt: new Date('2026-07-11T02:30:00Z'),
+        },
+        {
+            deckId: 'a',
+            title: 'Alpha',
+            cardsStudied: 5,
+            completedAt: new Date('2026-07-09T09:00:00Z'),
+        },
+        {
+            deckId: 'b',
+            title: 'Beta',
+            cardsStudied: 8,
+            completedAt: new Date('2026-07-10T12:00:00Z'),
+        },
     ];
 
     it('groups by deck: one row per session, summed cards, latest timestamp', () => {
-        const items = aggregateDecksStudied(rows, 'UTC', new Set(tzDayKeysEndingOn(LATE_NIGHT_UTC, 'UTC', 7)));
+        const items = aggregateDecksStudied(
+            rows,
+            'UTC',
+            new Set(tzDayKeysEndingOn(LATE_NIGHT_UTC, 'UTC', 7)),
+        );
         // Sorted by lastStudiedAt DESC → Alpha (07-11) before Beta (07-10).
         expect(items).toEqual([
             {
@@ -143,7 +159,12 @@ describe('aggregateDecksStudied (item 4)', () => {
     it("'all' range (labelSet null) counts every completed session", () => {
         const withOld = [
             ...rows,
-            { deckId: 'c', title: 'Gamma', cardsStudied: 3, completedAt: new Date('2020-01-01T00:00:00Z') },
+            {
+                deckId: 'c',
+                title: 'Gamma',
+                cardsStudied: 3,
+                completedAt: new Date('2020-01-01T00:00:00Z'),
+            },
         ];
         const items = aggregateDecksStudied(withOld, 'UTC', null);
         expect(items.map((i) => i.deckId)).toEqual(['a', 'b', 'c']); // Gamma oldest, sorts last

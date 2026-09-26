@@ -30,7 +30,7 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
         if (error.validation) {
             return reply.status(400).send({
                 code: 'VALIDATION_ERROR',
-                message: error.message ?? 'Validation failed',
+                message: error.message || 'Validation failed',
                 details: { issues: error.validation },
             });
         }
@@ -74,11 +74,17 @@ export const registerErrorHandler = (fastify: FastifyInstance) => {
         // errors are domain-expected and would just be noise in Sentry.
         captureUnexpected(error);
 
-        const message = env.NODE_ENV === 'production' ? 'Internal server error' : (error.message ?? 'Internal error');
+        const message =
+            env.NODE_ENV === 'production'
+                ? 'Internal server error'
+                : error.message || 'Internal error';
         return reply.status(500).send({ code: 'INTERNAL', message });
     });
 
     fastify.setNotFoundHandler((request, reply) => {
-        reply.status(404).send({ code: 'NOT_FOUND', message: `Route ${request.method} ${request.url} not found` });
+        reply.status(404).send({
+            code: 'NOT_FOUND',
+            message: `Route ${request.method} ${request.url} not found`,
+        });
     });
 };

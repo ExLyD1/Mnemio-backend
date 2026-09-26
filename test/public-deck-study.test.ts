@@ -4,9 +4,6 @@ import * as cardsRepo from '../src/repositories/cards.repository.js';
 import * as deckStatsRepo from '../src/repositories/deck-stats.repository.js';
 import * as sessionsRepo from '../src/repositories/sessions.repository.js';
 import * as srsRepo from '../src/repositories/srs.repository.js';
-import * as activityRepo from '../src/repositories/activity.repository.js';
-import * as achievementsService from '../src/services/achievements.service.js';
-import * as milestone from '../src/services/milestone.service.js';
 import * as decksService from '../src/services/decks.service.js';
 import * as sessionsService from '../src/services/sessions.service.js';
 import * as srsService from '../src/services/srs.service.js';
@@ -101,15 +98,19 @@ describe('decks.service.getOne — public-deck read access', () => {
     });
 
     it('404s for a non-owner on a PRIVATE deck (no leak)', async () => {
-        mDecks.findDeckByIdUnscoped.mockResolvedValue(deckRow({ authorId: OWNER, isPublic: false }));
-        await expect(decksService.getOne(VIEWER, 'deck-1', {})).rejects.toBeInstanceOf(NotFoundError);
+        mDecks.findDeckByIdUnscoped.mockResolvedValue(
+            deckRow({ authorId: OWNER, isPublic: false }),
+        );
+        await expect(decksService.getOne(VIEWER, 'deck-1', {})).rejects.toBeInstanceOf(
+            NotFoundError,
+        );
     });
 });
 
 describe('sessions.service.start — public-deck study', () => {
     beforeEach(() => {
         mSessions.listDeckCardIds.mockResolvedValue([{ id: 'card-1' }, { id: 'card-2' }]);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
         mSessions.startSession.mockResolvedValue({
             id: 'sess-1',
             userId: VIEWER,
@@ -144,7 +145,9 @@ describe('sessions.service.start — public-deck study', () => {
     });
 
     it('404s for a non-owner on a PRIVATE deck', async () => {
-        mDecks.findDeckByIdUnscoped.mockResolvedValue(deckRow({ authorId: OWNER, isPublic: false }));
+        mDecks.findDeckByIdUnscoped.mockResolvedValue(
+            deckRow({ authorId: OWNER, isPublic: false }),
+        );
         await expect(
             sessionsService.start(VIEWER, { deckId: 'deck-1', mode: 'study' }),
         ).rejects.toBeInstanceOf(NotFoundError);

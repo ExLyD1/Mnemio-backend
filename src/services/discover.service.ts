@@ -23,8 +23,7 @@ const decodeDiscoverCursor = (raw: string | undefined) => {
     return c ? { sortValue: c.ts, id: c.id } : null;
 };
 
-const encodeDiscoverCursor = (sortValue: string, id: string) =>
-    encodeCursor({ ts: sortValue, id });
+const encodeDiscoverCursor = (sortValue: string, id: string) => encodeCursor({ ts: sortValue, id });
 
 const attachStats = async (
     viewerId: string | null,
@@ -84,7 +83,9 @@ export const categories = async (): Promise<{ items: { subject: string; count: n
 
 export const copy = async (viewerId: string, sourceDeckId: string): Promise<PublicDeck> => {
     const source = await discoverRepo.findPublicDeckById(sourceDeckId);
-    if (!source) throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
+    if (!source) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Public deck not found');
+    }
 
     // Atomic: clone deck + cards + bump source copyCount.
     const newDeckId = await prisma.$transaction(async (tx) => {
@@ -95,7 +96,7 @@ export const copy = async (viewerId: string, sourceDeckId: string): Promise<Publ
                 description: source.description,
                 sourceLanguage: source.sourceLanguage,
                 targetLanguage: source.targetLanguage,
-                isPublic: false,             // clones default to private
+                isPublic: false, // clones default to private
                 coverColor: source.coverColor,
                 glyph: source.glyph,
                 subject: source.subject,

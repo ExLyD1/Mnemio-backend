@@ -24,10 +24,7 @@ export const nextResetAt = (d: Date = new Date()): Date => {
 // separately since vision calls cost more than text-only ones.
 export type AiUsageKind = 'enrich' | 'generate' | 'suggest' | 'import' | 'chat' | 'image';
 
-export const findTodayCount = async (
-    userId: string,
-    kind: AiUsageKind,
-): Promise<number> => {
+export const findTodayCount = async (userId: string, kind: AiUsageKind): Promise<number> => {
     const row = await prisma.aiUsage.findUnique({
         where: { userId_day_kind: { userId, day: dayUtc(), kind } },
     });
@@ -57,10 +54,7 @@ export const findTodayCounts = async (
  * Atomic +1 on the day's counter. Returns the new total after increment so
  * callers can surface "you have N left" if they want.
  */
-export const recordUse = async (
-    userId: string,
-    kind: AiUsageKind,
-): Promise<number> => {
+export const recordUse = async (userId: string, kind: AiUsageKind): Promise<number> => {
     const row = await prisma.aiUsage.upsert({
         where: { userId_day_kind: { userId, day: dayUtc(), kind } },
         update: { count: { increment: 1 } },

@@ -21,7 +21,7 @@ import {
 } from '../plugins/cookies.js';
 
 const ctxOf = (request: FastifyRequest) => ({
-    ip: request.ip ?? null,
+    ip: request.ip || null,
     userAgent: request.headers['user-agent'] ?? null,
 });
 
@@ -134,12 +134,18 @@ export const googleAuthCallback = async (
         return reply.redirect(target.toString(), 302);
     };
 
-    if (request.query.error) return fail(request.query.error);
-    if (!cookies) return fail('missing_state');
+    if (request.query.error) {
+        return fail(request.query.error);
+    }
+    if (!cookies) {
+        return fail('missing_state');
+    }
     if (!request.query.state || request.query.state !== cookies.state) {
         return fail('bad_state');
     }
-    if (!request.query.code) return fail('missing_code');
+    if (!request.query.code) {
+        return fail('missing_code');
+    }
 
     let profile: googleOAuth.GoogleProfile;
     try {
@@ -161,7 +167,7 @@ export const googleAuthCallback = async (
             fullName: profile.name ?? null,
             emailVerifiedByProvider: profile.emailVerified,
         },
-        { ip: request.ip ?? null, userAgent: request.headers['user-agent'] ?? null },
+        { ip: request.ip || null, userAgent: request.headers['user-agent'] ?? null },
     );
     // NOTE: the refresh cookie is deliberately NOT set here. This callback runs
     // on the BACKEND origin (the FE sends the user to `oauthBase`), while every
@@ -180,7 +186,7 @@ export const googleAuthCallback = async (
 type ExchangeBody = { code?: unknown };
 
 export const oauthExchangeCode = async (request: FastifyRequest, reply: FastifyReply) => {
-    const code = (request.body as ExchangeBody)?.code;
+    const code = (request.body as ExchangeBody | null | undefined)?.code;
     if (typeof code !== 'string' || code.length === 0) {
         throw new BadRequestError('OAUTH_BAD_EXCHANGE_CODE', 'Missing or invalid exchange code');
     }

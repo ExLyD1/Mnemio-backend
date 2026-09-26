@@ -16,18 +16,30 @@ export const updateMe = async (
     }
 
     const patch: usersRepo.UpdateMePatch = {};
-    if (input.fullName !== undefined) patch.fullName = input.fullName;
-    if (input.username !== undefined) patch.username = input.username;
-    if (input.birthday !== undefined) patch.birthday = new Date(input.birthday);
-    if (input.avatarUrl === null) patch.avatarUrl = null;
+    if (input.fullName !== undefined) {
+        patch.fullName = input.fullName;
+    }
+    if (input.username !== undefined) {
+        patch.username = input.username;
+    }
+    if (input.birthday !== undefined) {
+        patch.birthday = new Date(input.birthday);
+    }
+    if (input.avatarUrl === null) {
+        patch.avatarUrl = null;
+    }
 
     try {
         const user = await usersRepo.updateUser(userId, patch);
         return { user: toPublicUser(user), needsProfile: needsProfile(user) };
     } catch (err) {
         const code = (err as { code?: string }).code;
-        if (code === 'P2025') throw new NotFoundError('USER_NOT_FOUND', 'User not found');
-        if (code === 'P2002') throw new ConflictError('AUTH_USERNAME_TAKEN', 'This username is already taken');
+        if (code === 'P2025') {
+            throw new NotFoundError('USER_NOT_FOUND', 'User not found');
+        }
+        if (code === 'P2002') {
+            throw new ConflictError('AUTH_USERNAME_TAKEN', 'This username is already taken');
+        }
         throw err;
     }
 };
@@ -51,6 +63,8 @@ export const deleteMe = async (userId: string, ctx: DeleteMeContext): Promise<vo
     } catch (err) {
         // Idempotent: if a stale token races a delete, swallow not-found.
         const code = (err as { code?: string }).code;
-        if (code !== 'P2025') throw err;
+        if (code !== 'P2025') {
+            throw err;
+        }
     }
 };

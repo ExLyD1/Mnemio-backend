@@ -6,8 +6,9 @@ import { env } from '../src/config/env.js';
 import * as subscriptionRepo from '../src/repositories/subscription.repository.js';
 
 vi.mock('../src/repositories/ai-usage.repository.js', async () => {
-    const actual =
-        await vi.importActual<typeof aiUsageRepo>('../src/repositories/ai-usage.repository.js');
+    const actual = await vi.importActual<typeof aiUsageRepo>(
+        '../src/repositories/ai-usage.repository.js',
+    );
     return {
         ...actual,
         findTodayCount: vi.fn(),
@@ -90,9 +91,9 @@ describe('ai.budget.service / assertWithinBudget', () => {
                 kind: 'image',
                 capPerDay: env.AI_DAILY_IMAGE_CAP_PER_USER,
             });
-            expect(
-                new Date(payload.details?.resetsAt as string).getTime(),
-            ).toBeGreaterThan(Date.now());
+            expect(new Date(payload.details?.resetsAt as string).getTime()).toBeGreaterThan(
+                Date.now(),
+            );
         }
     });
 
@@ -108,9 +109,9 @@ describe('ai.budget.service / assertWithinBudget', () => {
                 kind: 'generate',
                 capPerDay: env.AI_DAILY_GENERATE_CAP_PER_USER,
             });
-            expect(
-                new Date(payload.details?.resetsAt as string).getTime(),
-            ).toBeGreaterThan(Date.now());
+            expect(new Date(payload.details?.resetsAt as string).getTime()).toBeGreaterThan(
+                Date.now(),
+            );
         }
     });
 });

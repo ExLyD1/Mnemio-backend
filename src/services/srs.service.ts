@@ -45,7 +45,9 @@ export const rate = async (
     // ratings never touch the owner's progress. Private decks stay 403 for
     // non-owners, which also re-locks the moment isPublic flips to false.
     const card = await cardsRepo.findCardWithOwner(input.cardId);
-    if (!card) throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
+    if (!card) {
+        throw new NotFoundError('CARD_NOT_FOUND', 'Card not found');
+    }
     if (card.deck.authorId !== ownerId && !card.deck.isPublic) {
         throw new ForbiddenError('CARD_FORBIDDEN', 'You do not own this card');
     }
@@ -87,7 +89,9 @@ export const rate = async (
 
     // Only a brand-new progress row can be the user's first-ever review; skip
     // the probe on re-reviews of an already-seen card so it can't double-fire.
-    if (!existing) void milestone.checkFirstReview(ownerId);
+    if (!existing) {
+        void milestone.checkFirstReview(ownerId);
+    }
 
     return {
         cardId: saved.cardId,

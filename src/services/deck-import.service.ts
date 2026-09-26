@@ -74,14 +74,18 @@ const fromCsv = (text: string): CreateCardInput[] => {
     }
     const headers = parseCsvHeader(lines[0]!);
     if (!headers.includes('word') || !headers.includes('definition')) {
-        throw new ImportParseFailedError("CSV header must include at least 'word' and 'definition'");
+        throw new ImportParseFailedError(
+            "CSV header must include at least 'word' and 'definition'",
+        );
     }
     const out: CreateCardInput[] = [];
     for (let i = 1; i < lines.length; i++) {
         const row = parseCsvLineWithHeaders(lines[i]!, headers);
         const word = row.word;
         const definition = row.definition;
-        if (!word || !definition) continue;
+        if (!word || !definition) {
+            continue;
+        }
         const card: CreateCardInput = {
             word,
             definition,
@@ -91,7 +95,12 @@ const fromCsv = (text: string): CreateCardInput[] => {
             ...(row.example ? { example: row.example } : {}),
             ...(row.exampleTranslation ? { exampleTranslation: row.exampleTranslation } : {}),
             ...(row.tags
-                ? { tags: row.tags.split(';').map((t) => t.trim()).filter(Boolean) }
+                ? {
+                      tags: row.tags
+                          .split(';')
+                          .map((t) => t.trim())
+                          .filter(Boolean),
+                  }
                 : {}),
             ...(isDifficulty(row.difficulty) ? { difficulty: row.difficulty } : {}),
             ...(isCardType(row.type) ? { type: row.type } : {}),
@@ -121,14 +130,30 @@ const fromJson = (text: string): CreateCardInput[] => {
     const cards = Array.isArray(parsed.data) ? parsed.data : parsed.data.cards;
     return cards.map((c) => {
         const out: CreateCardInput = { word: c.word, definition: c.definition };
-        if (c.phonetic) out.phonetic = c.phonetic;
-        if (c.reading) out.reading = c.reading;
-        if (c.partOfSpeech) out.partOfSpeech = c.partOfSpeech;
-        if (c.example) out.example = c.example;
-        if (c.exampleTranslation) out.exampleTranslation = c.exampleTranslation;
-        if (c.tags && c.tags.length > 0) out.tags = c.tags;
-        if (c.difficulty) out.difficulty = c.difficulty;
-        if (c.type) out.type = c.type;
+        if (c.phonetic) {
+            out.phonetic = c.phonetic;
+        }
+        if (c.reading) {
+            out.reading = c.reading;
+        }
+        if (c.partOfSpeech) {
+            out.partOfSpeech = c.partOfSpeech;
+        }
+        if (c.example) {
+            out.example = c.example;
+        }
+        if (c.exampleTranslation) {
+            out.exampleTranslation = c.exampleTranslation;
+        }
+        if (c.tags && c.tags.length > 0) {
+            out.tags = c.tags;
+        }
+        if (c.difficulty) {
+            out.difficulty = c.difficulty;
+        }
+        if (c.type) {
+            out.type = c.type;
+        }
         return out;
     });
 };

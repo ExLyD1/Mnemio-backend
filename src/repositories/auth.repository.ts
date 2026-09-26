@@ -1,5 +1,5 @@
 import { prisma } from '../db/prisma.js';
-import { Prisma } from '../../generated/prisma/client.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 type InputJsonValue = Prisma.InputJsonValue;
 
 export const findUserByEmail = (email: string) =>

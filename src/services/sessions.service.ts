@@ -69,23 +69,33 @@ export const updateProgress = async (
     input: UpdateSessionInput,
 ): Promise<PublicSession> => {
     const patch: sessionsRepo.SessionProgressPatch = {};
-    if (input.cardIndex !== undefined) patch.cardIndex = input.cardIndex;
-    if (input.correct !== undefined) patch.correct = input.correct;
+    if (input.cardIndex !== undefined) {
+        patch.cardIndex = input.cardIndex;
+    }
+    if (input.correct !== undefined) {
+        patch.correct = input.correct;
+    }
     if (input.counts !== undefined) {
         patch.countsAgain = input.counts.again;
         patch.countsHard = input.counts.hard;
         patch.countsGood = input.counts.good;
         patch.countsEasy = input.counts.easy;
     }
-    if (input.revisitCardIds !== undefined) patch.revisitCardIds = input.revisitCardIds;
-    if (input.durationMs !== undefined) patch.durationMs = input.durationMs;
+    if (input.revisitCardIds !== undefined) {
+        patch.revisitCardIds = input.revisitCardIds;
+    }
+    if (input.durationMs !== undefined) {
+        patch.durationMs = input.durationMs;
+    }
 
     const { count } = await sessionsRepo.updateProgress(sessionId, ownerId, patch);
     if (count === 0) {
         throw new NotFoundError('SESSION_NOT_FOUND', 'Active session not found');
     }
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
-    if (!fresh) throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
+    if (!fresh) {
+        throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
+    }
     return toPublicSession(fresh);
 };
 
@@ -95,7 +105,9 @@ export const complete = async (
     tz: string = DEFAULT_TZ,
 ): Promise<PublicSession & { newAchievements: PublicAchievement[] }> => {
     const session = await sessionsRepo.findSessionOwned(sessionId, ownerId);
-    if (!session) throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
+    if (!session) {
+        throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
+    }
     if (session.status !== 'active') {
         throw new BadRequestError('SESSION_NOT_ACTIVE', 'Session is not active');
     }
@@ -148,7 +160,10 @@ export const complete = async (
     void milestone.checkFirstSession(ownerId);
 
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
-    return { ...toPublicSession(fresh!), newAchievements };
+    if (!fresh) {
+        throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
+    }
+    return { ...toPublicSession(fresh), newAchievements };
 };
 
 export const latestIncomplete = async (ownerId: string): Promise<PublicSession | null> => {
@@ -167,7 +182,10 @@ export const exit = async (ownerId: string, sessionId: string): Promise<PublicSe
         throw new NotFoundError('SESSION_NOT_FOUND', 'Active session not found');
     }
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
-    return toPublicSession(fresh!);
+    if (!fresh) {
+        throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
+    }
+    return toPublicSession(fresh);
 };
 
 export const resume = async (ownerId: string, sessionId: string): Promise<PublicSession> => {
@@ -176,5 +194,8 @@ export const resume = async (ownerId: string, sessionId: string): Promise<Public
         throw new NotFoundError('SESSION_NOT_FOUND', 'Incomplete session not found');
     }
     const fresh = await sessionsRepo.findSessionOwned(sessionId, ownerId);
-    return toPublicSession(fresh!);
+    if (!fresh) {
+        throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
+    }
+    return toPublicSession(fresh);
 };
