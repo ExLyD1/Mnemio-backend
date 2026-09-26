@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mockProvider } from '../src/services/ai.provider.mock.js';
 import type { DeckFromImageProviderInput, GenerateDeckEvent } from '../src/services/ai.provider.js';
+import type * as EnvModule from '../src/config/env.js';
 
 vi.mock('../src/repositories/preferences.repository.js', () => ({
     findOrCreate: vi.fn().mockResolvedValue({ nativeLanguage: 'uk', learningLanguages: ['de'] }),

@@ -10,12 +10,12 @@ import {
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
 import {
+    toPublicDeck,
     toPublicDeckWithAuthor,
     buildStats,
     type PublicDeckWithAuthor,
     type PublicDeck,
 } from '../shared/mappers.deck.js';
-import { toPublicDeck } from '../shared/mappers.deck.js';
 import type { DiscoverListQuery, DiscoverSort } from '../schemas/discover.schema.js';
 
 const decodeDiscoverCursor = (raw: string | undefined) => {
@@ -55,9 +55,11 @@ export const list = async (
         discoverRepo.countPublicDecks({ q: query.q, lang: query.lang, subject: query.subject }),
     ]);
 
+    // The repo fetches limit + 1 rows; an extra row means another page exists,
+    // and the last row of this page is where it starts.
+    const last = rows.length > limit ? rows[limit - 1] : undefined;
     let nextCursor: string | null = null;
-    if (rows.length > limit) {
-        const last = rows[limit - 1]!;
+    if (last) {
         nextCursor =
             sort === 'recent'
                 ? encodeDiscoverCursor(last.updatedAt.toISOString(), last.id)
@@ -144,6 +146,9 @@ export const copy = async (viewerId: string, sourceDeckId: string): Promise<Publ
     void milestone.checkFirstDeck(viewerId);
 
     const fresh = await prisma.deck.findUnique({ where: { id: newDeckId } });
+    if (!fresh) {
+        throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+    }
     const stats = await deckStatsRepo.aggregateDeckStats(viewerId, [newDeckId]);
-    return toPublicDeck(fresh!, buildStats(fresh!.cardCount, stats[0]));
+    return toPublicDeck(fresh, buildStats(fresh.cardCount, stats[0]));
 };

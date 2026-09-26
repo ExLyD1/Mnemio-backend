@@ -52,11 +52,12 @@ export const list = async (
         decksRepo.countDecks({ ownerId, q: query.q }),
     ]);
 
-    let nextCursor: string | null = null;
-    if (rows.length > limit) {
-        const last = rows[limit - 1]!;
-        nextCursor = encodeCursor({ ts: last.updatedAt.toISOString(), id: last.id });
-    }
+    // The repo fetches limit + 1 rows; an extra row means another page exists,
+    // and the last row of this page is where it starts.
+    const last = rows.length > limit ? rows[limit - 1] : undefined;
+    const nextCursor = last
+        ? encodeCursor({ ts: last.updatedAt.toISOString(), id: last.id })
+        : null;
     const pageRows = rows.slice(0, limit);
     const stats = await statsByDeckId(
         ownerId,
@@ -73,7 +74,7 @@ export const list = async (
 export const create = async (ownerId: string, input: CreateDeckInput): Promise<PublicDeck> => {
     const deck = await decksRepo.createDeck(ownerId, {
         title: input.title,
-        description: input.description ?? '',
+        description: input.description,
         sourceLanguage: input.sourceLanguage,
         targetLanguage: input.targetLanguage,
         isPublic: input.isPublic ?? false,

@@ -67,20 +67,27 @@ const parseCsvLineWithHeaders = (line: string, headers: string[]): Record<string
     return row;
 };
 
+const isDifficulty = (v: string | undefined): v is 'easy' | 'medium' | 'hard' =>
+    v === 'easy' || v === 'medium' || v === 'hard';
+
+const isCardType = (v: string | undefined): v is 'basic' | 'cloze' | 'image' =>
+    v === 'basic' || v === 'cloze' || v === 'image';
+
 const fromCsv = (text: string): CreateCardInput[] => {
     const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    if (lines.length < 2) {
+    const [headerLine, ...cardLines] = lines;
+    if (headerLine === undefined || cardLines.length === 0) {
         throw new ImportParseFailedError('CSV must include a header row and at least one card');
     }
-    const headers = parseCsvHeader(lines[0]!);
+    const headers = parseCsvHeader(headerLine);
     if (!headers.includes('word') || !headers.includes('definition')) {
         throw new ImportParseFailedError(
             "CSV header must include at least 'word' and 'definition'",
         );
     }
     const out: CreateCardInput[] = [];
-    for (let i = 1; i < lines.length; i++) {
-        const row = parseCsvLineWithHeaders(lines[i]!, headers);
+    for (const line of cardLines) {
+        const row = parseCsvLineWithHeaders(line, headers);
         const word = row.word;
         const definition = row.definition;
         if (!word || !definition) {
@@ -109,12 +116,6 @@ const fromCsv = (text: string): CreateCardInput[] => {
     }
     return out;
 };
-
-const isDifficulty = (v: string | undefined): v is 'easy' | 'medium' | 'hard' =>
-    v === 'easy' || v === 'medium' || v === 'hard';
-
-const isCardType = (v: string | undefined): v is 'basic' | 'cloze' | 'image' =>
-    v === 'basic' || v === 'cloze' || v === 'image';
 
 const fromJson = (text: string): CreateCardInput[] => {
     let raw: unknown;

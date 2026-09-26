@@ -37,11 +37,7 @@ describe('resolveMasteredAt — set-once mastery timestamp', () => {
 
 describe('backfill precedence — COALESCE(lastReviewedAt, updatedAt, createdAt)', () => {
     // Mirrors the migration's backfill UPDATE for existing mastered rows.
-    const coalesce = (
-        lastReviewedAt: Date | null,
-        updatedAt: Date | null,
-        createdAt: Date,
-    ): Date =>
+    const coalesce = (lastReviewedAt: Date | null, updatedAt: Date | null, createdAt: Date): Date =>
         lastReviewedAt ?? updatedAt ?? createdAt;
 
     const lr = D('2026-05-01T00:00:00Z');

@@ -22,12 +22,12 @@ import {
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
 import {
+    toPublicCard,
     toPublicDeckWithAuthor,
     buildStats,
     type PublicDeckWithAuthor,
     type PublicCard,
 } from '../shared/mappers.deck.js';
-import { toPublicCard } from '../shared/mappers.deck.js';
 import type { DiscoverListQuery, DiscoverSort } from '../schemas/discover.schema.js';
 
 const decodeDiscoverCursor = (raw: string | undefined) => {
@@ -58,9 +58,11 @@ export const listPublicDecks = async (
         discoverRepo.countPublicDecks({ q: query.q, lang: query.lang, subject: query.subject }),
     ]);
 
+    // The repo fetches limit + 1 rows; an extra row means another page exists,
+    // and the last row of this page is where it starts.
+    const last = rows.length > limit ? rows[limit - 1] : undefined;
     let nextCursor: string | null = null;
-    if (rows.length > limit) {
-        const last = rows[limit - 1]!;
+    if (last) {
         nextCursor =
             sort === 'recent'
                 ? encodeDiscoverCursor(last.updatedAt.toISOString(), last.id)

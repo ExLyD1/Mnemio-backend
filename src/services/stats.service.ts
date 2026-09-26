@@ -188,9 +188,7 @@ export const activity = async (userId: string, tz: string = DEFAULT_TZ): Promise
 
     // yearHeat: 53 columns (weeks, oldest → newest), 7 rows (Sun..Sat).
     const cols = 53;
-    const yearHeat: number[][] = Array.from({ length: cols }, () =>
-        new Array<number>(7).fill(0),
-    );
+    const yearHeat: number[][] = Array.from({ length: cols }, () => new Array<number>(7).fill(0));
     const cursor = new Date(yearStart);
     // Align cursor to start-of-week (Sunday).
     cursor.setUTCDate(cursor.getUTCDate() - cursor.getUTCDay());

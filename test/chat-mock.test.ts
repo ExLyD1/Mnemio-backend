@@ -21,9 +21,7 @@ describe('ai.provider.mock / chat', () => {
         expect(last?.type).toBe('done');
 
         // The returned content matches the concatenated deltas.
-        const concatenated = tokens
-            .map((e) => e.delta)
-            .join('');
+        const concatenated = tokens.map((e) => e.delta).join('');
         expect(result.content).toBe(concatenated);
     });
 
