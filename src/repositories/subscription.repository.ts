@@ -1,15 +1,16 @@
 import { prisma } from '../db/prisma.js';
 
-export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'canceled' | 'expired';
+/** Paddle subscription statuses, mirrored verbatim onto the row. */
+export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'paused' | 'canceled';
 
 export type SubscriptionRow = {
     id: string;
     userId: string;
     status: string;
     plan: string;
-    stripeCustomerId: string;
-    stripeSubId: string;
-    stripePriceId: string;
+    paddleCustomerId: string;
+    paddleSubId: string;
+    paddlePriceId: string;
     currentPeriodStart: Date;
     currentPeriodEnd: Date;
     cancelAtPeriodEnd: boolean;
@@ -22,9 +23,9 @@ export type UpsertSubscriptionData = {
     userId: string;
     status: string;
     plan: string;
-    stripeCustomerId: string;
-    stripeSubId: string;
-    stripePriceId: string;
+    paddleCustomerId: string;
+    paddleSubId: string;
+    paddlePriceId: string;
     currentPeriodStart: Date;
     currentPeriodEnd: Date;
     cancelAtPeriodEnd: boolean;
@@ -34,18 +35,21 @@ export type UpsertSubscriptionData = {
 export const findByUserId = (userId: string): Promise<SubscriptionRow | null> =>
     prisma.subscription.findUnique({ where: { userId } });
 
-export const findByStripeCustomerId = (stripeCustomerId: string): Promise<SubscriptionRow | null> =>
-    prisma.subscription.findUnique({ where: { stripeCustomerId } });
+export const findByPaddleCustomerId = (paddleCustomerId: string): Promise<SubscriptionRow | null> =>
+    prisma.subscription.findUnique({ where: { paddleCustomerId } });
 
-export const upsertFromStripe = (data: UpsertSubscriptionData): Promise<SubscriptionRow> =>
+export const findByPaddleSubId = (paddleSubId: string): Promise<SubscriptionRow | null> =>
+    prisma.subscription.findUnique({ where: { paddleSubId } });
+
+export const upsertFromPaddle = (data: UpsertSubscriptionData): Promise<SubscriptionRow> =>
     prisma.subscription.upsert({
         where: { userId: data.userId },
         update: {
             status: data.status,
             plan: data.plan,
-            stripeCustomerId: data.stripeCustomerId,
-            stripeSubId: data.stripeSubId,
-            stripePriceId: data.stripePriceId,
+            paddleCustomerId: data.paddleCustomerId,
+            paddleSubId: data.paddleSubId,
+            paddlePriceId: data.paddlePriceId,
             currentPeriodStart: data.currentPeriodStart,
             currentPeriodEnd: data.currentPeriodEnd,
             cancelAtPeriodEnd: data.cancelAtPeriodEnd,
@@ -54,7 +58,26 @@ export const upsertFromStripe = (data: UpsertSubscriptionData): Promise<Subscrip
         create: data,
     });
 
-const ENTITLED_STATUSES: SubscriptionStatus[] = ['trialing', 'active', 'past_due', 'canceled'];
+/**
+ * Statuses that grant paid access.
+ *
+ * `trialing` counts — a 7-day trial is a paying relationship in waiting, and
+ * gating it would make the trial pointless.
+ *
+ * `past_due` counts, deliberately: Paddle retries a failed renewal over several
+ * days, and yanking Premium mid-dunning punishes someone whose card merely
+ * expired. The `currentPeriodEnd` guard below still bounds it.
+ *
+ * `canceled` and `paused` do NOT count. Note this differs from the old Stripe
+ * rule, which kept `canceled` entitled until the period end: under Paddle a
+ * scheduled cancellation leaves `status` as `active` until the term actually
+ * ends, so Paddle already provides that grace period. Honouring `canceled` too
+ * would extend access past the real end date.
+ *
+ * Crucially this reads `status`, never `cancelAtPeriodEnd` — a subscription set
+ * to cancel later is still active today and keeps full access until it lapses.
+ */
+const ENTITLED_STATUSES: SubscriptionStatus[] = ['trialing', 'active', 'past_due'];
 
 export const isEntitled = async (userId: string): Promise<boolean> => {
     const now = new Date();
@@ -74,8 +97,8 @@ export const recordWebhookEvent = async (
     id: string,
     type: string,
 ): Promise<void> => {
-    await tx.stripeWebhookEvent.create({ data: { id, type } });
+    await tx.paddleWebhookEvent.create({ data: { id, type } });
 };
 
 export const findWebhookEvent = (id: string): Promise<{ id: string } | null> =>
-    prisma.stripeWebhookEvent.findUnique({ where: { id }, select: { id: true } });
+    prisma.paddleWebhookEvent.findUnique({ where: { id }, select: { id: true } });

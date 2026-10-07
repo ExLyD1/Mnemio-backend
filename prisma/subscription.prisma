@@ -4,12 +4,15 @@ model Subscription {
   status             String
   plan               String
 
-  stripeCustomerId   String    @unique
-  stripeSubId        String    @unique
-  stripePriceId      String
+  paddleCustomerId   String    @unique
+  paddleSubId        String    @unique
+  paddlePriceId      String
 
   currentPeriodStart DateTime
   currentPeriodEnd   DateTime
+  // True while Paddle reports a scheduled_change whose action is "cancel".
+  // Access is NOT revoked on this flag alone — only a real `canceled` status
+  // ends entitlement (see subscription.repository.isEntitled).
   cancelAtPeriodEnd  Boolean   @default(false)
   trialEnd           DateTime?
 
@@ -18,14 +21,17 @@ model Subscription {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([stripeCustomerId])
+  @@index([paddleCustomerId])
   @@map("subscriptions")
 }
 
-model StripeWebhookEvent {
+// Idempotency ledger. Paddle delivers at-least-once and may deliver out of
+// order, so each event id is recorded inside the same transaction that applies
+// it; a redelivery finds the row and becomes a no-op.
+model PaddleWebhookEvent {
   id          String   @id
   type        String
   processedAt DateTime @default(now())
 
-  @@map("stripe_webhook_events")
+  @@map("paddle_webhook_events")
 }

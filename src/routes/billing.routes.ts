@@ -2,11 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import * as billingController from '../controllers/billing.controller.js';
 
 const billingRoutes = async (fastify: FastifyInstance) => {
-    fastify.post(
-        '/billing/checkout',
-        { preHandler: [fastify.authenticate] },
-        billingController.checkout,
-    );
+    // NOTE: POST /billing/checkout is gone. Checkout is opened client-side by
+    // Paddle.js (Paddle.Checkout.open) straight from the pricing page, so the
+    // server never mints a checkout session. Fulfillment still happens here via
+    // the webhook below — that, not the browser, is what grants access.
 
     fastify.get(
         '/billing/subscription',
@@ -20,8 +19,10 @@ const billingRoutes = async (fastify: FastifyInstance) => {
         billingController.portal,
     );
 
-    // Webhook — scoped child plugin so its raw-body content-type parser
-    // doesn't affect the JSON routes above.
+    // Webhook — public (Paddle-signed, no JWT). Scoped child plugin so its
+    // raw-body content-type parser doesn't affect the JSON routes above:
+    // verification runs over the exact bytes Paddle sent, and any parse +
+    // re-serialise in between would break the signature.
     await fastify.register(async (webhookScope) => {
         webhookScope.addContentTypeParser(
             'application/json',

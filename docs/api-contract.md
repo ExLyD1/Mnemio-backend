@@ -9,7 +9,7 @@
 **Contract is complete.** P0 + P1 + P2 from `backend-plan.md` are all shipped,
 plus the post-MVP additions (Google OAuth, account deletion, welcome flags,
 Quizlet/text imports, deck import/export, real-time AI chat, and paid
-subscriptions via Stripe). **65 endpoints under `/api/v1`** + `GET /health` +
+subscriptions via Paddle). **65 endpoints under `/api/v1`** + `GET /health` +
 `GET /ready` + static `/media/*`. Nothing in this document is "coming later"
 unless it says so explicitly.
 
@@ -32,7 +32,7 @@ unless it says so explicitly.
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
-| Billing | `POST /billing/checkout` · `GET /billing/subscription` · `POST /billing/portal` · `POST /billing/webhook` |
+| Billing | `GET /billing/subscription` · `POST /billing/portal` · `POST /billing/webhook` |
 | Ops | `GET /health` · `GET /ready` (both un-prefixed) |
 
 ### Invariants the FE must respect
@@ -155,9 +155,9 @@ type ApiError = {
 | `CHAT_NOT_FOUND` | any `/chat/conversations/:id*` | 404 — conversation missing or owned by someone else. |
 | `CHAT_BUSY` | `POST /chat/conversations/:id/messages` | 409 — a reply is already streaming in this conversation (another tab). Nothing was written; wait for it to finish. |
 | `PREMIUM_REQUIRED` | any gated endpoint | 403 — feature requires an active subscription. Show paywall/upgrade modal. |
-| `BILLING_NOT_CONFIGURED` | any `/billing/*` | 400 — Stripe keys absent on this deployment. Hide billing UI entirely. |
+| `BILLING_NOT_CONFIGURED` | any `/billing/*` | 400 — Paddle keys absent on this deployment. Hide billing UI entirely. |
 | `BILLING_NO_SUBSCRIPTION` | `POST /billing/portal` | 404 — user has no subscription row. Treat the same as `plan: 'free'`. `GET /billing/subscription` returns `200 null` instead. |
-| `BILLING_PRICE_NOT_CONFIGURED` | `POST /billing/checkout` | 400 — specific plan price ID missing in env. Fall back to the other plan or show "unavailable". |
+| `BILLING_PRICE_NOT_CONFIGURED` | FE checkout | Raised client-side when a plan has no Paddle price ID in `app/data/plans.ts`. |
 
 **429 envelope:** `@fastify/rate-limit` is now configured with our standard
 envelope, so a rate-limited request returns
@@ -1901,34 +1901,18 @@ attach. For avatars, the response already updated the user row.
 
 ### Billing
 
-Stripe-powered subscription management. Requires `STRIPE_SECRET_KEY`,
-`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY`, and `STRIPE_PRICE_ANNUAL` to
-be set in the backend env. When any of these are absent, every `/billing/*`
-call returns `400 BILLING_NOT_CONFIGURED` — the FE should hide billing UI
-entirely in that case (useful for local dev without a Stripe account).
+Paddle-powered subscription management. Requires `PADDLE_API_KEY`,
+`PADDLE_WEBHOOK_SECRET`, `PADDLE_ENV`, `PADDLE_PRICE_MONTHLY`, and
+`PADDLE_PRICE_ANNUAL` to be set in the backend env. When `PADDLE_API_KEY` is
+absent, every `/billing/*` call returns `400 BILLING_NOT_CONFIGURED` — the FE
+hides its billing UI in that case (useful for local dev without a Paddle
+account).
 
-#### `POST /billing/checkout`  *(auth)*
-Create a Stripe Checkout session and return the hosted-page URL. The FE
-redirects the user to that URL; Stripe handles card collection, then redirects
-back.
-```ts
-// Request
-{ plan: 'monthly' | 'annual' }
-
-// 201 Response
-{ url: string }   // redirect the user here (window.location = url)
-
-// Errors:
-// 400 BILLING_NOT_CONFIGURED     — Stripe keys missing
-// 400 BILLING_PRICE_NOT_CONFIGURED — env missing STRIPE_PRICE_MONTHLY/ANNUAL
-```
-Stripe redirects back to:
-- Success: `${WEB_URL}/billing/success?session_id=<id>`
-- Cancel: `${WEB_URL}/billing/cancel`
-
-On the success page, poll `GET /billing/subscription` until `status` becomes
-`active` or `trialing` (webhook fires within ~1 s in practice; 3 s poll is
-fine).
+> **There is no `POST /billing/checkout`.** Checkout is opened client-side by
+> Paddle.js (`Paddle.Checkout.open`) directly from the pricing page, so the
+> server never mints a checkout session. The FE must pass
+> `customData: { userId }` when opening checkout — that is how the webhook
+> attaches the resulting Paddle subscription to the right Mnemio account.
 
 #### `GET /billing/subscription`  *(auth)*
 Current subscription details.
@@ -1939,10 +1923,15 @@ Current subscription details.
 //                                     // on every page load.
 ```
 
+After checkout completes, the FE lands on `/billing/success` and polls this
+until `status` becomes `active` or `trialing`. Fulfillment is driven by the
+webhook, not by the browser redirect, so the poll is what confirms it.
+
 #### `POST /billing/portal`  *(auth)*
-Create a Stripe Customer Portal session and return the URL. The portal lets
-the user cancel, change payment method, or download invoices — all without
-any custom UI.
+Create a Paddle customer portal session and return the URL. The portal lets
+the user cancel, change payment method, or download invoices — all without any
+custom UI. The Paddle customer ID is resolved server-side from the session's
+user; a client-supplied ID is never trusted.
 ```ts
 // Request: (empty body)
 
@@ -1954,31 +1943,39 @@ any custom UI.
 // 404 BILLING_NO_SUBSCRIPTION — user has never subscribed
 ```
 
-#### `POST /billing/webhook`  *(public — Stripe-signed, **no** JWT)*
-Stripe event receiver. The FE **never calls this directly** — it is only for
-Stripe's servers. Listed here for completeness.
+#### `POST /billing/webhook`  *(public — Paddle-signed, **no** JWT)*
+Paddle event receiver. The FE **never calls this directly** — it is only for
+Paddle's servers. Listed here for completeness.
+
+Signature is verified against `PADDLE_WEBHOOK_SECRET` (the notification
+signing secret, **not** the API key) over the RAW request body. A failed
+verification returns non-2xx so Paddle keeps retrying.
 
 The backend processes:
-| Stripe event | Effect |
+| Paddle event | Effect |
 |---|---|
-| `customer.subscription.created` | Upsert subscription row (→ `trialing`/`active`) |
-| `customer.subscription.updated` | Update status, plan, period, `cancelAtPeriodEnd` |
-| `customer.subscription.deleted` | Set status → `expired` |
-| `invoice.payment_succeeded` | Set status → `active`, advance period dates |
-| `invoice.payment_failed` | Set status → `past_due` |
+| `subscription.created` | Upsert subscription row (→ `trialing`/`active`) |
+| `subscription.activated` / `.trialing` / `.updated` / `.past_due` / `.paused` / `.resumed` | Update status, plan, period, `cancelAtPeriodEnd` |
+| `subscription.canceled` | Set status → `canceled`, clear `cancelAtPeriodEnd` |
+| `transaction.completed` | Analytics only (subscription row is owned by the `subscription.*` handlers) |
 
-All events are idempotent (duplicate delivery is a no-op). Unhandled event
-types return 200 silently.
+All events are idempotent: each `event_id` is recorded in `paddle_webhook_events`
+inside the same transaction that applies it, so an at-least-once redelivery is a
+no-op. Unhandled event types are recorded and ignored, returning 200.
 
 #### Subscription lifecycle UX
 | `status` from `GET /billing/subscription` | What the FE should show |
 |---|---|
-| No subscription (404) | "Upgrade to Premium" CTAs; AI quota 429 → paywall modal |
-| `trialing` | "Trial ends on {trialEnd}" banner |
+| No subscription (`null`) | "Upgrade to Premium" CTAs; AI quota 429 → paywall modal |
+| `trialing` | "Trial ends on {trialEnd}" banner — full premium access |
 | `active` | Normal premium experience |
-| `past_due` | "Payment failed — update card" banner (link to `POST /billing/portal`) |
-| `canceled` | "Plan ends on {currentPeriodEnd}" banner + resubscribe CTA; access intact |
-| `expired` | Reverts to free-tier; premium features gate with paywall |
+| `past_due` | "Payment failed — update card" banner (link to `POST /billing/portal`); access intact during dunning |
+| `paused` | Premium features gate with paywall |
+| `canceled` | Reverts to free-tier; premium features gate with paywall |
+
+A pending cancellation is surfaced as `cancelAtPeriodEnd: true` while `status`
+stays `active` — show "Plan ends on {currentPeriodEnd}" and keep access. Access
+is revoked only when `status` actually becomes `canceled`.
 
 ### Health (ops)
 
@@ -2168,24 +2165,28 @@ Important edge cases:
 ### Billing / subscription flow
 
 ```
-// Subscribe (pricing page CTA)
-POST /billing/checkout { plan: 'monthly' | 'annual' }
-  → { url }
-  → window.location = url                // Stripe-hosted Checkout
-     └─ success → ${WEB_URL}/billing/success?session_id=...
-          // poll GET /billing/subscription every ~3s until status ∈ {active, trialing}
-          // then refresh auth state (GET /auth/me) so plan flips to 'premium'
-     └─ cancel → ${WEB_URL}/billing/cancel
-          // no subscription was created; user stays free
+// Subscribe (pricing page CTA) — entirely client-side, no backend call.
+Paddle.Checkout.open({
+  items: [{ priceId, quantity: 1 }],
+  customer:   { email },              // pre-fill the signed-in user
+  customData: { userId },             // REQUIRED: links the sub to our user
+  settings:   { displayMode: 'overlay', variant: 'one-page', successUrl }
+})
+     └─ success → ${WEB_URL}/billing/success
+          // Paddle → POST /billing/webhook grants access (source of truth).
+          // Meanwhile the page polls GET /billing/subscription every ~3s
+          // until status ∈ {active, trialing}, then refreshes auth state
+          // (GET /auth/me) so plan flips to 'premium'.
+     └─ dismissed → user closes the overlay; nothing was created, stays free
 
 // Manage / cancel (billing settings page)
 POST /billing/portal
   → { url }
-  → window.location = url                // Stripe Customer Portal (cancel, card, invoices)
+  → window.location = url                // Paddle customer portal (cancel, card, invoices)
 
 // Read current state (billing settings page)
 GET /billing/subscription
-  → Subscription or 404 (= free)
+  → Subscription or null (= free)
 
 // Hard gate: server returns 403 PREMIUM_REQUIRED
 // → show paywall / upgrade modal regardless of FE plan state
@@ -2196,7 +2197,7 @@ it on every `GET /auth/me` call. The FE uses `plan === 'premium'` to show or
 hide UI elements, but always handles `403 PREMIUM_REQUIRED` from the server as
 the authoritative gate.
 
-**`BILLING_NOT_CONFIGURED`:** when the backend is running without Stripe keys
+**`BILLING_NOT_CONFIGURED`:** when the backend is running without Paddle keys
 (local dev, staging without billing), every `/billing/*` call returns this
 code. Guard: before rendering any billing UI, check that a prior call didn't
 return this error; if it did, hide all upgrade/subscription UI silently.

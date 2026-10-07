@@ -114,11 +114,18 @@ const envSchema = z
         OAUTH_APPLE_KEY_ID: z.string().optional(),
         OAUTH_APPLE_PRIVATE_KEY: z.string().optional(),
 
-        // Stripe billing
-        STRIPE_SECRET_KEY: z.string().optional(),
-        STRIPE_WEBHOOK_SECRET: z.string().optional(),
-        STRIPE_PRICE_MONTHLY: z.string().optional(),
-        STRIPE_PRICE_ANNUAL: z.string().optional(),
+        // Paddle billing. All optional: with PADDLE_API_KEY unset every
+        // /billing/* route answers BILLING_NOT_CONFIGURED and the frontend hides
+        // its billing UI, so local dev works without a Paddle account.
+        PADDLE_API_KEY: z.string().optional(),
+        // The webhook notification SIGNING SECRET (pdl_ntfset_…), NOT the API
+        // key. Used only to verify delivery signatures.
+        PADDLE_WEBHOOK_SECRET: z.string().optional(),
+        PADDLE_ENV: z.enum(['sandbox', 'production']).optional(),
+        // Price IDs (pri_…) are environment-scoped — a sandbox id does not exist
+        // in production. Must match app/data/plans.ts in mnemio-frontend.
+        PADDLE_PRICE_MONTHLY: z.string().optional(),
+        PADDLE_PRICE_ANNUAL: z.string().optional(),
 
         // Mixpanel server-side analytics (no-op when unset)
         MIXPANEL_TOKEN: z.string().optional(),
