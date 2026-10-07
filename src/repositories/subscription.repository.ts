@@ -11,6 +11,7 @@ export type SubscriptionRow = {
     paddleCustomerId: string;
     paddleSubId: string;
     paddlePriceId: string;
+    paddleProductId: string;
     currentPeriodStart: Date;
     currentPeriodEnd: Date;
     cancelAtPeriodEnd: boolean;
@@ -26,6 +27,7 @@ export type UpsertSubscriptionData = {
     paddleCustomerId: string;
     paddleSubId: string;
     paddlePriceId: string;
+    paddleProductId: string;
     currentPeriodStart: Date;
     currentPeriodEnd: Date;
     cancelAtPeriodEnd: boolean;
@@ -50,6 +52,7 @@ export const upsertFromPaddle = (data: UpsertSubscriptionData): Promise<Subscrip
             paddleCustomerId: data.paddleCustomerId,
             paddleSubId: data.paddleSubId,
             paddlePriceId: data.paddlePriceId,
+            paddleProductId: data.paddleProductId,
             currentPeriodStart: data.currentPeriodStart,
             currentPeriodEnd: data.currentPeriodEnd,
             cancelAtPeriodEnd: data.cancelAtPeriodEnd,

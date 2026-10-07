@@ -182,6 +182,7 @@ describe('billing webhook', () => {
             paddleSubId: 'sub_01htest000000000000000000',
             paddleCustomerId: 'ctm_01htest000000000000000000',
             paddlePriceId: MONTHLY_PRICE,
+            paddleProductId: 'pro_test',
             cancelAtPeriodEnd: false,
         });
     });

@@ -7,6 +7,12 @@ model Subscription {
   paddleCustomerId   String    @unique
   paddleSubId        String    @unique
   paddlePriceId      String
+  // Which product the price belongs to. Stored alongside the price because
+  // entitlement is a product-level question ("do they own Premium?") while the
+  // price only says how they pay for it — swapping monthly↔annual changes the
+  // price id but not what they're entitled to.
+  // Defaults to '' only so the column could be added to existing rows.
+  paddleProductId    String    @default("")
 
   currentPeriodStart DateTime
   currentPeriodEnd   DateTime

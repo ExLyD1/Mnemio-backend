@@ -207,6 +207,7 @@ const handleSubscriptionUpsert = async (
         paddleCustomerId: sub.customerId,
         paddleSubId: sub.id,
         paddlePriceId: priceId,
+        paddleProductId: item.price.productId,
         currentPeriodStart: periodStart
             ? new Date(periodStart)
             : (previous?.currentPeriodStart ?? new Date()),
@@ -227,6 +228,7 @@ const handleSubscriptionUpsert = async (
             paddleCustomerId: data.paddleCustomerId,
             paddleSubId: data.paddleSubId,
             paddlePriceId: data.paddlePriceId,
+            paddleProductId: data.paddleProductId,
             currentPeriodStart: data.currentPeriodStart,
             currentPeriodEnd: data.currentPeriodEnd,
             cancelAtPeriodEnd: data.cancelAtPeriodEnd,
