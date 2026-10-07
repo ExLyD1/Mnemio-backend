@@ -1,6 +1,11 @@
 node_modules
 dist
 .env
+# Any local variant or backup — these hold real secrets and must never be
+# committed. The bare `.env` rule above does not cover `.env.local`, `.env.bak`,
+# etc., so match the whole family.
+.env.*
+!.env.example
 uploads/
 
 /generated/prisma
