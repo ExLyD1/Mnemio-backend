@@ -1,14 +1,25 @@
 import * as srsRepo from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
+import * as decksRepo from '../repositories/decks.repository.js';
 import * as activityRepo from '../repositories/activity.repository.js';
 import * as achievementsService from './achievements.service.js';
 import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
 import { toPublicCard, type PublicCard } from '../shared/mappers.deck.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
-import { initialState, review } from './sm2.js';
+import { scheduleAnswer, previewsFor, mixNewWithReviews } from './srs-scheduling.js';
+import { ANKI_DEFAULTS } from './anki-scheduler.js';
+import { dayNumber, rollover } from './anki-time.js';
 import { DEFAULT_TZ } from './tz.js';
-import { RATING_TO_QUALITY, type Rating } from '../schemas/srs.schema.js';
+import {
+    toPublicProgress,
+    type PublicCardProgress,
+    type Previews,
+    type SrsState,
+} from '../shared/mappers.srs.js';
+import type { QueueQuery, Rating } from '../schemas/srs.schema.js';
+
+export type { PublicCardProgress } from '../shared/mappers.srs.js';
 
 export const MASTERY_THRESHOLD = 3; // repetitions >= 3 (canonical, deck-stats.repository.ts)
 
@@ -21,24 +32,17 @@ export const resolveMasteredAt = (
     now: Date,
 ): Date | null => existingMasteredAt ?? (nextRepetitions >= MASTERY_THRESHOLD ? now : null);
 
-export type PublicCardProgress = {
-    cardId: string;
-    // Present on GET /srs/progress (which lists rows across every deck, so the
-    // client needs to know which deck each row belongs to). Omitted by rate(),
-    // where the caller already knows the deck it just rated in.
-    deckId?: string;
-    repetitions: number;
-    interval: number;
-    easeFactor: number;
-    nextReviewAt: string;
-    lastReviewedAt: string | null;
-};
-
 export const rate = async (
     ownerId: string,
     input: { cardId: string; rating: Rating },
     tz: string = DEFAULT_TZ,
-): Promise<PublicCardProgress & { newAchievements: PublicAchievement[] }> => {
+): Promise<
+    PublicCardProgress & {
+        newAchievements: PublicAchievement[];
+        requeueAt: string | null;
+        previews: Previews | null;
+    }
+> => {
     // Access: the rater must own the card's deck OR the deck must be public.
     // The progress row is keyed by (ownerId = rater, cardId), so two users
     // studying the same shared deck keep fully independent SRS — a viewer's
@@ -54,36 +58,21 @@ export const rate = async (
 
     const now = new Date();
     const existing = await srsRepo.findProgress(ownerId, input.cardId);
-    const prev = existing
-        ? {
-              repetitions: existing.repetitions,
-              interval: existing.interval,
-              easeFactor: existing.easeFactor,
-              lastReviewedAt: existing.lastReviewedAt,
-              nextReviewAt: existing.nextReviewAt,
-          }
-        : initialState(now);
-
-    const next = review(prev, RATING_TO_QUALITY[input.rating], now);
-    const masteredAt = resolveMasteredAt(existing?.masteredAt ?? null, next.repetitions, now);
+    const next = scheduleAnswer(input.cardId, existing, input.rating, now, tz);
     const saved = await srsRepo.upsertProgress({
         userId: ownerId,
         cardId: input.cardId,
-        repetitions: next.repetitions,
-        interval: next.interval,
-        easeFactor: next.easeFactor,
-        lastReviewedAt: next.lastReviewedAt,
-        nextReviewAt: next.nextReviewAt,
-        masteredAt,
+        ...next,
+        masteredAt: resolveMasteredAt(existing?.masteredAt ?? null, next.repetitions, now),
     });
 
-    // Roll the day's activity counters. 'good' and 'easy' count as correct,
-    // matching the FE's accuracy model (quality ≥ 3).
-    const wasCorrect = input.rating === 'good' || input.rating === 'easy';
-    activityRepo.recordReview(ownerId, { wasCorrect, tz }).catch((err) => {
-        // eslint-disable-next-line no-console
-        console.error('[activity] recordReview failed', err);
-    });
+    // Roll the day's activity counters. Hard is a passing answer in Anki.
+    activityRepo
+        .recordReview(ownerId, { wasCorrect: input.rating !== 'again', tz })
+        .catch((err) => {
+            // eslint-disable-next-line no-console
+            console.error('[activity] recordReview failed', err);
+        });
 
     const newAchievements = await achievementsService.evaluate(ownerId, 'rate').catch(() => []);
 
@@ -93,14 +82,15 @@ export const rate = async (
         void milestone.checkFirstReview(ownerId);
     }
 
+    // Still in an intraday (re)learning step: the client shows it again this session.
+    const intraday =
+        (saved.state === 'learning' || saved.state === 'relearning') &&
+        saved.learningStepSecs < 86400;
     return {
-        cardId: saved.cardId,
-        repetitions: saved.repetitions,
-        interval: saved.interval,
-        easeFactor: saved.easeFactor,
-        nextReviewAt: saved.nextReviewAt.toISOString(),
-        lastReviewedAt: saved.lastReviewedAt ? saved.lastReviewedAt.toISOString() : null,
+        ...toPublicProgress(saved, card.deckId),
         newAchievements,
+        requeueAt: intraday ? saved.nextReviewAt.toISOString() : null,
+        previews: intraday ? previewsFor(input.cardId, saved, saved.nextReviewAt, tz) : null,
     };
 };
 
@@ -118,45 +108,88 @@ export type DueCardDto = {
 
 export const progress = async (ownerId: string, limit = 2000): Promise<PublicCardProgress[]> => {
     const rows = await srsRepo.findAllProgress(ownerId, limit);
-    return rows.map((r) => ({
-        cardId: r.cardId,
-        deckId: r.card.deckId,
-        repetitions: r.repetitions,
-        interval: r.interval,
-        easeFactor: r.easeFactor,
-        nextReviewAt: r.nextReviewAt.toISOString(),
-        lastReviewedAt: r.lastReviewedAt ? r.lastReviewedAt.toISOString() : null,
-    }));
+    return rows.map((r) => toPublicProgress(r, r.card.deckId));
 };
 
 export type QueueItem = {
     card: PublicCard;
-    progress: PublicCardProgress;
+    state: SrsState;
+    dueAt: string | null;
+    previews: Previews;
+    // Kept from the pre-Anki queue shape so existing consumers keep working.
+    progress: PublicCardProgress | null;
     deckId: string;
     deckTitle: string;
 };
 
 /**
- * The review queue, ready to render: card + progress + deck title in one
- * response. Replaces the client-side fan-out (list all decks, then fetch each
- * deck) that cost 20+ requests per page load.
+ * The study queue, ready to render, in one response (no per-deck fan-out).
+ * With a deck: due (re)learning + due reviews + that deck's new cards under
+ * Anki's daily limit. Without: due cards across every accessible deck.
  */
-export const queue = async (ownerId: string, limit = 500): Promise<QueueItem[]> => {
-    const rows = await srsRepo.findDueQueue(ownerId, limit);
-    return rows.map((r) => ({
-        card: toPublicCard(r.card),
-        progress: {
-            cardId: r.cardId,
-            deckId: r.card.deckId,
-            repetitions: r.repetitions,
-            interval: r.interval,
-            easeFactor: r.easeFactor,
-            nextReviewAt: r.nextReviewAt.toISOString(),
-            lastReviewedAt: r.lastReviewedAt ? r.lastReviewedAt.toISOString() : null,
-        },
-        deckId: r.card.deckId,
-        deckTitle: r.card.deck.title,
+export const queue = async (userId: string, query: QueueQuery, tz: string = DEFAULT_TZ) => {
+    const { deckId, extraNew } = query;
+    if (deckId) {
+        const deck = await decksRepo.findDeckByIdUnscoped(deckId);
+        if (!deck) {
+            throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+        }
+        if (deck.authorId !== userId && !deck.isPublic) {
+            throw new ForbiddenError('CARD_FORBIDDEN', 'You do not own this deck');
+        }
+    }
+    const now = new Date();
+    const today = rollover(dayNumber(now, tz), tz);
+    const introduced = await srsRepo.newIntroducedToday(userId, deckId, today);
+    const newLimit = Math.max(0, ANKI_DEFAULTS.newPerDay - introduced + extraNew);
+    const data = await srsRepo.queueData(
+        userId,
+        deckId,
+        now,
+        new Date(now.getTime() + ANKI_DEFAULTS.learnAheadMinutes * 60_000),
+        newLimit,
+        query.limit ?? ANKI_DEFAULTS.reviewsPerDay,
+    );
+    const mapProgress = (p: (typeof data.reviews)[number]): QueueItem => ({
+        card: toPublicCard(p.card),
+        state: p.state as SrsState,
+        dueAt: p.nextReviewAt.toISOString(),
+        previews: previewsFor(p.cardId, p, p.nextReviewAt > now ? p.nextReviewAt : now, tz),
+        progress: toPublicProgress(p, p.card.deckId),
+        deckId: p.card.deckId,
+        deckTitle: p.card.deck.title,
+    });
+    const fresh: QueueItem[] = data.newCards.map((c) => ({
+        card: toPublicCard(c),
+        state: 'new',
+        dueAt: null,
+        previews: previewsFor(c.id, null, now, tz),
+        progress: null,
+        deckId: c.deckId,
+        deckTitle: c.deck.title,
     }));
+    const items = [
+        ...data.dueLearning.map(mapProgress),
+        ...mixNewWithReviews(data.reviews.map(mapProgress), fresh),
+        ...data.learnAhead.map(mapProgress),
+    ];
+    const future = await srsRepo.nextFutureDue(
+        userId,
+        deckId,
+        now,
+        data.learnAhead.map((p) => p.cardId),
+    );
+    return {
+        items,
+        counts: {
+            new: fresh.length,
+            learning: data.dueLearning.length + data.learnAhead.length,
+            review: data.reviews.length,
+        },
+        nextDueAt: future?.nextReviewAt.toISOString() ?? null,
+        newAvailable: Math.max(0, data.newTotal - fresh.length),
+        limits: { newPerDay: ANKI_DEFAULTS.newPerDay, newIntroducedToday: introduced },
+    };
 };
 
 export const due = async (ownerId: string, limit = 50): Promise<DueCardDto[]> => {

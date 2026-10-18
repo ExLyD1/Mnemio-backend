@@ -7,6 +7,7 @@ export type PublicPreference = {
     learningLanguages: string[];
     avatarHue: number | null;
     mimiPlacement: 'left' | 'right' | null;
+    defaultStudyMode: 'srs' | 'know' | null;
     favorites: string[];
     updatedAt: string;
 };
@@ -18,6 +19,7 @@ export const toPublicPreference = (p: PreferenceModel): PublicPreference => ({
     learningLanguages: p.learningLanguages,
     avatarHue: p.avatarHue,
     mimiPlacement: p.mimiPlacement as 'left' | 'right' | null,
+    defaultStudyMode: p.defaultStudyMode as 'srs' | 'know' | null,
     favorites: p.favorites,
     updatedAt: p.updatedAt.toISOString(),
 });

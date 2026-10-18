@@ -11,6 +11,7 @@ export const updatePreferencesSchema = z
         learningLanguages: z.array(langSchema).max(10).optional(),
         avatarHue: z.number().int().min(0).max(360).nullable().optional(),
         mimiPlacement: z.enum(MIMI_PLACEMENTS).nullable().optional(),
+        defaultStudyMode: z.enum(['srs', 'know']).nullable().optional(),
         favorites: z.array(z.string().uuid()).max(500).optional(),
     })
     .refine((v) => Object.keys(v).length > 0, {

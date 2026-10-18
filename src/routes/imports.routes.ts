@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import * as importsController from '../controllers/imports.controller.js';
+import { env } from '../config/env.js';
 
 const importsRoutes = async (fastify: FastifyInstance) => {
     fastify.addHook('preHandler', fastify.authenticate);
@@ -7,6 +8,14 @@ const importsRoutes = async (fastify: FastifyInstance) => {
     // Per-user rate limit. The daily-cap budget runs inside the service; this
     // is a per-minute throttle so a frantic FE can't hammer Quizlet on our IP.
     const importLimit = { max: 20, timeWindow: '1 minute' };
+    fastify.post(
+        '/imports/apkg',
+        {
+            bodyLimit: env.IMPORT_APKG_MAX_BYTES + 1_000_000,
+            config: { rateLimit: importLimit },
+        },
+        importsController.importApkg,
+    );
 
     fastify.post(
         '/imports/quizlet',

@@ -15,6 +15,7 @@ model Card {
   audioUrl           String?
   imageUrl           String?
   position           Int      @default(0)
+  sourceData         Json?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -32,6 +33,12 @@ model CardProgress {
   interval       Int       @default(0)
   easeFactor     Float     @default(2.5)
   repetitions    Int       @default(0)
+  state          String    @default("new")
+  remainingSteps Int       @default(0)
+  lapses         Int       @default(0)
+  leeched        Boolean   @default(false)
+  reps           Int       @default(0)
+  learningStepSecs Int      @default(0)
   nextReviewAt   DateTime  @default(now())
   lastReviewedAt DateTime?
   // Set-once when the card first reaches mastery (repetitions >= 3). Never

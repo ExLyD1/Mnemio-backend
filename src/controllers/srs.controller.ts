@@ -10,7 +10,11 @@ import { requestTz } from '../shared/request-tz.js';
 
 export const rate = async (request: FastifyRequest, reply: FastifyReply) => {
     const input = rateSchema.parse(request.body);
-    const result = await srsService.rate(request.currentUser.sub, input, requestTz(request));
+    const result = await srsService.rate(
+        request.currentUser.sub,
+        input,
+        input.tz ?? requestTz(request),
+    );
     reply.send(result);
 };
 
@@ -20,11 +24,10 @@ export const due = async (request: FastifyRequest, reply: FastifyReply) => {
     reply.send({ items });
 };
 
-// The whole review queue in one response — see srsService.queue.
+// The whole study queue in one response — see srsService.queue.
 export const queue = async (request: FastifyRequest, reply: FastifyReply) => {
     const query = queueQuerySchema.parse(request.query);
-    const items = await srsService.queue(request.currentUser.sub, query.limit ?? 500);
-    reply.send({ items });
+    reply.send(await srsService.queue(request.currentUser.sub, query, requestTz(request)));
 };
 
 export const progress = async (request: FastifyRequest, reply: FastifyReply) => {

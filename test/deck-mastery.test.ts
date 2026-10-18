@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { initialState, review } from '../src/services/sm2.js';
-import { RATING_TO_QUALITY } from '../src/schemas/srs.schema.js';
+import { scheduleAnswer } from '../src/services/srs-scheduling.js';
+import type { CardProgressModel } from '../generated/prisma/models/CardProgress.js';
 import { MASTERY_THRESHOLD, resolveMasteredAt } from '../src/services/srs.service.js';
 
 /**
@@ -11,17 +11,28 @@ import { MASTERY_THRESHOLD, resolveMasteredAt } from '../src/services/srs.servic
  * dot mastered at `repetitions >= 3`. A user who studied a card 3 times in a row
  * would see the card's dot flip to mastered while the deck's mastered-% stayed 0.
  *
- * `aggregateDeckStats` now keys mastery on `repetitions >= 3`. These pure SM-2
+ * `aggregateDeckStats` now keys mastery on `repetitions >= 3`. These pure scheduler
  * assertions lock in the behaviour that motivated the change (no DB needed).
  */
 const REF_NOW = new Date('2026-06-01T12:00:00.000Z');
 
+const CARD = '00000000-0000-4000-8000-000000000001';
+const answer = (p: CardProgressModel | null, rating: 'again' | 'good'): CardProgressModel =>
+    ({
+        userId: 'u',
+        cardId: CARD,
+        masteredAt: null,
+        createdAt: REF_NOW,
+        updatedAt: REF_NOW,
+        ...scheduleAnswer(CARD, p, rating, REF_NOW, 'UTC'),
+    }) as CardProgressModel;
+
 const applyGoods = (passes: number) => {
-    let state = initialState(REF_NOW);
+    let state: CardProgressModel | null = null;
     for (let i = 0; i < passes; i++) {
-        state = review(state, RATING_TO_QUALITY.good, REF_NOW);
+        state = answer(state, 'good');
     }
-    return state;
+    return state as CardProgressModel;
 };
 
 describe('deck mastery threshold (BUG-0706-12/-21)', () => {
@@ -48,7 +59,7 @@ describe('deck mastery threshold (BUG-0706-12/-21)', () => {
 
     it('a single "again" resets repetitions below the mastery threshold', () => {
         let state = applyGoods(3);
-        state = review(state, RATING_TO_QUALITY.again, REF_NOW);
+        state = answer(state, 'again');
         expect(state.repetitions).toBe(0);
         // A fresh card at 0 repetitions would not be stamped...
         expect(resolveMasteredAt(null, state.repetitions, REF_NOW)).toBeNull();

@@ -7,6 +7,7 @@ export type PreferencePatch = {
     learningLanguages?: string[];
     avatarHue?: number | null;
     mimiPlacement?: string | null;
+    defaultStudyMode?: 'srs' | 'know' | null;
     favorites?: string[];
 };
 

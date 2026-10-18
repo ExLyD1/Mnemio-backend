@@ -101,6 +101,50 @@ export const uploadFile = async (
     return { url, kind, size: bytesWritten, mimeType: file.mimetype };
 };
 
+/** Importers use the same storage adapter, MIME allowlist and limits as uploads. */
+export const storeBuffer = async (
+    userId: string,
+    kind: MediaKind,
+    bytes: Buffer,
+    mimeType: string,
+): Promise<StoredFile> => {
+    if (!MIME_ALLOWLIST[kind].test(mimeType)) {
+        throw new BadRequestError('MEDIA_BAD_MIME', 'Unsupported media type');
+    }
+    if (bytes.length > MAX_BYTES[kind]) {
+        throw new UnprocessableError('MEDIA_TOO_LARGE', 'Media exceeds per-file limit');
+    }
+    const filename = `${randomUUID()}.${extensionFromMime(mimeType)}`;
+    const userDir = path.join(env.MEDIA_DIR, userId);
+    await ensureDir(userDir);
+    const fullPath = path.join(userDir, filename);
+    try {
+        await fs.writeFile(fullPath, bytes);
+    } catch (err) {
+        await fs.unlink(fullPath).catch(() => {});
+        throw err;
+    }
+    return {
+        url: `${env.MEDIA_PUBLIC_BASE}/${userId}/${filename}`,
+        kind,
+        size: bytes.length,
+        mimeType,
+    };
+};
+
+/** Roll back media belonging to an import whose database transaction failed. */
+export const removeStoredFile = async (userId: string, stored: StoredFile): Promise<void> => {
+    const prefix = `${env.MEDIA_PUBLIC_BASE}/${userId}/`;
+    if (!stored.url.startsWith(prefix)) {
+        return;
+    }
+    const filename = stored.url.slice(prefix.length);
+    if (!/^[\da-f-]{36}\.[a-z0-9]+$/i.test(filename)) {
+        return;
+    }
+    await fs.unlink(path.join(env.MEDIA_DIR, userId, filename)).catch(() => {});
+};
+
 /** Avatar upload has a side-effect on the User row. */
 export const uploadAvatar = async (userId: string, file: MultipartFile) => {
     const stored = await uploadFile(userId, 'avatar', file);

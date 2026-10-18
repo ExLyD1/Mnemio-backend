@@ -33,6 +33,9 @@ export const update = async (
     if (input.favorites !== undefined) {
         patch.favorites = input.favorites;
     }
+    if (input.defaultStudyMode !== undefined) {
+        patch.defaultStudyMode = input.defaultStudyMode;
+    }
     const row = await repo.update(userId, patch);
     return toPublicPreference(row);
 };

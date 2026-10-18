@@ -42,7 +42,7 @@ unless it says so explicitly.
 | 1 | Refresh token is an **HttpOnly cookie** `mnemio_refresh` on path `/api/v1/auth`. **Never in any body.** Send `credentials: 'include'` on every call. |
 | 2 | Access token in `localStorage`, sent as `Authorization: Bearer …`. |
 | 3 | On `{ code: 'AUTH_INVALID_TOKEN' }` → `POST /auth/refresh` (no body), retry once; on `{ code: 'AUTH_INVALID_REFRESH' }` → hard logout, never retry. |
-| 4 | `POST /srs/rate` body is `{ cardId, rating }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
+| 4 | `POST /srs/rate` body is `{ cardId, rating, tz? }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
 | 5 | Session XP is **server-computed** `correct*10 + 25`. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
@@ -866,23 +866,60 @@ Most-recent incomplete session (or `null`). Powers "Continue studying" CTA.
 ### SRS
 
 #### `POST /srs/rate`  *(auth)*
-Rate a card. Server runs SM-2 and upserts the user's `CardProgress`.
+Rate a card. Server runs Anki's v3 scheduler (SM-2 path, ported in
+`services/anki-scheduler.ts`, verified against Anki's own output) and upserts
+the user's `CardProgress`.
 ```ts
-// Request: { cardId: string; rating: 'again' | 'hard' | 'good' | 'easy' }
-// 200 Response: CardProgress & { newAchievements: Achievement[] }
-// newAchievements: any achievement(s) unlocked by this rating, empty
-// array otherwise — see "Achievements" below.
-// Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN
+// Request: { cardId: string; rating: 'again' | 'hard' | 'good' | 'easy'; tz?: string /* IANA; else X-Timezone header */ }
+// 200 Response: CardProgress & {
+//   newAchievements: Achievement[];
+//   requeueAt: string | null;   // set while the card is in an intraday (re)learning step
+//   previews: Previews | null;  // button previews for that next appearance
+// }
+// Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN · 400 VALIDATION_ERROR (bad tz)
 ```
-Rating → SM-2 quality mapping (matches the frontend composable). EF delta uses
-the standard SuperMemo-2 formula `ΔEF = 0.1 − (5−q)(0.08 + (5−q)·0.02)`, with EF
-floored at 1.3.
-| Rating | Quality | Effect |
-|---|---|---|
-| `again` | 0 | Failure path: repetitions=0, interval=1d, **EF −0.2** |
-| `hard`  | 2 | Treated as failure (q<3): same reset path, **EF −0.32** |
-| `good`  | 3 | Advance: repetitions++, interval = 1 / 6 / round(prev × prevEF), **EF −0.14** |
-| `easy`  | 5 | Advance same way, **EF +0.10** |
+`CardProgress` additionally carries `state: 'new'|'learning'|'review'|'relearning'`,
+`lapses`, `leeched`, `remainingSteps`, `reps`.
+
+Anki defaults: learning steps 1m 10m, relearning 10m, graduating 1d / easy 4d,
+starting ease 2.5 (min 1.3; again −0.2, hard −0.15, easy +0.15), easy bonus 1.3,
+hard ×1.2, lapse multiplier 0, max interval 36500d, leech at 8 lapses, review
+fuzz and learning-step fuzz (deterministic per card + reps). `hard` is a pass.
+Review days roll over at 04:00 in `tz`. `repetitions` = consecutive passing
+answers (again → 0), which keeps the mastery rule (`repetitions >= 3`).
+
+```ts
+type Previews = Record<'again'|'hard'|'good'|'easy', { kind: 'secs' | 'days'; value: number }>;
+```
+
+#### `GET /srs/queue`  *(auth)*
+The Anki-style study queue for "now", ready to render in one response (no
+client-side per-deck fan-out).
+```ts
+// Query: ?deckId?=uuid &extraNew?=0..100 &limit?=number(<=2000, due reviews; default 200)
+// Timezone: X-Timezone header (else ?tz), as everywhere else
+// 200 Response
+{
+  items: {
+    card: Card;                     // the full card, as GET /decks/:id returns it
+    state: SrsState;
+    dueAt: string | null;           // null for new cards
+    previews: Previews;
+    progress: CardProgress | null;  // includes deckId; null for new cards
+    deckId: string;
+    deckTitle: string;
+  }[];
+  counts: { new: number; learning: number; review: number };
+  nextDueAt: string | null;      // earliest future due beyond the returned items
+  newAvailable: number;          // new cards held back by the daily limit
+  limits: { newPerDay: number; newIntroducedToday: number };
+}
+// Errors: 404 DECK_NOT_FOUND · 403 CARD_FORBIDDEN · 400 VALIDATION_ERROR
+```
+With `deckId`: due (re)learning + due reviews + new cards by `position`
+(20/day per deck, + `extraNew`). Without: due cards across all accessible
+decks, no new cards. Order: due learning, then reviews with new cards mixed in
+evenly, then learning cards due within 20 minutes (learn-ahead).
 
 #### `GET /srs/due`  *(auth)*
 ```ts
@@ -905,27 +942,6 @@ floored at 1.3.
 ```
 `nextReviewAt ASC` (most-overdue first). Only cards with an existing
 `CardProgress` row appear (i.e. rated at least once and now due).
-
-#### `GET /srs/queue`  *(auth)*
-The review queue, ready to render: each due card with its full card row, its
-progress and its deck title. Prefer this over assembling the queue client-side
-— doing that meant listing every deck and then fetching each deck individually
-(20+ requests per page load), and any deck past the paging bound went missing
-from the queue.
-```ts
-// Query: ?limit?=number(<=2000)  default 500
-
-// 200 Response
-{
-  items: {
-    card: Card;                    // the full card, as GET /decks/:id returns it
-    progress: CardProgress;        // includes deckId
-    deckId: string;
-    deckTitle: string;
-  }[];
-}
-```
-Same due rule and ordering as `GET /srs/due`.
 
 #### `GET /srs/progress`  *(auth)*
 Full progress map for the user. Powers the FE's `srs.progress` store. Capped
@@ -988,6 +1004,7 @@ replace.
   avatarHue?: number | null;       // 0..360
   mimiPlacement?: 'left' | 'right' | null;
   favorites?: string[];            // deckIds, ≤ 500
+  defaultStudyMode?: 'srs' | 'know' | null; // null = ask every time
 }
 // 200 Response: Preference
 // Errors: 400 VALIDATION_ERROR
@@ -1497,7 +1514,27 @@ Free and premium caps are independently configurable via env
 premium). The cap used is determined server-side from the caller's active
 subscription — the FE never sends plan information in the request body.
 
-### Imports  *(Quizlet + paste-text)*
+### Imports  *(Quizlet + paste-text + Anki .apkg)*
+
+#### `POST /imports/apkg`  *(auth, multipart/form-data)*
+Imports an Anki package (`collection.anki21b` → `anki21` → `anki2`, zstd and
+legacy media maps). Unlike the other imports it **persists**: one deck per Anki
+deck that has cards. Only fields Mnemio cards already have are filled (front/
+back from the rendered templates, tags, cloze type, first image/audio, reading/
+example/part of speech by field name); everything else is kept in
+`Card.sourceData` / `Deck.sourceData` (never returned by the API).
+```ts
+// Fields: file (the .apkg) · sourceLanguage · targetLanguage (as in POST /decks)
+// 201 Response
+{
+  decks: { id: string; title: string; cardCount: number }[];
+  cardsImported: number; cardsSkipped: number; mediaImported: number;
+  warnings: string[]; newAchievements: Achievement[];
+}
+// Errors: 400 IMPORT_APKG_INVALID · 413 IMPORT_APKG_TOO_LARGE (IMPORT_APKG_MAX_BYTES, default 100 MB)
+//         422 IMPORT_APKG_EMPTY · 422 IMPORT_APKG_UNSUPPORTED · 429 import budget
+```
+
 
 Stateless: nothing is persisted by these endpoints. They return
 `AiCardDraft[]` in the same shape as `/ai/enrich-words` so the FE reuses

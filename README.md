@@ -64,8 +64,8 @@ src/
   repositories/<domain>.repository.ts
   schemas/<domain>.schema.ts                Zod request/response
   shared/{errors,pagination,mappers*}.ts    cross-cutting
-  services/sm2.ts                           pure SuperMemo-2 (no DB)
-test/sm2.test.ts          16 SM-2 cases (matches FE useSpacedRepetition)
+  services/anki-scheduler.ts                pure Anki v3 scheduler port (no DB)
+test/anki-scheduler.test.ts  Anki golden vectors (exact match)
 test/xp.test.ts            7 XP-formula cases
 scripts/seed.ts           idempotent demo seed
 prisma/                    8 migrations, model-per-file (user, deck, card, …)
@@ -161,7 +161,7 @@ Health check: `curl http://localhost:3001/health` → `{"status":"ok"}`
 ### Tests + typecheck
 
 ```bash
-npm test              # SM-2 + XP unit tests (23 cases)
+npm test              # pure-function unit tests (scheduler, .apkg parser, XP, …)
 npm run typecheck     # tsc --noEmit
 ```
 
@@ -255,11 +255,11 @@ Sessions expose server-backed summary fields: `counts { again, hard, good, easy 
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/srs/rate` | ✓ | `{ cardId, rating: 'again' \| 'hard' \| 'good' \| 'easy' }` — runs SM-2 + updates DailyActivity |
+| POST | `/srs/rate` | ✓ | `{ cardId, rating: 'again' \| 'hard' \| 'good' \| 'easy', tz? }` — runs the Anki scheduler + updates DailyActivity |
 | GET | `/srs/due` | ✓ | Cards due for review (most-overdue first) |
 | GET | `/srs/progress` | ✓ | Full progress map for the user (cap 2000) |
 
-SM-2 mapping (matches the frontend composable): `again`→0 / `hard`→2 / `good`→3 / `easy`→5. EF floored at 1.3.
+Scheduling follows Anki's v3 SM-2 defaults (learning steps 1m/10m, ease 2.5, `hard` is a pass) — see `docs/api-contract.md` § SRS.
 
 ### Dashboard
 

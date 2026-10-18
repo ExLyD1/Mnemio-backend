@@ -90,6 +90,7 @@ const envSchema = z
         // Hard ceiling on response size + request timeout for the Quizlet fetch.
         IMPORT_FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
         IMPORT_MAX_BYTES: z.coerce.number().int().positive().default(2_000_000),
+        IMPORT_APKG_MAX_BYTES: z.coerce.number().int().positive().default(100_000_000),
 
         // Media storage. 'local' writes to MEDIA_DIR and serves under MEDIA_PUBLIC_BASE
         // via @fastify/static. For prod, swap to S3-compatible presigned PUTs (see

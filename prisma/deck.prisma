@@ -7,6 +7,7 @@ model Deck {
   targetLanguage String
   isPublic       Boolean  @default(false)
   cardCount      Int      @default(0)
+  sourceData     Json?
   // Cosmetic / discovery fields (P2)
   coverColor     String?
   glyph          String?
