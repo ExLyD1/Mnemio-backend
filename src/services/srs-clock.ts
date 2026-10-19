@@ -1,4 +1,4 @@
-import { ANKI_DEFAULTS, DAY, rustRound } from './anki-scheduler.js';
+import { DAY_SECS, SRS_DEFAULTS } from './srs-engine.js';
 
 const parts = (instant: Date, tz: string) => {
     const values = new Intl.DateTimeFormat('en-CA', {
@@ -29,12 +29,13 @@ const parts = (instant: Date, tz: string) => {
 export const dayNumber = (instant: Date, tz = 'UTC'): number => {
     const p = parts(instant, tz);
     return Math.floor(
-        Date.UTC(p.year, p.month - 1, p.day, p.hour - ANKI_DEFAULTS.rolloverHour) / (DAY * 1000),
+        Date.UTC(p.year, p.month - 1, p.day, p.hour - SRS_DEFAULTS.rolloverHour) /
+            (DAY_SECS * 1000),
     );
 };
 
 export const rollover = (day: number, tz = 'UTC'): Date => {
-    const target = day * DAY * 1000 + ANKI_DEFAULTS.rolloverHour * 3600_000;
+    const target = day * DAY_SECS * 1000 + SRS_DEFAULTS.rolloverHour * 3600_000;
     let candidate = target;
     const seen = new Set<number>();
     for (let i = 0; i < 6; i++) {
@@ -58,6 +59,6 @@ export const rollover = (day: number, tz = 'UTC'): Date => {
 export const dueForDays = (now: Date, days: number, tz = 'UTC'): Date =>
     rollover(dayNumber(now, tz) + days, tz);
 export const dueForStep = (now: Date, secs: number, tz = 'UTC'): Date =>
-    secs >= DAY
-        ? dueForDays(now, rustRound(secs / DAY), tz)
+    secs >= DAY_SECS
+        ? dueForDays(now, Math.round(secs / DAY_SECS), tz)
         : new Date(now.getTime() + secs * 1000);

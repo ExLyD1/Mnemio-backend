@@ -1,56 +1,39 @@
 import type { CardProgressModel } from '../../generated/prisma/models/CardProgress.js';
 import {
-    DAY,
-    defaultContext,
-    fuzzFactorFor,
-    learningIvlWithFuzz,
-    nextStates,
-    reviewState,
-    type CardState,
+    DAY_SECS,
+    answerOptions,
+    fuzzFactor,
+    jitterStep,
+    newMemory,
+    SRS_DEFAULTS,
     type Rating,
-} from './anki-scheduler.js';
-import { dayNumber, dueForDays, dueForStep } from './anki-time.js';
+    type SrsMemory,
+} from './srs-engine.js';
+import { dayNumber, dueForDays, dueForStep } from './srs-clock.js';
 import { toPreviews } from '../shared/mappers.srs.js';
 
-export const stateFromProgress = (
+export const memoryFromProgress = (
     p: CardProgressModel | null,
     now: Date,
     tz: string,
-): CardState => {
+): SrsMemory => {
     if (!p || p.state === 'new') {
-        return { kind: 'NewState', position: 0 };
+        return newMemory();
     }
-    const elapsed_days = p.lastReviewedAt
-        ? Math.max(0, dayNumber(now, tz) - dayNumber(p.lastReviewedAt, tz))
-        : 0;
-    const review = reviewState({
-        scheduled_days: p.interval,
-        elapsed_days,
-        ease_factor: p.easeFactor,
+    return {
+        phase: p.state === 'learning' || p.state === 'relearning' ? p.state : 'review',
+        stepsLeft: p.remainingSteps,
+        stepSecs: p.learningStepSecs,
+        intervalDays: p.interval,
+        daysSinceReview: p.lastReviewedAt
+            ? Math.max(0, dayNumber(now, tz) - dayNumber(p.lastReviewedAt, tz))
+            : 0,
+        ease: p.easeFactor,
         lapses: p.lapses,
         leeched: p.leeched,
-    });
-    const learning = {
-        kind: 'LearnState' as const,
-        remaining_steps: p.remainingSteps,
-        scheduled_secs: p.learningStepSecs,
-        elapsed_secs: p.lastReviewedAt
-            ? Math.max(0, Math.floor((now.getTime() - p.lastReviewedAt.getTime()) / 1000))
-            : 0,
     };
-    if (p.state === 'learning') {
-        return learning;
-    }
-    if (p.state === 'relearning') {
-        return { kind: 'RelearnState', learning, review };
-    }
-    return review;
 };
-const contextFor = (id: string, reps: number) =>
-    defaultContext({
-        // A binary32 quantile can round to 1; retain the largest legal binary32 sample.
-        fuzz_factor: Math.min(fuzzFactorFor(id, reps), 1 - 2 ** -24),
-    });
+
 export const previewsFor = (
     id: string,
     progress: CardProgressModel | null,
@@ -58,7 +41,11 @@ export const previewsFor = (
     tz: string,
 ) =>
     toPreviews(
-        nextStates(stateFromProgress(progress, now, tz), contextFor(id, progress?.reps ?? 0)),
+        answerOptions(
+            memoryFromProgress(progress, now, tz),
+            SRS_DEFAULTS,
+            fuzzFactor(id, progress?.reps ?? 0),
+        ),
     );
 
 export const scheduleAnswer = (
@@ -68,33 +55,24 @@ export const scheduleAnswer = (
     now: Date,
     tz: string,
 ) => {
-    const ctx = contextFor(id, p?.reps ?? 0);
-    const next = nextStates(stateFromProgress(p, now, tz), ctx)[rating];
-    const review =
-        next.kind === 'RelearnState' ? next.review : next.kind === 'ReviewState' ? next : null;
-    const learning =
-        next.kind === 'RelearnState' ? next.learning : next.kind === 'LearnState' ? next : null;
-    const secs = learning?.scheduled_secs ?? 0;
-    const intraday = learning !== null && secs < DAY;
+    const factor = fuzzFactor(id, p?.reps ?? 0);
+    const next = answerOptions(memoryFromProgress(p, now, tz), SRS_DEFAULTS, factor)[rating];
+    const stepping = next.phase === 'learning' || next.phase === 'relearning';
+    const secs = stepping ? next.stepSecs : 0;
     return {
-        state:
-            next.kind === 'RelearnState'
-                ? 'relearning'
-                : next.kind === 'LearnState'
-                  ? 'learning'
-                  : 'review',
-        remainingSteps: learning?.remaining_steps ?? 0,
-        // Persist scheduled_secs without answering-layer fuzz, just like Anki.
+        state: next.phase,
+        remainingSteps: stepping ? next.stepsLeft : 0,
+        // The stored step stays unjittered; only the due time gets the random extra.
         learningStepSecs: secs,
-        interval: review?.scheduled_days ?? 0,
-        easeFactor: review?.ease_factor ?? p?.easeFactor ?? 2.5,
-        lapses: review?.lapses ?? p?.lapses ?? 0,
-        leeched: review?.leeched ?? p?.leeched ?? false,
+        interval: next.phase === 'learning' ? 0 : next.intervalDays,
+        easeFactor: next.ease,
+        lapses: next.lapses,
+        leeched: next.leeched,
         reps: (p?.reps ?? 0) + 1,
         repetitions: rating === 'again' ? 0 : (p?.repetitions ?? 0) + 1,
-        nextReviewAt: learning
-            ? dueForStep(now, intraday ? learningIvlWithFuzz(ctx.fuzz_factor, secs) : secs, tz)
-            : dueForDays(now, review?.scheduled_days ?? 1, tz),
+        nextReviewAt: stepping
+            ? dueForStep(now, secs < DAY_SECS ? jitterStep(secs, factor) : secs, tz)
+            : dueForDays(now, next.intervalDays, tz),
         lastReviewedAt: now,
     };
 };

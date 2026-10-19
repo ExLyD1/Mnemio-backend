@@ -866,9 +866,9 @@ Most-recent incomplete session (or `null`). Powers "Continue studying" CTA.
 ### SRS
 
 #### `POST /srs/rate`  *(auth)*
-Rate a card. Server runs Anki's v3 scheduler (SM-2 path, ported in
-`services/anki-scheduler.ts`, verified against Anki's own output) and upserts
-the user's `CardProgress`.
+Rate a card. Server runs Mnemio's SRS engine (`services/srs-engine.ts`,
+spec in `docs/srs-algorithm.md`, checked against transitions recorded from
+Anki) and upserts the user's `CardProgress`.
 ```ts
 // Request: { cardId: string; rating: 'again' | 'hard' | 'good' | 'easy'; tz?: string /* IANA; else X-Timezone header */ }
 // 200 Response: CardProgress & {
@@ -881,7 +881,7 @@ the user's `CardProgress`.
 `CardProgress` additionally carries `state: 'new'|'learning'|'review'|'relearning'`,
 `lapses`, `leeched`, `remainingSteps`, `reps`.
 
-Anki defaults: learning steps 1m 10m, relearning 10m, graduating 1d / easy 4d,
+Defaults (Anki-compatible): learning steps 1m 10m, relearning 10m, graduating 1d / easy 4d,
 starting ease 2.5 (min 1.3; again −0.2, hard −0.15, easy +0.15), easy bonus 1.3,
 hard ×1.2, lapse multiplier 0, max interval 36500d, leech at 8 lapses, review
 fuzz and learning-step fuzz (deterministic per card + reps). `hard` is a pass.

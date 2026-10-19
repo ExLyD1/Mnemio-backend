@@ -1,5 +1,5 @@
 import type { CardProgressModel } from '../../generated/prisma/models/CardProgress.js';
-import type { CardState, SchedulingStates, Rating } from '../services/anki-scheduler.js';
+import type { Rating, SrsMemory, SrsOptions } from '../services/srs-engine.js';
 
 export type SrsState = 'new' | 'learning' | 'review' | 'relearning';
 export type IntervalPreview = { kind: 'secs' | 'days'; value: number };
@@ -32,18 +32,13 @@ export const toPublicProgress = (p: CardProgressModel, deckId?: string): PublicC
     remainingSteps: p.remainingSteps,
     reps: p.reps,
 });
-const intervalPreview = (state: CardState): IntervalPreview => {
-    if (state.kind === 'ReviewState') {
-        return { kind: 'days', value: state.scheduled_days };
-    }
-    if (state.kind === 'RelearnState') {
-        return { kind: 'secs', value: state.learning.scheduled_secs };
-    }
-    return { kind: 'secs', value: state.kind === 'LearnState' ? state.scheduled_secs : 0 };
-};
-export const toPreviews = (states: SchedulingStates): Previews => ({
-    again: intervalPreview(states.again),
-    hard: intervalPreview(states.hard),
-    good: intervalPreview(states.good),
-    easy: intervalPreview(states.easy),
+const intervalPreview = (m: SrsMemory): IntervalPreview =>
+    m.phase === 'review'
+        ? { kind: 'days', value: m.intervalDays }
+        : { kind: 'secs', value: m.stepSecs };
+export const toPreviews = (options: SrsOptions): Previews => ({
+    again: intervalPreview(options.again),
+    hard: intervalPreview(options.hard),
+    good: intervalPreview(options.good),
+    easy: intervalPreview(options.easy),
 });

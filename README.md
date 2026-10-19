@@ -64,8 +64,8 @@ src/
   repositories/<domain>.repository.ts
   schemas/<domain>.schema.ts                Zod request/response
   shared/{errors,pagination,mappers*}.ts    cross-cutting
-  services/anki-scheduler.ts                pure Anki v3 scheduler port (no DB)
-test/anki-scheduler.test.ts  Anki golden vectors (exact match)
+  services/srs-engine.ts                    pure SRS engine (no DB), spec in docs/srs-algorithm.md
+test/srs-engine.test.ts    engine vs reference transitions recorded from Anki
 test/xp.test.ts            7 XP-formula cases
 scripts/seed.ts           idempotent demo seed
 prisma/                    8 migrations, model-per-file (user, deck, card, …)
@@ -255,11 +255,11 @@ Sessions expose server-backed summary fields: `counts { again, hard, good, easy 
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/srs/rate` | ✓ | `{ cardId, rating: 'again' \| 'hard' \| 'good' \| 'easy', tz? }` — runs the Anki scheduler + updates DailyActivity |
+| POST | `/srs/rate` | ✓ | `{ cardId, rating: 'again' \| 'hard' \| 'good' \| 'easy', tz? }` — runs the SRS engine + updates DailyActivity |
 | GET | `/srs/due` | ✓ | Cards due for review (most-overdue first) |
 | GET | `/srs/progress` | ✓ | Full progress map for the user (cap 2000) |
 
-Scheduling follows Anki's v3 SM-2 defaults (learning steps 1m/10m, ease 2.5, `hard` is a pass) — see `docs/api-contract.md` § SRS.
+Scheduling is Mnemio's SM-2-family engine with Anki-compatible defaults (learning steps 1m/10m, ease 2.5, `hard` is a pass) — see `docs/srs-algorithm.md` and `docs/api-contract.md` § SRS.
 
 ### Dashboard
 

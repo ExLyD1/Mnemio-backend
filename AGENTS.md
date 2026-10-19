@@ -15,7 +15,7 @@ PostgreSQL 17 · Zod 4 · argon2id · `@fastify/jwt` · Vitest.
 
 ```bash
 npm run dev          # tsx watch → http://localhost:3001 (.env.example PORT; code default 3000)
-npm test             # vitest run — pure-function suites (Anki scheduler golden vectors, .apkg parser, XP, …)
+npm test             # vitest run — pure-function suites (SRS engine reference transitions, .apkg parser, XP, …)
 npm run typecheck    # tsc --noEmit
 npm run build        # prisma generate && tsc → dist/
 npm start            # node dist/src/server.js
@@ -45,7 +45,7 @@ services/<domain>.service.ts      business logic, ownership decisions, mapping
 repositories/<domain>.repository.ts all Prisma access lives here (and only here)
 schemas/<domain>.schema.ts        Zod request/response shapes + inferred types
 shared/{errors,pagination,mappers*}.ts  cross-cutting helpers
-services/anki-scheduler.ts        pure port of Anki's v3 SM-2 scheduler (no DB) — golden-vector tested
+services/srs-engine.ts            pure SRS engine (no DB) — spec + provenance in docs/srs-algorithm.md
 config/env.ts                     Zod-validated env (add every new env var here)
 plugins/{jwt,cookies,error-handler}.ts
 app.ts                            Fastify factory: plugins → routes (under /api/v1)
@@ -160,10 +160,11 @@ activation milestones).
 ## Testing
 
 Vitest, `*.test.ts` under `test/`. Current suites are pure-function only
-(`anki-scheduler.test.ts`, `imports-apkg.test.ts`, `xp.test.ts`, …) — no DB, no
+(`srs-engine.test.ts`, `imports-apkg.test.ts`, `xp.test.ts`, …) — no DB, no
 HTTP. Keep new pure logic (SRS, XP, mappers) unit-testable without Prisma. The
-scheduler must keep matching `test/fixtures/anki/anki-golden.json` exactly
-(vectors from a Python port verified field-by-field against Anki 26.09).
+engine must keep matching `test/fixtures/anki/anki-golden.json` (transitions
+recorded from Anki 26.09; the one listed binary32 exception aside). Change the
+engine only from `docs/srs-algorithm.md`, never by copying Anki source (AGPL).
 
 ## Reference docs
 

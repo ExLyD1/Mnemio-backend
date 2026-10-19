@@ -8,8 +8,8 @@ import * as milestone from './milestone.service.js';
 import { toPublicCard, type PublicCard } from '../shared/mappers.deck.js';
 import { ForbiddenError, NotFoundError } from '../shared/errors.js';
 import { scheduleAnswer, previewsFor, mixNewWithReviews } from './srs-scheduling.js';
-import { ANKI_DEFAULTS } from './anki-scheduler.js';
-import { dayNumber, rollover } from './anki-time.js';
+import { SRS_DEFAULTS } from './srs-engine.js';
+import { dayNumber, rollover } from './srs-clock.js';
 import { DEFAULT_TZ } from './tz.js';
 import {
     toPublicProgress,
@@ -141,14 +141,14 @@ export const queue = async (userId: string, query: QueueQuery, tz: string = DEFA
     const now = new Date();
     const today = rollover(dayNumber(now, tz), tz);
     const introduced = await srsRepo.newIntroducedToday(userId, deckId, today);
-    const newLimit = Math.max(0, ANKI_DEFAULTS.newPerDay - introduced + extraNew);
+    const newLimit = Math.max(0, SRS_DEFAULTS.newPerDay - introduced + extraNew);
     const data = await srsRepo.queueData(
         userId,
         deckId,
         now,
-        new Date(now.getTime() + ANKI_DEFAULTS.learnAheadMinutes * 60_000),
+        new Date(now.getTime() + SRS_DEFAULTS.learnAheadMinutes * 60_000),
         newLimit,
-        query.limit ?? ANKI_DEFAULTS.reviewsPerDay,
+        query.limit ?? SRS_DEFAULTS.reviewsPerDay,
     );
     const mapProgress = (p: (typeof data.reviews)[number]): QueueItem => ({
         card: toPublicCard(p.card),
@@ -188,7 +188,7 @@ export const queue = async (userId: string, query: QueueQuery, tz: string = DEFA
         },
         nextDueAt: future?.nextReviewAt.toISOString() ?? null,
         newAvailable: Math.max(0, data.newTotal - fresh.length),
-        limits: { newPerDay: ANKI_DEFAULTS.newPerDay, newIntroducedToday: introduced },
+        limits: { newPerDay: SRS_DEFAULTS.newPerDay, newIntroducedToday: introduced },
     };
 };
 
