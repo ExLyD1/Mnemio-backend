@@ -25,6 +25,8 @@ export type PublicDeck = {
     featured: boolean;
     copyCount: number;
     sourceDeckId: string | null;
+    // Where the deck was imported from; null for decks made in Mnemio.
+    importedFrom: 'anki' | null;
     stats: DeckStats;
     createdAt: string;
     updatedAt: string;
@@ -80,6 +82,15 @@ export const buildStats = (
     return { total: cardCount, mastered, learning, new: newCount, due, masteredPct };
 };
 
+// .apkg imports keep the original Anki data under `sourceData.anki`.
+const importedFrom = (sourceData: DeckModel['sourceData']): 'anki' | null =>
+    sourceData !== null &&
+    typeof sourceData === 'object' &&
+    !Array.isArray(sourceData) &&
+    'anki' in sourceData
+        ? 'anki'
+        : null;
+
 export const toPublicDeck = (deck: DeckModel, stats?: DeckStats): PublicDeck => ({
     id: deck.id,
     ownerId: deck.authorId,
@@ -95,6 +106,7 @@ export const toPublicDeck = (deck: DeckModel, stats?: DeckStats): PublicDeck => 
     featured: deck.featured,
     copyCount: deck.copyCount,
     sourceDeckId: deck.sourceDeckId,
+    importedFrom: importedFrom(deck.sourceData),
     stats: stats ?? zeroStats(deck.cardCount),
     createdAt: deck.createdAt.toISOString(),
     updatedAt: deck.updatedAt.toISOString(),

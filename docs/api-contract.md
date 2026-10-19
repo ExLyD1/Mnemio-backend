@@ -245,6 +245,7 @@ type Deck = {
   featured: boolean;           // P2: curator-flagged for Discover home
   copyCount: number;           // P2: # of times this deck has been cloned
   sourceDeckId: string | null; // P2: id of the public deck this was copied from
+  importedFrom: 'anki' | null; // set for decks created by POST /imports/apkg
   stats: DeckStats;            // P1: embedded per-deck stats
   createdAt: string;
   updatedAt: string;
