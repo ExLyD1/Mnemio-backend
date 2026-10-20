@@ -1,131 +1,67 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { assertWithinBudget, recordUse } from '../src/services/ai.budget.service.js';
-import { AiBudgetExceededError } from '../src/shared/errors.js';
-import * as aiUsageRepo from '../src/repositories/ai-usage.repository.js';
-import { env } from '../src/config/env.js';
-import * as subscriptionRepo from '../src/repositories/subscription.repository.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { reserve, release, capFor } from '../src/services/ai.budget.service.js';
+import * as repo from '../src/repositories/ai-usage.repository.js';
+import * as entitlement from '../src/services/entitlement.service.js';
+import * as analytics from '../src/services/analytics.service.js';
+import { AiBudgetExceededError, ImportBudgetExceededError } from '../src/shared/errors.js';
 
-vi.mock('../src/repositories/ai-usage.repository.js', async () => {
-    const actual = await vi.importActual<typeof aiUsageRepo>(
-        '../src/repositories/ai-usage.repository.js',
+vi.mock('../src/repositories/ai-usage.repository.js', async (actual) => ({
+    ...(await actual<typeof repo>()),
+    reserveUse: vi.fn(),
+    releaseUse: vi.fn(),
+}));
+vi.mock('../src/services/entitlement.service.js', () => ({ getPlan: vi.fn() }));
+vi.mock('../src/services/analytics.service.js', () => ({ track: vi.fn() }));
+beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(entitlement.getPlan).mockResolvedValue('free');
+    vi.mocked(repo.reserveUse).mockResolvedValue(1);
+});
+describe('atomic daily budget', () => {
+    it.each(['enrich', 'generate', 'suggest', 'import', 'chat', 'image'] as const)(
+        'reserves %s with the resolved plan cap',
+        async (kind) => {
+            vi.mocked(entitlement.getPlan).mockResolvedValue('premium');
+            await expect(reserve('u', kind)).resolves.toBeUndefined();
+            expect(repo.reserveUse).toHaveBeenCalledWith('u', kind, capFor(kind, 'premium'));
+            expect(repo.releaseUse).not.toHaveBeenCalled();
+        },
     );
-    return {
-        ...actual,
-        findTodayCount: vi.fn(),
-        recordUse: vi.fn(),
-    };
-});
-
-// The budget check looks up the user's plan (free vs premium caps) via the
-// subscription repository. Unmocked, that hit a real database and every test
-// here failed with a PrismaClientKnownRequestError. These tests cover the
-// free-tier caps, so the user is never entitled.
-vi.mock('../src/repositories/subscription.repository.js', async () => {
-    const actual = await vi.importActual<typeof subscriptionRepo>(
-        '../src/repositories/subscription.repository.js',
+    it.each(['enrich', 'generate', 'suggest', 'chat', 'image'] as const)(
+        'keeps the %s cap error contract',
+        async (kind) => {
+            vi.mocked(repo.reserveUse).mockResolvedValue(null);
+            await expect(reserve('u', kind)).rejects.toBeInstanceOf(AiBudgetExceededError);
+            await expect(reserve('u', kind)).rejects.toMatchObject({
+                code: 'AI_BUDGET_EXCEEDED',
+                details: {
+                    kind,
+                    capPerDay: capFor(kind, 'free'),
+                    resetsAt: expect.any(String),
+                },
+            });
+            expect(repo.releaseUse).not.toHaveBeenCalled();
+        },
     );
-    return { ...actual, isEntitled: vi.fn() };
-});
-
-const mockedRepo = vi.mocked(aiUsageRepo);
-const mockedSubs = vi.mocked(subscriptionRepo);
-
-describe('ai.budget.service / assertWithinBudget', () => {
-    beforeEach(() => {
-        vi.resetAllMocks();
-        mockedSubs.isEntitled.mockResolvedValue(false);
+    it('keeps the import error and excludes it from AI analytics', async () => {
+        vi.mocked(repo.reserveUse).mockResolvedValue(null);
+        await expect(reserve('u', 'import')).rejects.toBeInstanceOf(ImportBudgetExceededError);
+        expect(analytics.track).not.toHaveBeenCalled();
     });
-
-    it('passes when usage is below cap', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_ENRICH_CAP_PER_USER - 1);
-        await expect(assertWithinBudget('user-1', 'enrich')).resolves.toBeUndefined();
+    it.each([
+        ['enrich', 'enrich_words'],
+        ['generate', 'generate_deck'],
+        ['suggest', 'suggestion'],
+    ] as const)('emits the existing analytics event once for %s', async (kind, feature) => {
+        vi.mocked(repo.reserveUse).mockResolvedValue(null);
+        await expect(reserve('u', kind)).rejects.toBeDefined();
+        expect(analytics.track).toHaveBeenCalledExactlyOnceWith('u', 'ai_cap_reached', {
+            ai_feature: feature,
+            cap_per_day: capFor(kind, 'free'),
+        });
     });
-
-    it('throws AI_BUDGET_EXCEEDED at exactly the cap', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_ENRICH_CAP_PER_USER);
-        await expect(assertWithinBudget('user-1', 'enrich')).rejects.toBeInstanceOf(
-            AiBudgetExceededError,
-        );
-    });
-
-    it('throws when over cap', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_ENRICH_CAP_PER_USER + 100);
-        await expect(assertWithinBudget('user-1', 'enrich')).rejects.toBeInstanceOf(
-            AiBudgetExceededError,
-        );
-    });
-
-    it('uses the right cap per kind (caps are not shared)', async () => {
-        // suggest cap > enrich cap; usage of (enrich cap - 1) should NOT trip suggest.
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_ENRICH_CAP_PER_USER - 1);
-        await expect(assertWithinBudget('u', 'suggest')).resolves.toBeUndefined();
-        // But would trip enrich if it was at cap.
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_ENRICH_CAP_PER_USER);
-        await expect(assertWithinBudget('u', 'enrich')).rejects.toBeInstanceOf(
-            AiBudgetExceededError,
-        );
-    });
-
-    it('meters the "image" kind separately from "generate"', async () => {
-        // At the generate cap, image (a distinct, lower cap by default) should
-        // still trip on its own usage — not be shielded by generate's headroom.
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_IMAGE_CAP_PER_USER);
-        await expect(assertWithinBudget('u', 'image')).rejects.toBeInstanceOf(
-            AiBudgetExceededError,
-        );
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_IMAGE_CAP_PER_USER - 1);
-        await expect(assertWithinBudget('u', 'image')).resolves.toBeUndefined();
-    });
-
-    it('image error payload carries kind: "image" + its own capPerDay', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_IMAGE_CAP_PER_USER);
-        try {
-            await assertWithinBudget('u', 'image');
-            expect.fail('should have thrown');
-        } catch (err) {
-            const payload = (err as AiBudgetExceededError).toPayload();
-            expect(payload.code).toBe('AI_BUDGET_EXCEEDED');
-            // resetsAt lets the FE say "resets at 3:00" instead of the
-            // assistant guessing "try again in a moment".
-            expect(payload.details).toMatchObject({
-                kind: 'image',
-                capPerDay: env.AI_DAILY_IMAGE_CAP_PER_USER,
-            });
-            expect(new Date(payload.details?.resetsAt as string).getTime()).toBeGreaterThan(
-                Date.now(),
-            );
-        }
-    });
-
-    it('error payload carries kind + capPerDay so the FE can render "X of Y used"', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.AI_DAILY_GENERATE_CAP_PER_USER);
-        try {
-            await assertWithinBudget('u', 'generate');
-            expect.fail('should have thrown');
-        } catch (err) {
-            const payload = (err as AiBudgetExceededError).toPayload();
-            expect(payload.code).toBe('AI_BUDGET_EXCEEDED');
-            expect(payload.details).toMatchObject({
-                kind: 'generate',
-                capPerDay: env.AI_DAILY_GENERATE_CAP_PER_USER,
-            });
-            expect(new Date(payload.details?.resetsAt as string).getTime()).toBeGreaterThan(
-                Date.now(),
-            );
-        }
-    });
-});
-
-describe('ai.budget.service / recordUse', () => {
-    beforeEach(() => {
-        vi.resetAllMocks();
-        mockedSubs.isEntitled.mockResolvedValue(false);
-    });
-
-    it('delegates to the repo upsert', async () => {
-        mockedRepo.recordUse.mockResolvedValue(3);
-        const next = await recordUse('user-1', 'enrich');
-        expect(next).toBe(3);
-        expect(mockedRepo.recordUse).toHaveBeenCalledWith('user-1', 'enrich');
+    it('releases a reservation through the repository', async () => {
+        await release('u', 'chat');
+        expect(repo.releaseUse).toHaveBeenCalledExactlyOnceWith('u', 'chat');
     });
 });

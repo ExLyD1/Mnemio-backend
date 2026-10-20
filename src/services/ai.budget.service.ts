@@ -53,16 +53,10 @@ export const capFor = (kind: aiUsageRepo.AiUsageKind, plan: 'free' | 'premium'):
  * daily cap for the given kind. Must run BEFORE the provider call so we
  * don't burn LLM credits on a call we won't return.
  */
-export const assertWithinBudget = async (
-    userId: string,
-    kind: aiUsageRepo.AiUsageKind,
-): Promise<void> => {
-    const [plan, used] = await Promise.all([
-        entitlementService.getPlan(userId),
-        aiUsageRepo.findTodayCount(userId, kind),
-    ]);
+export const reserve = async (userId: string, kind: aiUsageRepo.AiUsageKind): Promise<void> => {
+    const plan = await entitlementService.getPlan(userId);
     const cap = capFor(kind, plan);
-    if (used >= cap) {
+    if ((await aiUsageRepo.reserveUse(userId, kind, cap)) === null) {
         const resetsAt = aiUsageRepo.nextResetAt().toISOString();
         // 'import' gets its own error code so the FE can distinguish AI vs
         // import quotas — the user might be capped on one and free on the other.
@@ -113,11 +107,8 @@ export const usageSnapshot = async (userId: string): Promise<UsageSnapshot> => {
     return { plan, resetsAt: aiUsageRepo.nextResetAt().toISOString(), kinds };
 };
 
-/**
- * Atomic +1 on the day's counter. Call AFTER a successful provider call —
- * we don't count failed calls against the user's cap.
- */
-export const recordUse = (userId: string, kind: aiUsageRepo.AiUsageKind) =>
-    aiUsageRepo.recordUse(userId, kind);
+/** Return the reservation when the operation fails or is cancelled. */
+export const release = (userId: string, kind: aiUsageRepo.AiUsageKind) =>
+    aiUsageRepo.releaseUse(userId, kind);
 
 export type { AiUsageKind } from '../repositories/ai-usage.repository.js';

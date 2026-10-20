@@ -50,15 +50,28 @@ export const findTodayCounts = async (
     return out;
 };
 
-/**
- * Atomic +1 on the day's counter. Returns the new total after increment so
- * callers can surface "you have N left" if they want.
- */
-export const recordUse = async (userId: string, kind: AiUsageKind): Promise<number> => {
-    const row = await prisma.aiUsage.upsert({
-        where: { userId_day_kind: { userId, day: dayUtc(), kind } },
-        update: { count: { increment: 1 } },
-        create: { userId, day: dayUtc(), kind, count: 1 },
-    });
-    return row.count;
+/** Reserve a slot before work starts; the conflict lock enforces the cap. */
+export const reserveUse = async (
+    userId: string,
+    kind: AiUsageKind,
+    cap: number,
+): Promise<number | null> => {
+    const rows = await prisma.$queryRaw<{ count: number }[]>`
+        INSERT INTO ai_usage ("userId", day, kind, count, "updatedAt")
+        SELECT ${userId}, ${dayUtc()}::date, ${kind}, 1, now()
+        WHERE ${cap} > 0
+        ON CONFLICT ("userId", day, kind) DO UPDATE
+        SET count = ai_usage.count + 1, "updatedAt" = now()
+        WHERE ai_usage.count < ${cap}
+        RETURNING count
+    `;
+    return rows[0]?.count ?? null;
+};
+
+/** Release failed work without allowing a negative counter. */
+export const releaseUse = async (userId: string, kind: AiUsageKind): Promise<void> => {
+    await prisma.$executeRaw`
+        UPDATE ai_usage SET count = GREATEST(0, count - 1), "updatedAt" = now()
+        WHERE "userId" = ${userId} AND day = ${dayUtc()}::date AND kind = ${kind}
+    `;
 };

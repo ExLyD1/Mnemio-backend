@@ -82,19 +82,22 @@ export const importQuizletByUrl = async (
         throw new ImportBadUrlError();
     }
 
-    await budget.assertWithinBudget(userId, 'import');
+    await budget.reserve(userId, 'import');
+    try {
+        const html = await fetchQuizletHtml(parsed.setId);
+        const extracted = extractFromQuizletHtml(html, parsed.setId);
+        if (!extracted) {
+            throw new ImportParseFailedError();
+        }
 
-    const html = await fetchQuizletHtml(parsed.setId);
-    const extracted = extractFromQuizletHtml(html, parsed.setId);
-    if (!extracted) {
-        throw new ImportParseFailedError();
+        return {
+            source: { kind: 'quizlet', setId: extracted.setId, title: extracted.title },
+            cards: extracted.cards,
+        };
+    } catch (err) {
+        await budget.release(userId, 'import');
+        throw err;
     }
-
-    await budget.recordUse(userId, 'import');
-    return {
-        source: { kind: 'quizlet', setId: extracted.setId, title: extracted.title },
-        cards: extracted.cards,
-    };
 };
 
 export const importByText = async (
@@ -104,16 +107,19 @@ export const importByText = async (
 ): Promise<TextImportResult> => {
     // Cheap, no upstream call — but we still budget so a user can't run away
     // with thousands of paste-imports a day.
-    await budget.assertWithinBudget(userId, 'import');
+    await budget.reserve(userId, 'import');
+    try {
+        const parsed = parseText(text, format);
+        if (parsed.cards.length === 0) {
+            throw new ImportParseFailedError('No card pairs could be parsed from the input');
+        }
 
-    const parsed = parseText(text, format);
-    if (parsed.cards.length === 0) {
-        throw new ImportParseFailedError('No card pairs could be parsed from the input');
+        return {
+            source: { kind: 'text', format: parsed.format },
+            cards: parsed.cards,
+        };
+    } catch (err) {
+        await budget.release(userId, 'import');
+        throw err;
     }
-
-    await budget.recordUse(userId, 'import');
-    return {
-        source: { kind: 'text', format: parsed.format },
-        cards: parsed.cards,
-    };
 };

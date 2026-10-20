@@ -65,10 +65,14 @@ export const enrichWords = async (
     if (prepared.words.length > env.AI_MAX_WORDS_PER_ENRICH) {
         throw new AiTooManyWordsError(env.AI_MAX_WORDS_PER_ENRICH, prepared.words.length);
     }
-    await budget.assertWithinBudget(userId, 'enrich');
-    const result = await provider.enrichWords(prepared, opts);
-    await budget.recordUse(userId, 'enrich');
-    return result;
+    await budget.reserve(userId, 'enrich');
+    try {
+        const result = await provider.enrichWords(prepared, opts);
+        return result;
+    } catch (err) {
+        await budget.release(userId, 'enrich');
+        throw err;
+    }
 };
 
 // Definitions default to the user's native language, never a hardcoded 'en'
@@ -116,15 +120,19 @@ export const generateDeck = async (
     input: GenerateDeckRequest & { exclude?: string[] },
     opts?: { onEvent?: (event: GenerateDeckEvent) => void },
 ): Promise<AiDeckDraft> => {
-    await budget.assertWithinBudget(userId, 'generate');
-    const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
-    const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
-    const draft = await provider.generateDeck(
-        { ...input, sourceLanguage },
-        onEvent ? { onEvent } : undefined,
-    );
-    await budget.recordUse(userId, 'generate');
-    return withResolvedLangs(draft, sourceLanguage, input.targetLanguage);
+    await budget.reserve(userId, 'generate');
+    try {
+        const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
+        const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
+        const draft = await provider.generateDeck(
+            { ...input, sourceLanguage },
+            onEvent ? { onEvent } : undefined,
+        );
+        return withResolvedLangs(draft, sourceLanguage, input.targetLanguage);
+    } catch (err) {
+        await budget.release(userId, 'generate');
+        throw err;
+    }
 };
 
 // Result carries an optional `note` when the image had no readable/learnable
@@ -134,42 +142,50 @@ export const deckFromImage = async (
     input: DeckFromImageRequest & { image: AiImageInput },
     opts?: { onEvent?: (event: GenerateDeckEvent) => void },
 ): Promise<{ draft: AiDeckDraft; note?: 'no_text' }> => {
-    await budget.assertWithinBudget(userId, 'image');
-    const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
-    const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
-    const raw = await provider.deckFromImage(
-        { ...input, sourceLanguage },
-        onEvent ? { onEvent } : undefined,
-    );
-    await budget.recordUse(userId, 'image');
-    const draft = withResolvedLangs(raw, sourceLanguage, input.targetLanguage);
-    return draft.cards.length === 0 ? { draft, note: 'no_text' } : { draft };
+    await budget.reserve(userId, 'image');
+    try {
+        const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
+        const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
+        const raw = await provider.deckFromImage(
+            { ...input, sourceLanguage },
+            onEvent ? { onEvent } : undefined,
+        );
+        const draft = withResolvedLangs(raw, sourceLanguage, input.targetLanguage);
+        return draft.cards.length === 0 ? { draft, note: 'no_text' } : { draft };
+    } catch (err) {
+        await budget.release(userId, 'image');
+        throw err;
+    }
 };
 
 export const suggest = async (userId: string, input: SuggestInput, tz: string = DEFAULT_TZ) => {
-    await budget.assertWithinBudget(userId, 'suggest');
-    const [dueCount, days] = await Promise.all([
-        srsRepo.countDueCards(userId),
-        activityRepo.allDays(userId),
-    ]);
-    const streak = computeStreak(days, tzDayKey(new Date(), tz));
+    await budget.reserve(userId, 'suggest');
+    try {
+        const [dueCount, days] = await Promise.all([
+            srsRepo.countDueCards(userId),
+            activityRepo.allDays(userId),
+        ]);
+        const streak = computeStreak(days, tzDayKey(new Date(), tz));
 
-    const args: {
-        context: SuggestInput['context'];
-        deckId?: string;
-        dueCount: number;
-        streak: number;
-    } = {
-        context: input.context,
-        dueCount,
-        streak,
-    };
-    if (input.deckId !== undefined) {
-        args.deckId = input.deckId;
+        const args: {
+            context: SuggestInput['context'];
+            deckId?: string;
+            dueCount: number;
+            streak: number;
+        } = {
+            context: input.context,
+            dueCount,
+            streak,
+        };
+        if (input.deckId !== undefined) {
+            args.deckId = input.deckId;
+        }
+        const result = await provider.suggest(args);
+        return result;
+    } catch (err) {
+        await budget.release(userId, 'suggest');
+        throw err;
     }
-    const result = await provider.suggest(args);
-    await budget.recordUse(userId, 'suggest');
-    return result;
 };
 
 export const providerName = (): string => provider.name;

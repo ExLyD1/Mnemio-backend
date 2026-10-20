@@ -15,13 +15,13 @@ export const importApkg = async (userId: string, bytes: Buffer, languages: Impor
     if (bytes.length > env.IMPORT_APKG_MAX_BYTES) {
         apkgTooLarge('Package exceeds upload limit');
     }
-    await budget.assertWithinBudget(userId, 'import');
-    const parsed = await parseApkg(bytes);
+    await budget.reserve(userId, 'import');
     const stored: media.StoredFile[] = [],
         urls = new Map<string, string>();
     let mediaBytes = 0;
     let committed = false;
     try {
+        const parsed = await parseApkg(bytes);
         const used = new Map<string, 'card_image' | 'card_audio'>();
         for (const deck of parsed.decks) {
             for (const card of deck.cards) {
@@ -88,7 +88,6 @@ export const importApkg = async (userId: string, bytes: Buffer, languages: Impor
             })),
         );
         committed = true;
-        await budget.recordUse(userId, 'import');
         void milestone.checkFirstDeck(userId);
         const newAchievements = await achievements.evaluate(userId, 'card_create').catch(() => []);
         return {
@@ -101,6 +100,7 @@ export const importApkg = async (userId: string, bytes: Buffer, languages: Impor
         };
     } finally {
         if (!committed) {
+            await budget.release(userId, 'import');
             await Promise.all(stored.map((file) => media.removeStoredFile(userId, file)));
         }
     }
