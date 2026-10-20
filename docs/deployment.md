@@ -28,6 +28,10 @@ Railway is the best fit. Reasons:
 - **Pricing.** Hobby plan: $5/mo flat + usage. For the MVP load (a few
   concurrent users, small DB), expect $10–25/mo end-to-end.
 
+### Chat cancellation and scaling
+
+Explicit chat cancellation is in-process. Production uses one Railway service instance. With more than one replica, route a conversation's requests to one instance (sticky routing) or move cancellation to shared state. Closing the HTTP request still aborts generation on the instance serving it.
+
 Alternatives considered:
 
 | Option | Verdict |
@@ -77,7 +81,9 @@ MAIL_FROM="Mnemio <noreply@mnemio.app>"
 ```
 AI_PROVIDER=anthropic              # or `mock` for paid-down env
 ANTHROPIC_API_KEY=<sk-ant-...>
-ANTHROPIC_MODEL=claude-haiku-4-5-20251001
+ANTHROPIC_MODEL=claude-haiku-5-5
+ANTHROPIC_CHAT_EFFORT=low          # `off` for models without effort (claude-haiku-4-5)
+AI_CHAT_MAX_OUTPUT_TOKENS=8000     # includes thinking; long Ukrainian answers hit 4096
 AI_DAILY_ENRICH_CAP_PER_USER=5
 AI_DAILY_GENERATE_CAP_PER_USER=20
 AI_DAILY_SUGGEST_CAP_PER_USER=60
@@ -235,7 +241,7 @@ of crash-looping the new image.
 | Item | Plan | Cost |
 |---|---|---|
 | Railway service + Postgres | Hobby | ~$5–10 |
-| Anthropic API (Claude Haiku 4.5) | Pay-as-you-go | ~$5–15 depending on usage |
+| Anthropic API (Claude Haiku 5.5) | Pay-as-you-go | ~$5–15 depending on usage |
 | Cloudflare R2 (when wired) | Free tier covers <10 GB | $0 |
 | Sentry | Free tier | $0 |
 | BetterUptime | Free tier | $0 |
