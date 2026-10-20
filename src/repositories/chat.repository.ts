@@ -1,7 +1,8 @@
+import type { Cursor } from '../shared/pagination.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { ChatMessageModel } from '../../generated/prisma/models/ChatMessage.js';
 import { prisma } from '../db/prisma.js';
-import type { ChatAttachment } from '../shared/mappers.chat.js';
+import { fromDbAttachments, type ChatAttachment } from '../shared/mappers.chat.js';
 
 // ---------- Conversations ----------
 
@@ -121,40 +122,17 @@ export const claimTurn = async (params: {
     conversationId: string;
     content: string;
     retryOf?: string | undefined;
-}): Promise<{
-    userRow: ChatMessageModel;
-    placeholder: ChatMessageModel;
-} | null> =>
+}): Promise<
+    | {
+          userRow: ChatMessageModel;
+          placeholder: ChatMessageModel;
+      }
+    | 'retry_unavailable'
+    | null
+> =>
     prisma.$transaction(async (tx) => {
         // Serializes concurrent sends on this conversation. Held until commit.
         await tx.$queryRaw`SELECT id FROM conversations WHERE id = ${params.conversationId} FOR UPDATE`;
-
-        if (params.retryOf) {
-            const failed = await tx.chatMessage.findFirst({
-                where: {
-                    id: params.retryOf,
-                    conversationId: params.conversationId,
-                    role: 'assistant',
-                    status: 'partial',
-                },
-            });
-            if (failed) {
-                // The user turn that produced it: the row immediately before.
-                const priorUser = await tx.chatMessage.findFirst({
-                    where: {
-                        conversationId: params.conversationId,
-                        role: 'user',
-                        createdAt: { lt: failed.createdAt },
-                    },
-                    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-                });
-                await tx.chatMessage.deleteMany({
-                    where: {
-                        id: { in: priorUser ? [failed.id, priorUser.id] : [failed.id] },
-                    },
-                });
-            }
-        }
 
         const staleBefore = new Date(Date.now() - STALE_STREAM_MS);
         await tx.chatMessage.updateMany({
@@ -171,6 +149,34 @@ export const claimTurn = async (params: {
         });
         if (live > 0) {
             return null;
+        }
+
+        if (params.retryOf) {
+            const latest = await tx.chatMessage.findFirst({
+                where: { conversationId: params.conversationId },
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            });
+            if (
+                latest?.id !== params.retryOf ||
+                latest.role !== 'assistant' ||
+                latest.status !== 'partial' ||
+                (fromDbAttachments(latest.attachments)?.length ?? 0) > 0
+            ) {
+                return 'retry_unavailable';
+            }
+            const priorUser = await tx.chatMessage.findFirst({
+                where: {
+                    conversationId: params.conversationId,
+                    createdAt: { lt: latest.createdAt },
+                },
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            });
+            if (priorUser?.role !== 'user' || priorUser.content !== params.content) {
+                return 'retry_unavailable';
+            }
+            await tx.chatMessage.deleteMany({
+                where: { id: { in: [latest.id, priorUser.id] } },
+            });
         }
 
         const userRow = await tx.chatMessage.create({
@@ -197,9 +203,8 @@ export const releaseTurn = (assistantId: string) =>
 
 // Used when the streaming reply finishes: replace the placeholder content
 // and flip status to 'complete'. tokensInput/Output are nullable in the
-// schema but always set on assistant rows. `attachments` is set only when a
-// tool fired during the turn; we explicitly null it out otherwise so a retry
-// after a tool failure clears stale data from the partial placeholder.
+// schema but always set on assistant rows. Preserve attachments already saved
+// by the tool transaction even when its result event never reached this driver.
 export const finalizeAssistantMessage = (data: {
     id: string;
     content: string;
@@ -215,10 +220,9 @@ export const finalizeAssistantMessage = (data: {
             tokensInput: data.tokensInput,
             tokensOutput: data.tokensOutput,
             status: data.status ?? 'complete',
-            attachments:
-                data.attachments && data.attachments.length > 0
-                    ? (data.attachments as unknown as Prisma.InputJsonValue)
-                    : Prisma.JsonNull,
+            ...(data.attachments && data.attachments.length > 0
+                ? { attachments: data.attachments as unknown as Prisma.InputJsonValue }
+                : {}),
         },
     });
 
@@ -226,9 +230,31 @@ export const finalizeAssistantMessage = (data: {
 // conversation open; the model context window asks for the last 20 instead.
 // Ordered desc then reversed so a long conversation returns its NEWEST 50 —
 // ascending + take returned the oldest 50, hiding everything recent.
-export const listMessages = async (conversationId: string, take = 50) => {
+export const listMessages = async (
+    conversationId: string,
+    take = 50,
+    before: Cursor | null = null,
+) => {
+    await prisma.chatMessage.updateMany({
+        where: {
+            conversationId,
+            status: 'streaming',
+            createdAt: { lt: new Date(Date.now() - STALE_STREAM_MS) },
+        },
+        data: { status: 'partial' },
+    });
     const rows = await prisma.chatMessage.findMany({
-        where: { conversationId },
+        where: {
+            conversationId,
+            ...(before
+                ? {
+                      OR: [
+                          { createdAt: { lt: new Date(before.ts) } },
+                          { createdAt: new Date(before.ts), id: { lt: before.id } },
+                      ],
+                  }
+                : {}),
+        },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take,
     });

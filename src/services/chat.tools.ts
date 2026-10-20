@@ -10,6 +10,9 @@
 // the assistant message; on failure we send the reason to the model as a
 // tool_result so it can apologise rather than 500-ing the request.
 
+import * as writes from '../repositories/chat-tools.repository.js';
+import * as achievements from './achievements.service.js';
+import * as milestone from './milestone.service.js';
 import * as aiService from './ai.service.js';
 import * as decksService from './decks.service.js';
 import * as cardsService from './cards.service.js';
@@ -270,7 +273,14 @@ const persistDeck = async (
     userId: string,
     meta: { title: string; description?: string; sourceLanguage: string; targetLanguage: string },
     cards: AiCardDraft[],
+    assistantMessageId?: string,
 ): Promise<{ attachment: ChatAttachment; words: string[] }> => {
+    if (assistantMessageId) {
+        const attachment = await writes.writeDeck({ userId, assistantMessageId, meta, cards });
+        void milestone.checkFirstDeck(userId);
+        await achievements.evaluate(userId, 'card_create').catch(() => []);
+        return { attachment, words: cards.map((c) => c.word) };
+    }
     const deck = await decksService.create(userId, {
         title: meta.title,
         description: meta.description ?? '',
@@ -384,7 +394,7 @@ export const runCreateDeck = async (
     input: CreateDeckToolInput,
     userLangs: UserLanguages,
     locale?: string | null,
-    ctx: { userMessage?: string } = {},
+    ctx: { userMessage?: string; signal?: AbortSignal; assistantMessageId?: string } = {},
 ): Promise<ToolResult> => {
     // Require at least one of words/topic — the JSON schema is loose so the
     // model doesn't get confused by oneOf, but we tighten here.
@@ -434,10 +444,12 @@ export const runCreateDeck = async (
                 userMessage: ctx.userMessage,
                 fallback: titleForWordList(input, targetLanguage),
             });
+            ctx.signal?.throwIfAborted();
             const persisted = await persistDeck(
                 userId,
                 { title, sourceLanguage, targetLanguage },
                 enriched.cards,
+                ctx.assistantMessageId,
             );
             // eslint-disable-next-line no-console
             console.log('[chat.tools] create_deck persisted', {
@@ -455,6 +467,7 @@ export const runCreateDeck = async (
             targetLanguage,
             ...(input.count ? { count: input.count } : {}),
         });
+        ctx.signal?.throwIfAborted();
         const persisted = await persistDeck(
             userId,
             {
@@ -472,6 +485,7 @@ export const runCreateDeck = async (
                 targetLanguage,
             },
             draft.cards,
+            ctx.assistantMessageId,
         );
         // eslint-disable-next-line no-console
         console.log('[chat.tools] create_deck persisted', {
@@ -546,7 +560,7 @@ export const runAddCards = async (
     userId: string,
     deckId: string,
     input: AddCardsToolInput,
-    ctx: { userMessage?: string } = {},
+    ctx: { userMessage?: string; signal?: AbortSignal; assistantMessageId?: string } = {},
 ): Promise<ToolResult> => {
     const words = input.words && input.words.length > 0 ? input.words : null;
     const topic = input.topic?.trim() ? input.topic : null;
@@ -642,6 +656,24 @@ export const runAddCards = async (
             };
         }
 
+        ctx.signal?.throwIfAborted();
+        if (ctx.assistantMessageId) {
+            const attachment = await writes.writeDeck({
+                userId,
+                assistantMessageId: ctx.assistantMessageId,
+                deckId,
+                meta: { title: deck.title, sourceLanguage, targetLanguage },
+                cards,
+                skippedCount: skipped.length,
+            });
+            await achievements.evaluate(userId, 'card_create').catch(() => []);
+            return {
+                ok: true,
+                attachment,
+                words: cards.map((c) => c.word),
+                ...(skipped.length > 0 ? { skipped } : {}),
+            };
+        }
         await cardsService.bulkCreate(userId, deckId, {
             cards: cards.map(cardFromDraft),
         });

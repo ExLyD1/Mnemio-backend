@@ -1627,13 +1627,21 @@ first and sends the user's first message in a follow-up call.
 ```
 
 #### `GET /chat/conversations/:id`  *(auth)*
-Fetch the conversation header plus its most recent 50 messages, returned
-oldest-first. A message with `status: 'streaming'` means a reply is being
+`GET /api/v1/chat/conversations/:id?before=<cursor>` returns
+`{ conversation, messages, hasMore, before }`. Without `before` it returns the latest
+50 messages; each page is chronological. When `hasMore` is true, `before` is an
+opaque base64url cursor for the oldest returned message (`{ ts: createdAt, id }`).
+Pass it unchanged to fetch up to 50 strictly older messages. Timestamp ties use
+the id as a tiebreaker. The final page returns `hasMore: false, before: null`.
+Ownership is checked on every page (404 for another user's conversation);
+malformed cursors return 400 `INVALID_CURSOR`.
+
+A page is returned oldest-first. A message with `status: 'streaming'` means a reply is being
 generated right now: render the typing indicator and re-fetch until it
 settles, rather than treating an empty assistant row as a failure.
 ```ts
-// 200 Response: { conversation: Conversation; messages: ChatMessage[] }
-// Errors: 404 CHAT_NOT_FOUND
+// 200 Response: { conversation: Conversation; messages: ChatMessage[]; hasMore: boolean; before: string | null }
+// Errors: 400 INVALID_CURSOR; 404 CHAT_NOT_FOUND
 ```
 
 #### `PATCH /chat/conversations/:id`  *(auth)*
@@ -1838,10 +1846,24 @@ and offer the user a "retry" affordance.
 // 502 AI_VALIDATION_FAILED  — provider returned nothing usable
 ```
 
+**Interrupted replies and retries:** `POST /chat/conversations/:id/cancel` (body `{}`)
+requires ownership and returns 204 after requesting cancellation of the active
+reply in this API process. This explicit request also works through proxies
+that keep the upstream SSE connection open. Closing SSE directly cancels the active
+chat provider request; the turn also has a two-minute deadline. The partial
+reply is saved without charging the chat allowance. Reopening a conversation
+marks abandoned streaming placeholders older than three minutes as partial.
+An optional `retryOf` UUID replaces only the latest partial assistant reply
+and its matching user message. The original text must match, and a reply that
+already saved a deck cannot be retried. Invalid/repeated retries return
+`400 CHAT_RETRY_UNAVAILABLE`. Concurrent sends to one conversation return
+`409 CHAT_BUSY`. Chat route throttles are per authenticated user, so customers
+sharing an IP do not consume each other's allowance.
+
 **Context window:** the backend sends only the most recent
 `AI_CHAT_CONTEXT_TURNS` (default 20) `user`+`assistant` messages to the
-LLM, oldest first. Older messages remain in the DB and are returned by
-`GET /chat/conversations/:id` for display but don't ride along to Claude.
+LLM, oldest first. Older messages remain in the DB; `GET /chat/conversations/:id` returns the
+newest 50 for display and accepts `before` to load older pages (see the GET contract above).
 
 **Auto-title rule:** on the user's first message in a conversation, the
 title flips from `"New chat"` to the trimmed message (up to 60 chars, ellipsis

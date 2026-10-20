@@ -3,7 +3,7 @@ import * as chatRepo from '../src/repositories/chat.repository.js';
 import * as decksRepo from '../src/repositories/decks.repository.js';
 import * as prefsRepo from '../src/repositories/preferences.repository.js';
 import * as budget from '../src/services/ai.budget.service.js';
-import { sendMessage, __setProviderForTesting } from '../src/services/chat.service.js';
+import { sendMessage, cancelReply, __setProviderForTesting } from '../src/services/chat.service.js';
 import {
     AiProviderError,
     ChatNotFoundError,
@@ -29,8 +29,8 @@ vi.mock('../src/repositories/preferences.repository.js', () => ({
     findOrCreate: vi.fn(),
 }));
 vi.mock('../src/services/ai.budget.service.js', () => ({
-    assertWithinBudget: vi.fn(),
-    recordUse: vi.fn(),
+    reserve: vi.fn(),
+    release: vi.fn(),
     usageSnapshot: vi.fn(),
 }));
 
@@ -110,6 +110,26 @@ beforeEach(() => {
 });
 
 describe('chat.service / sendMessage', () => {
+    it('keeps the reservation when the provider completes with a saved-tool fallback', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        const attachment = { type: 'deck', deckId: 'saved', title: 'Saved', cardCount: 2 };
+        mockedRepo.finalizeAssistantMessage.mockResolvedValue(
+            messageRow({ role: 'assistant', content: 'Saved', attachments: [attachment] }) as never,
+        );
+        mockedRepo.renameAndTouch.mockResolvedValue(conversationRow() as never);
+        __setProviderForTesting(
+            buildProvider(async () => ({
+                content: 'Saved',
+                tokensInput: 1,
+                tokensOutput: 1,
+                attachments: [attachment],
+            })),
+        );
+        await sendMessage('u', 'c', 'create', () => undefined);
+        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'chat');
+        expect(mockedBudget.release).not.toHaveBeenCalled();
+    });
     it('throws CHAT_NOT_FOUND when the caller does not own the conversation', async () => {
         mockedRepo.findConversation.mockResolvedValue(null);
         await expect(sendMessage('u', 'c', 'hi', () => undefined)).rejects.toBeInstanceOf(
@@ -120,14 +140,14 @@ describe('chat.service / sendMessage', () => {
 
     it('returns AI_BUDGET_EXCEEDED before persisting anything', async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
-        mockedBudget.assertWithinBudget.mockRejectedValue(
+        mockedBudget.reserve.mockRejectedValue(
             new AiBudgetExceededError('chat', 50, '2026-06-09T00:00:00.000Z'),
         );
         await expect(sendMessage('u', 'c', 'hi', () => undefined)).rejects.toBeInstanceOf(
             AiBudgetExceededError,
         );
         expect(mockedRepo.claimTurn).not.toHaveBeenCalled();
-        expect(mockedBudget.recordUse).not.toHaveBeenCalled();
+        expect(mockedBudget.release).not.toHaveBeenCalled();
     });
 
     it('on success: persists user msg, placeholder, finalizes assistant, auto-titles, records use', async () => {
@@ -175,40 +195,44 @@ describe('chat.service / sendMessage', () => {
         // auto-title triggered (first user message)
         expect(mockedRepo.renameAndTouch).toHaveBeenCalledWith('c', 'Hi Mnemio!', expect.any(Date));
         expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
-        // budget recorded only after success
-        expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'chat');
+        expect(mockedBudget.release).not.toHaveBeenCalled();
+        // reservation remains charged on success
+        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'chat');
     });
 
-    it('on provider failure: keeps user msg, flips placeholder to partial with buffered content, does not record use', async () => {
-        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
-        mockedRepo.countUserMessages.mockResolvedValue(0);
-        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
-        __setProviderForTesting(
-            buildProvider(async (_input, opts) => {
-                opts?.onEvent?.({ type: 'token', delta: 'Hello' } as ChatStreamEvent);
-                throw new AiProviderError(502, 'upstream blew up');
-            }),
-        );
+    it.each([502, 'refusal'])(
+        'on provider failure %s: saves partial content and releases the reservation',
+        async (status) => {
+            mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+            mockedRepo.countUserMessages.mockResolvedValue(0);
+            mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+            __setProviderForTesting(
+                buildProvider(async (_input, opts) => {
+                    opts?.onEvent?.({ type: 'token', delta: 'Hello' } as ChatStreamEvent);
+                    throw new AiProviderError(status, 'upstream blew up');
+                }),
+            );
 
-        await expect(sendMessage('u', 'c', 'Hi', () => undefined)).rejects.toBeInstanceOf(
-            AiProviderError,
-        );
+            await expect(sendMessage('u', 'c', 'Hi', () => undefined)).rejects.toBeInstanceOf(
+                AiProviderError,
+            );
 
-        // The placeholder was finalized with the partial buffer, NOT marked complete.
-        expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith({
-            id: 'ai-msg',
-            content: 'Hello',
-            tokensInput: 0,
-            tokensOutput: 0,
-            status: 'partial',
-        });
-        // We didn't charge the user for the partial.
-        expect(mockedBudget.recordUse).not.toHaveBeenCalled();
-        // And we didn't bump the conversation order — partial replies don't
-        // jump to the top of the sidebar.
-        expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
-        expect(mockedRepo.renameAndTouch).not.toHaveBeenCalled();
-    });
+            // The placeholder was finalized with the partial buffer, NOT marked complete.
+            expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith({
+                id: 'ai-msg',
+                content: 'Hello',
+                tokensInput: 0,
+                tokensOutput: 0,
+                status: 'partial',
+            });
+            // We didn't charge the user for the partial.
+            expect(mockedBudget.release).toHaveBeenCalledWith('u', 'chat');
+            // And we didn't bump the conversation order — partial replies don't
+            // jump to the top of the sidebar.
+            expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
+            expect(mockedRepo.renameAndTouch).not.toHaveBeenCalled();
+        },
+    );
 
     it('does NOT auto-title on the second user turn even if the title is still default', async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
@@ -410,7 +434,7 @@ describe('chat.service / sendMessage', () => {
         await expect(sendMessage('u', 'c', 'second', () => undefined)).rejects.toBeInstanceOf(
             ChatBusyError,
         );
-        expect(mockedBudget.recordUse).not.toHaveBeenCalled();
+        expect(mockedBudget.release).toHaveBeenCalledWith('u', 'chat');
     });
 
     // History is read AFTER the user row is saved, so without an explicit
@@ -504,12 +528,112 @@ describe('chat.service / sendMessage', () => {
         await sendMessage('u', 'c', '', () => undefined, { image });
 
         // Metered as 'image', not 'chat'.
-        expect(mockedBudget.assertWithinBudget).toHaveBeenCalledWith('u', 'image');
-        expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'image');
+        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'image');
+        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'image');
         // System prompt gets the image-handling clause.
         expect(seenPrompt).toContain('attached an image');
         // Only the newest (last) turn carries the image; the prior DB turn doesn't.
         expect(seenMessages.at(-1)).toMatchObject({ image });
         expect(seenMessages[0]).not.toHaveProperty('image');
+    });
+});
+
+describe('chat turn recovery', () => {
+    it('finalizes a partial reply if loading model context fails', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.lastTurnsForModel.mockRejectedValue(new Error('database unavailable'));
+        await expect(sendMessage('u', 'c', 'hi', () => undefined)).rejects.toThrow(
+            'database unavailable',
+        );
+        expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'ai-msg', status: 'partial' }),
+        );
+    });
+    it('rejects unsafe retries without invoking the model', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.claimTurn.mockResolvedValue('retry_unavailable');
+        await expect(
+            sendMessage('u', 'c', 'hi', () => undefined, { retryOf: 'done' }),
+        ).rejects.toMatchObject({ code: 'CHAT_RETRY_UNAVAILABLE' });
+    });
+    it('passes cancellation to the provider and saves interrupted text', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        const controller = new AbortController();
+        __setProviderForTesting(
+            buildProvider(async (_input, opts) => {
+                expect(opts?.signal).toBeDefined();
+                opts?.onEvent?.({ type: 'token', delta: 'half' });
+                controller.abort();
+                opts?.signal?.throwIfAborted();
+                return { content: '', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+        await expect(
+            sendMessage('u', 'c', 'hi', () => undefined, { signal: controller.signal }),
+        ).rejects.toBeDefined();
+        expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ content: 'half', status: 'partial' }),
+        );
+        expect(mockedBudget.release).toHaveBeenCalledWith('u', 'chat');
+    });
+});
+
+describe('explicit chat cancellation', () => {
+    it('remembers cancellation during preparation before the start frame', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        let ready: () => void = () => undefined;
+        const preparing = new Promise<void>((resolve) => {
+            ready = resolve;
+        });
+        let finish: (value: never) => void = () => undefined;
+        mockedPrefs.findOrCreate.mockImplementation(() => {
+            ready();
+            return new Promise((resolve) => {
+                finish = resolve;
+            });
+        });
+        const chat = vi.fn();
+        __setProviderForTesting(buildProvider(chat));
+        const sending = sendMessage('u', 'conv-preparing', 'hi', () => undefined);
+        const rejected = expect(sending).rejects.toBeDefined();
+        await preparing;
+        await cancelReply('u', 'conv-preparing');
+        finish({ nativeLanguage: 'uk', learningLanguages: ['en'] } as never);
+        await rejected;
+        expect(chat).not.toHaveBeenCalled();
+        expect(mockedBudget.release).toHaveBeenCalledExactlyOnceWith('u', 'chat');
+    });
+    it('requires conversation ownership', async () => {
+        mockedRepo.findConversation.mockResolvedValue(null);
+        await expect(cancelReply('other-user', 'conv-1')).rejects.toBeInstanceOf(ChatNotFoundError);
+    });
+    it('cancels the active provider even when a proxy keeps SSE open', async () => {
+        mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
+        mockedRepo.lastTurnsForModel.mockResolvedValue([]);
+        let ready: () => void = () => undefined;
+        const started = new Promise<void>((resolve) => {
+            ready = resolve;
+        });
+        __setProviderForTesting(
+            buildProvider(async (_input, opts) => {
+                ready();
+                await new Promise<void>((_resolve, reject) => {
+                    opts?.signal?.addEventListener('abort', () => reject(new Error('cancelled')), {
+                        once: true,
+                    });
+                });
+                return { content: '', tokensInput: 0, tokensOutput: 0 };
+            }),
+        );
+        const sending = sendMessage('u', 'conv-1', 'hi', () => undefined);
+        const rejection = expect(sending).rejects.toThrow('cancelled');
+        await started;
+        await cancelReply('u', 'conv-1');
+        await rejection;
+        expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith(
+            expect.objectContaining({ status: 'partial' }),
+        );
     });
 });

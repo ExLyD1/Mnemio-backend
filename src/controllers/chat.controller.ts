@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import {
     createConversationSchema,
+    listMessagesQuerySchema,
     listConversationsQuerySchema,
     renameConversationSchema,
     sendMessageSchema,
@@ -37,9 +38,18 @@ export const getConversation = async (
     request: FastifyRequest<{ Params: IdParams }>,
     reply: FastifyReply,
 ) => {
+    const query = listMessagesQuerySchema.parse(request.query);
+    const before = decodeCursor(query.before);
+    if (
+        before &&
+        (!Number.isFinite(Date.parse(before.ts)) || !/^[0-9a-f-]{36}$/i.test(before.id))
+    ) {
+        throw new BadRequestError('INVALID_CURSOR', 'cursor is malformed');
+    }
     const result = await chatService.getConversationWithMessages(
         request.currentUser.sub,
         request.params.id,
+        before,
     );
     reply.send(result);
 };
@@ -62,6 +72,14 @@ export const deleteConversation = async (
     reply: FastifyReply,
 ) => {
     await chatService.deleteConversation(request.currentUser.sub, request.params.id);
+    reply.code(204).send();
+};
+
+export const cancelReply = async (
+    request: FastifyRequest<{ Params: IdParams }>,
+    reply: FastifyReply,
+) => {
+    await chatService.cancelReply(request.currentUser.sub, request.params.id);
     reply.code(204).send();
 };
 
@@ -115,6 +133,9 @@ export const sendMessage = async (
 
     // SSE path — emit one event per frame yielded by the service.
     const sse = startSse(reply);
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    reply.raw.once('close', onClose);
     try {
         await chatService.sendMessage(
             request.currentUser.sub,
@@ -154,7 +175,7 @@ export const sendMessage = async (
                         break;
                 }
             },
-            opts,
+            { ...opts, signal: controller.signal },
         );
     } catch (err) {
         // The service already finalized the partial assistant row before
@@ -162,8 +183,11 @@ export const sendMessage = async (
         const body =
             err instanceof AppError
                 ? err.toPayload()
-                : { code: 'INTERNAL', message: (err as Error).message };
+                : { code: 'INTERNAL', message: 'Unable to complete the reply' };
+        request.log.error({ err }, 'Chat reply failed');
         sse.write('error', body);
+    } finally {
+        reply.raw.off('close', onClose);
     }
     sse.end();
     return reply;

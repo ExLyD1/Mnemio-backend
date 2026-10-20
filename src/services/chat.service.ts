@@ -1,5 +1,5 @@
 import { env } from '../config/env.js';
-import { ChatBusyError, ChatNotFoundError } from '../shared/errors.js';
+import { BadRequestError, ChatBusyError, ChatNotFoundError } from '../shared/errors.js';
 import { encodeCursor, type Cursor, type Page } from '../shared/pagination.js';
 import {
     fromDbAttachments,
@@ -55,6 +55,17 @@ const provider = (): AiProvider => {
 // Test-only seam.
 export const __setProviderForTesting = (p: AiProvider | null): void => {
     cachedProvider = p;
+};
+
+// Live requests in this API process. Explicit cancellation is needed because
+// a browser disconnect is not reliably forwarded by every reverse proxy.
+const activeReplies = new Map<string, AbortController>();
+
+export const cancelReply = async (userId: string, conversationId: string): Promise<void> => {
+    if (!(await chatRepo.findConversation(conversationId, userId))) {
+        throw new ChatNotFoundError();
+    }
+    activeReplies.get(conversationId)?.abort();
 };
 
 // ---------- Conversations ----------
@@ -116,15 +127,29 @@ export const listConversations = async (
 export const getConversationWithMessages = async (
     userId: string,
     conversationId: string,
-): Promise<{ conversation: PublicConversation; messages: PublicMessage[] }> => {
+    before: Cursor | null = null,
+): Promise<{
+    conversation: PublicConversation;
+    messages: PublicMessage[];
+    hasMore: boolean;
+    before: string | null;
+}> => {
     const conv = await chatRepo.findConversation(conversationId, userId);
     if (!conv) {
         throw new ChatNotFoundError();
     }
-    const messages = await chatRepo.listMessages(conversationId, 50);
+    const rows = await chatRepo.listMessages(conversationId, 51, before);
+    const hasMore = rows.length > 50;
+    const messages = hasMore ? rows.slice(1) : rows;
+    const oldest = messages[0];
     return {
         conversation: toPublicConversation(conv),
         messages: messages.map(toPublicMessage),
+        hasMore,
+        before:
+            hasMore && oldest
+                ? encodeCursor({ ts: oldest.createdAt.toISOString(), id: oldest.id })
+                : null,
     };
 };
 
@@ -239,13 +264,18 @@ const toolsForUser = (
     // name the user quoted, and to refuse an append aimed at a deck other than
     // the open one — neither can be trusted to the model's own arguments.
     userMessage: string,
+    signal: AbortSignal,
+    assistantMessageId: string,
 ): ChatToolsConfig => ({
     defs: deckCtx ? [CREATE_DECK_TOOL_DEF, ADD_CARDS_TOOL_DEF] : [CREATE_DECK_TOOL_DEF],
     run: async (call): Promise<ChatToolOutcome> => {
+        signal.throwIfAborted();
         if (call.name === 'create_deck') {
             return toOutcome(
                 await runCreateDeck(userId, call.input as CreateDeckToolInput, userLangs, locale, {
                     userMessage,
+                    signal,
+                    assistantMessageId,
                 }),
             );
         }
@@ -253,6 +283,8 @@ const toolsForUser = (
             return toOutcome(
                 await runAddCards(userId, deckCtx.deckId, call.input as AddCardsToolInput, {
                     userMessage,
+                    signal,
+                    assistantMessageId,
                 }),
             );
         }
@@ -269,7 +301,7 @@ const toolsForUser = (
 // buffer (JSON) or stream (SSE) them.
 //
 // Failure modes:
-//   - assertWithinBudget throws AI_BUDGET_EXCEEDED before we persist anything
+//   - reserve throws AI_BUDGET_EXCEEDED before we persist anything
 //   - if the provider throws after the user message + placeholder are saved,
 //     the placeholder is flipped to status='partial' with whatever buffer we
 //     have, and the error re-throws. The user message stays put either way.
@@ -283,6 +315,7 @@ export const sendMessage = async (
         locale?: string | null;
         image?: AiImageInput;
         retryOf?: string;
+        signal?: AbortSignal;
     } = {},
 ): Promise<{
     userMessage: PublicMessage;
@@ -303,197 +336,237 @@ export const sendMessage = async (
 
     // Budget check BEFORE we persist anything. We don't charge for messages
     // that 429.
-    await budget.assertWithinBudget(userId, budgetKind);
-
-    // Resolve the in-context deck (the one the user is viewing). Ownership-scoped
-    // — a deckId the user doesn't own is silently ignored, so add_cards simply
-    // stays unavailable rather than leaking that the deck exists.
-    let deckCtx: ChatDeckContext | undefined;
-    if (opts.deckId) {
-        const deck = await decksRepo.findDeckById(opts.deckId, userId);
-        if (deck) {
-            deckCtx = {
-                deckId: deck.id,
-                title: deck.title,
-                sourceLanguage: deck.sourceLanguage,
-                targetLanguage: deck.targetLanguage,
-            };
-        }
-    }
-
-    const userLangs = await loadUserLanguages(userId);
-
-    // Real remaining deck-building allowance, so the reply can state it instead
-    // of inventing one (and so an exhausted budget costs a sentence, not a
-    // doomed tool call).
-    const usage = await budget.usageSnapshot(userId);
-    const budgetCtx = {
-        wordListRemaining: usage.kinds.enrich.remaining,
-        wordListCap: usage.kinds.enrich.cap,
-        topicRemaining: usage.kinds.generate.remaining,
-        topicCap: usage.kinds.generate.cap,
-        resetsAt: usage.resetsAt,
-        plan: usage.plan,
-    };
-
-    // Persist the user message and claim the conversation's streaming slot in
-    // one transaction — if anything below fails, we still have what they typed,
-    // and a second concurrent send is refused rather than interleaved.
-    const claimed = await chatRepo.claimTurn({
-        conversationId,
-        content,
-        ...(opts.retryOf ? { retryOf: opts.retryOf } : {}),
-    });
-    if (!claimed) {
+    if (activeReplies.has(conversationId)) {
         throw new ChatBusyError();
     }
-    const { userRow: userRowDb, placeholder: assistantPlaceholder } = claimed;
-    const userMessage = toPublicMessage(userRowDb);
-
-    // Is this the auto-title turn? Counted after the claim and scoped to rows
-    // older than this one, so a retry (which deleted the failed pair) still
-    // titles the conversation.
-    const priorUserCount = await chatRepo.countUserMessages(conversationId, userRowDb.createdAt);
-    const isAutoTitleTurn = priorUserCount === 0;
-
-    onFrame({
-        type: 'start',
-        userMessage,
-        assistantMessageId: assistantPlaceholder.id,
-    });
-
-    // Build the model context: prior turns + the just-saved user message.
-    // `before` excludes this turn's own rows — they are already persisted, so
-    // without it the current message went to the model twice.
-    // Only the newest turn ever carries an image — images aren't persisted,
-    // so turns rebuilt from the DB (priorTurns) are always text-only.
-    const priorTurns = await chatRepo.lastTurnsForModel(
-        conversationId,
-        env.AI_CHAT_CONTEXT_TURNS - 1,
-        userRowDb.createdAt,
-    );
-    const turnsForModel = [
-        ...priorTurns.map(withDeckNote),
-        { role: 'user' as const, content, ...(opts.image ? { image: opts.image } : {}) },
-    ];
-
-    let buffer = '';
-    let tokensInput = 0;
-    let tokensOutput = 0;
-    let attachments: ChatAttachment[] | undefined;
-
+    const cancellation = new AbortController();
+    activeReplies.set(conversationId, cancellation);
+    const signal = AbortSignal.any([
+        cancellation.signal,
+        AbortSignal.timeout(120_000),
+        ...(opts.signal ? [opts.signal] : []),
+    ]);
+    let reserved = false;
+    let completed = false;
     try {
-        const result = await provider().chat(
-            {
-                messages: turnsForModel,
-                systemPrompt: buildChatSystemPrompt(
-                    deckCtx,
-                    opts.locale,
-                    !!opts.image,
-                    userLangs,
-                    budgetCtx,
-                ),
-                maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
-                tools: toolsForUser(userId, userLangs, deckCtx, opts.locale, content),
-            },
-            {
-                onEvent: (event: ChatStreamEvent) => {
-                    if (event.type === 'token') {
-                        buffer += event.delta;
-                        onFrame({ type: 'token', delta: event.delta });
-                    } else if (event.type === 'tool_use') {
-                        onFrame({
-                            type: 'tool_use',
-                            name: event.call.name,
-                            input: event.call.input,
-                        });
-                    } else if (event.type === 'tool_result') {
-                        // Remember a successful write here, not just on the
-                        // provider's return value: if the turn dies after the
-                        // deck was persisted, the partial message must still
-                        // carry the attachment so the FE hides Retry and the
-                        // user can't create the same deck twice.
-                        if (event.ok) {
-                            attachments = [event.data as ChatAttachment];
-                        }
-                        onFrame({
-                            type: 'tool_result',
-                            name: event.name,
-                            ok: event.ok,
-                            data: event.data,
-                        });
-                    }
+        await budget.reserve(userId, budgetKind);
+        reserved = true;
+        // Resolve the in-context deck (the one the user is viewing). Ownership-scoped
+        // — a deckId the user doesn't own is silently ignored, so add_cards simply
+        // stays unavailable rather than leaking that the deck exists.
+        let deckCtx: ChatDeckContext | undefined;
+        if (opts.deckId) {
+            const deck = await decksRepo.findDeckById(opts.deckId, userId);
+            if (deck) {
+                deckCtx = {
+                    deckId: deck.id,
+                    title: deck.title,
+                    sourceLanguage: deck.sourceLanguage,
+                    targetLanguage: deck.targetLanguage,
+                };
+            }
+        }
+
+        const userLangs = await loadUserLanguages(userId);
+
+        // Real remaining deck-building allowance, so the reply can state it instead
+        // of inventing one (and so an exhausted budget costs a sentence, not a
+        // doomed tool call).
+        const usage = await budget.usageSnapshot(userId);
+        const budgetCtx = {
+            wordListRemaining: usage.kinds.enrich.remaining,
+            wordListCap: usage.kinds.enrich.cap,
+            topicRemaining: usage.kinds.generate.remaining,
+            topicCap: usage.kinds.generate.cap,
+            resetsAt: usage.resetsAt,
+            plan: usage.plan,
+        };
+
+        // Persist the user message and claim the conversation's streaming slot in
+        // one transaction — if anything below fails, we still have what they typed,
+        // and a second concurrent send is refused rather than interleaved.
+        const claimed = await chatRepo.claimTurn({
+            conversationId,
+            content,
+            ...(opts.retryOf ? { retryOf: opts.retryOf } : {}),
+        });
+        if (!claimed) {
+            throw new ChatBusyError();
+        }
+        if (claimed === 'retry_unavailable') {
+            throw new BadRequestError(
+                'CHAT_RETRY_UNAVAILABLE',
+                'Only the latest failed reply without saved changes can be retried',
+            );
+        }
+        const { userRow: userRowDb, placeholder: assistantPlaceholder } = claimed;
+        let buffer = '';
+        let tokensInput = 0;
+        let tokensOutput = 0;
+        let attachments: ChatAttachment[] | undefined;
+        let isAutoTitleTurn = false;
+        const userMessage = toPublicMessage(userRowDb);
+
+        try {
+            // Is this the auto-title turn? Counted after the claim and scoped to rows
+            // older than this one, so a retry (which deleted the failed pair) still
+            // titles the conversation.
+            const priorUserCount = await chatRepo.countUserMessages(
+                conversationId,
+                userRowDb.createdAt,
+            );
+            isAutoTitleTurn = priorUserCount === 0;
+
+            onFrame({
+                type: 'start',
+                userMessage,
+                assistantMessageId: assistantPlaceholder.id,
+            });
+
+            // Build the model context: prior turns + the just-saved user message.
+            // `before` excludes this turn's own rows — they are already persisted, so
+            // without it the current message went to the model twice.
+            // Only the newest turn ever carries an image — images aren't persisted,
+            // so turns rebuilt from the DB (priorTurns) are always text-only.
+            const priorTurns = await chatRepo.lastTurnsForModel(
+                conversationId,
+                env.AI_CHAT_CONTEXT_TURNS - 1,
+                userRowDb.createdAt,
+            );
+            const turnsForModel = [
+                ...priorTurns.map(withDeckNote),
+                { role: 'user' as const, content, ...(opts.image ? { image: opts.image } : {}) },
+            ];
+
+            signal.throwIfAborted();
+            const result = await provider().chat(
+                {
+                    messages: turnsForModel,
+                    systemPrompt: buildChatSystemPrompt(
+                        deckCtx,
+                        opts.locale,
+                        !!opts.image,
+                        userLangs,
+                        budgetCtx,
+                    ),
+                    maxOutputTokens: env.AI_CHAT_MAX_OUTPUT_TOKENS,
+                    tools: toolsForUser(
+                        userId,
+                        userLangs,
+                        deckCtx,
+                        opts.locale,
+                        content,
+                        signal,
+                        assistantPlaceholder.id,
+                    ),
                 },
-            },
-        );
-        // The provider returns the AUTHORITATIVE answer — on a tool call that's
-        // the post-tool-result text only, so a premature "added it" preamble
-        // streamed live never makes it into the saved message. Prefer it; fall
-        // back to the streamed buffer only if the provider returned nothing.
-        if (result.content.length > 0) {
-            buffer = result.content;
+                {
+                    signal,
+                    onEvent: (event: ChatStreamEvent) => {
+                        if (event.type === 'token') {
+                            buffer += event.delta;
+                            onFrame({ type: 'token', delta: event.delta });
+                        } else if (event.type === 'tool_use') {
+                            onFrame({
+                                type: 'tool_use',
+                                name: event.call.name,
+                                input: event.call.input,
+                            });
+                        } else if (event.type === 'tool_result') {
+                            // Remember a successful write here, not just on the
+                            // provider's return value: if the turn dies after the
+                            // deck was persisted, the partial message must still
+                            // carry the attachment so the FE hides Retry and the
+                            // user can't create the same deck twice.
+                            if (event.ok) {
+                                attachments = [event.data as ChatAttachment];
+                            }
+                            onFrame({
+                                type: 'tool_result',
+                                name: event.name,
+                                ok: event.ok,
+                                data: event.data,
+                            });
+                        }
+                    },
+                },
+            );
+            signal.throwIfAborted();
+            // The provider returns the AUTHORITATIVE answer — on a tool call that's
+            // the post-tool-result text only, so a premature "added it" preamble
+            // streamed live never makes it into the saved message. Prefer it; fall
+            // back to the streamed buffer only if the provider returned nothing.
+            if (result.content.length > 0) {
+                buffer = result.content;
+            }
+            tokensInput = result.tokensInput;
+            tokensOutput = result.tokensOutput;
+            // The provider's attachments are typed as unknown[] (provider layer
+            // is tool-agnostic). chat.tools is the only caller; we trust it
+            // returned ChatAttachment objects.
+            if (result.attachments && result.attachments.length > 0) {
+                attachments = result.attachments as ChatAttachment[];
+            }
+        } catch (err) {
+            // Save whatever we got so the FE can render the partial reply, and
+            // release the streaming slot. Attachments ride along when a tool
+            // already wrote something (see the tool_result handler above).
+            await chatRepo.finalizeAssistantMessage({
+                id: assistantPlaceholder.id,
+                content: buffer,
+                tokensInput: 0,
+                tokensOutput: 0,
+                status: 'partial',
+                ...(attachments ? { attachments } : {}),
+            });
+            throw err;
         }
-        tokensInput = result.tokensInput;
-        tokensOutput = result.tokensOutput;
-        // The provider's attachments are typed as unknown[] (provider layer
-        // is tool-agnostic). chat.tools is the only caller; we trust it
-        // returned ChatAttachment objects.
-        if (result.attachments && result.attachments.length > 0) {
-            attachments = result.attachments as ChatAttachment[];
-        }
-    } catch (err) {
-        // Save whatever we got so the FE can render the partial reply, and
-        // release the streaming slot. Attachments ride along when a tool
-        // already wrote something (see the tool_result handler above).
-        await chatRepo.finalizeAssistantMessage({
+
+        // Complete: finalize the assistant row, bump the conversation order,
+        // and (if this was the first turn) set the title.
+        const now = new Date();
+        const finalAssistantDb = await chatRepo.finalizeAssistantMessage({
             id: assistantPlaceholder.id,
             content: buffer,
-            tokensInput: 0,
-            tokensOutput: 0,
-            status: 'partial',
+            tokensInput,
+            tokensOutput,
+            status: 'complete',
             ...(attachments ? { attachments } : {}),
         });
-        throw err;
+
+        let conversationTitle = conv.title;
+        const newTitle = isAutoTitleTurn ? autoTitle(content) : null;
+        if (newTitle) {
+            const renamed = await chatRepo.renameAndTouch(conversationId, newTitle, now);
+            conversationTitle = renamed.title;
+        } else {
+            await chatRepo.touchLastMessageAt(conversationId, now);
+        }
+
+        completed = true;
+
+        const assistantMessage = toPublicMessage(finalAssistantDb);
+        onFrame({
+            type: 'done',
+            assistantMessage,
+            conversationTitle,
+            tokensInput,
+            tokensOutput,
+        });
+
+        return {
+            userMessage,
+            assistantMessage,
+            conversationTitle,
+            tokensInput,
+            tokensOutput,
+        };
+    } finally {
+        if (activeReplies.get(conversationId) === cancellation) {
+            activeReplies.delete(conversationId);
+        }
+        if (reserved && !completed) {
+            await budget.release(userId, budgetKind);
+        }
     }
-
-    // Complete: finalize the assistant row, bump the conversation order,
-    // and (if this was the first turn) set the title.
-    const now = new Date();
-    const finalAssistantDb = await chatRepo.finalizeAssistantMessage({
-        id: assistantPlaceholder.id,
-        content: buffer,
-        tokensInput,
-        tokensOutput,
-        status: 'complete',
-        ...(attachments ? { attachments } : {}),
-    });
-
-    let conversationTitle = conv.title;
-    const newTitle = isAutoTitleTurn ? autoTitle(content) : null;
-    if (newTitle) {
-        const renamed = await chatRepo.renameAndTouch(conversationId, newTitle, now);
-        conversationTitle = renamed.title;
-    } else {
-        await chatRepo.touchLastMessageAt(conversationId, now);
-    }
-
-    // Charge the user only after a successful turn.
-    await budget.recordUse(userId, budgetKind);
-
-    const assistantMessage = toPublicMessage(finalAssistantDb);
-    onFrame({
-        type: 'done',
-        assistantMessage,
-        conversationTitle,
-        tokensInput,
-        tokensOutput,
-    });
-
-    return {
-        userMessage,
-        assistantMessage,
-        conversationTitle,
-        tokensInput,
-        tokensOutput,
-    };
 };

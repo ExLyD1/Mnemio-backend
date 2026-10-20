@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import * as chatController from '../controllers/chat.controller.js';
 
 const chatRoutes = async (fastify: FastifyInstance) => {
@@ -6,7 +6,12 @@ const chatRoutes = async (fastify: FastifyInstance) => {
 
     // Per-route rate limit matches /ai/*: 30/min/user. The daily-cap budget
     // (50 msgs/day default) is enforced inside chat.service.ts on send.
-    const chatLimit = { max: 30, timeWindow: '1 minute' };
+    const chatLimit = {
+        max: 30,
+        timeWindow: '1 minute',
+        hook: 'preHandler' as const,
+        keyGenerator: (request: FastifyRequest) => request.currentUser.sub,
+    };
 
     fastify.get(
         '/chat/conversations',
@@ -32,6 +37,11 @@ const chatRoutes = async (fastify: FastifyInstance) => {
         '/chat/conversations/:id',
         { config: { rateLimit: chatLimit } },
         chatController.deleteConversation,
+    );
+    fastify.post(
+        '/chat/conversations/:id/cancel',
+        { config: { rateLimit: chatLimit } },
+        chatController.cancelReply,
     );
     fastify.post(
         '/chat/conversations/:id/messages',
