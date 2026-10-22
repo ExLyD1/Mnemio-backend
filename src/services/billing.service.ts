@@ -164,17 +164,27 @@ export const pauseSubscription = async (
 ): Promise<SubscriptionDto> => {
     const { paddle, row } = await ownSubscription(userId);
     requireState(
-        row.status === 'active' &&
-            !row.scheduledChangeAction &&
+        ['active', 'paused'].includes(row.status) &&
+            (row.status === 'paused' ||
+                !row.scheduledChangeAction ||
+                row.scheduledChangeAction === 'pause') &&
             !row.scheduledPlan &&
             !row.cancelAtPeriodEnd,
     );
-    const sub = await provider(() =>
-        paddle.subscriptions.pause(row.paddleSubId, {
+    const resumeAt = addMonths(row.currentPeriodEnd, months).toISOString();
+    requireState(row.status !== 'paused' || new Date(resumeAt).getTime() > Date.now());
+    const sub = await provider(async () => {
+        if (row.status === 'paused') {
+            return paddle.subscriptions.resume(row.paddleSubId, { effectiveFrom: resumeAt });
+        }
+        if (row.scheduledChangeAction === 'pause') {
+            await paddle.subscriptions.update(row.paddleSubId, { scheduledChange: null });
+        }
+        return paddle.subscriptions.pause(row.paddleSubId, {
             effectiveFrom: 'next_billing_period',
-            resumeAt: addMonths(row.currentPeriodEnd, months).toISOString(),
-        }),
-    );
+            resumeAt,
+        });
+    });
     return toDto(await persistAction(row, sub));
 };
 

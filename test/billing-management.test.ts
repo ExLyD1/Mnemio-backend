@@ -529,14 +529,57 @@ describe('billing management routes', () => {
     it.each([
         { status: 'trialing' },
         { status: 'past_due' },
-        { status: 'paused' },
         { status: 'canceled' },
-        { scheduledChangeAction: 'pause' },
         { scheduledChangeAction: 'cancel' },
         { scheduledPlan: 'annual' },
     ])('blocks pause in %j', async (over) => {
         await seedSubscription(over);
         expect((await request('POST', '/billing/pause', { months: 1 })).statusCode).toBe(409);
+    });
+    it('changes a scheduled pause by clearing it before scheduling the new date', async () => {
+        await seedSubscription({
+            scheduledChangeAction: 'pause',
+            scheduledChangeAt: new Date(end),
+        });
+        const res = await request('POST', '/billing/pause', { months: 2 });
+        expect(res.statusCode).toBe(200);
+        expect(sdk.subscriptions.update).toHaveBeenCalledWith('sub_own', { scheduledChange: null });
+        expect(sdk.subscriptions.pause).toHaveBeenCalledWith('sub_own', {
+            effectiveFrom: 'next_billing_period',
+            resumeAt: '2027-01-01T12:00:00.000Z',
+        });
+        expect(sdk.subscriptions.update.mock.invocationCallOrder[0]).toBeLessThan(
+            sdk.subscriptions.pause.mock.invocationCallOrder[0]!,
+        );
+    });
+    it('changes an active pause by scheduling a future resume', async () => {
+        await seedSubscription({
+            status: 'paused',
+            scheduledChangeAction: 'resume',
+            scheduledChangeAt: new Date('2026-12-01T12:00:00.000Z'),
+        });
+        sdk.subscriptions.resume.mockResolvedValue(
+            paddleSub({
+                status: 'paused',
+                scheduledChange: {
+                    action: 'resume',
+                    effectiveAt: '2027-01-01T12:00:00.000Z',
+                    resumeAt: null,
+                },
+            }),
+        );
+        const res = await request('POST', '/billing/pause', { months: 2 });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().scheduledChange.effectiveAt).toBe('2027-01-01T12:00:00.000Z');
+        expect(sdk.subscriptions.resume).toHaveBeenCalledWith('sub_own', {
+            effectiveFrom: '2027-01-01T12:00:00.000Z',
+        });
+        expect(sdk.subscriptions.pause).not.toHaveBeenCalled();
+    });
+    it('rejects an elapsed resume date without calling Paddle', async () => {
+        await seedSubscription({ status: 'paused', currentPeriodEnd: new Date('2020-01-31') });
+        expect((await request('POST', '/billing/pause', { months: 1 })).statusCode).toBe(409);
+        expect(sdk.subscriptions.resume).not.toHaveBeenCalled();
     });
     it.each(['cancel', 'pause'])('removes a scheduled %s', async (action) => {
         await seedSubscription({

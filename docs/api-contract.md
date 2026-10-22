@@ -2069,7 +2069,7 @@ Actions return 200 `SubscriptionDto` and persist Paddle's response before replyi
 | Endpoint | Body / response and allowed state |
 |---|---|
 | `POST /billing/cancel` | CancelInput below. Active/trialing without a scheduled cancel. Cancel next billing period; store reason, feedback and request time. Cancelled email is deferred until after response. |
-| `POST /billing/pause` | PauseInput below. Active only, no scheduled change/plan. Pause next period; resume at currentPeriodEnd plus calendar months, clamped to month end. |
+| `POST /billing/pause` | PauseInput below. Active or paused, no scheduled cancellation/plan. Pause next period; resume at currentPeriodEnd plus calendar months, clamped to month end. Clear a scheduled pause before replacing it. For an already paused subscription, schedule a resume on the new date; a date not in the future returns 409. |
 | `POST /billing/resume` | No body (with or without Content-Type: application/json) or `{}`. Remove a scheduled cancel/pause, or resume paused immediately. |
 | `POST /billing/change-plan/preview` | ChangePlanInput below. Different plan, active/trialing, no scheduled change/plan. Annual to monthly requires renewal. Trial upgrades now are allowed. Returns the preview below; no local changes. |
 | `POST /billing/change-plan` | Same body and rules as preview; returns SubscriptionDto. Renewal stores scheduledPlanChange until Paddle reports the target price. |
