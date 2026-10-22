@@ -2052,8 +2052,10 @@ The backend processes:
 | `transaction.completed` | Revenue analytics, captured card, clear decline/past-due fields. No receipt email. |
 | `transaction.payment_failed` | Store eligible renewal/past-due transaction totals, failure date and error code; no status change or email. |
 | `transaction.past_due` | Store eligible transaction totals/failure date; no status change or email. |
-| `subscription.past_due` | Preserve known failed totals, store failure date when absent; defer one Payment failed email only when the previous status was not past_due. |
+| `subscription.past_due` | Preserve known failed totals, store failure date when absent; claim one deferred Payment failed email per episode using pastDueEmailSentAt. |
 | `adjustment.created` | Ledger only; invoices read refund adjustments live. |
+
+Every subscription upsert with status past_due atomically claims pastDueEmailSentAt if null and returns one deferred Payment failed email. This includes subscription.updated, so notification order does not suppress mail. Leaving past_due clears the marker with the failure fields; transaction events do not reset the marker.
 
 All events are idempotent: each `event_id` is recorded in `paddle_webhook_events`
 inside the same transaction that applies it, so an at-least-once redelivery is a

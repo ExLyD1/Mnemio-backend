@@ -24,7 +24,7 @@ import {
     billingPlanFromPriceId,
     billingPlanFromPrice,
     lowestUnitToMajor,
-    clearedPastDue,
+    clearedPastDueDetails,
     type SubscriptionDto,
 } from '../shared/mappers.billing.js';
 import { sendBillingEmail } from './billing-mail.service.js';
@@ -408,7 +408,7 @@ type Tx = subscriptionRepo.Tx;
 const handleSubscriptionUpsert = async (
     tx: Tx,
     sub: SubscriptionNotification,
-    ctx: { isCreated: boolean },
+    ctx: { isCreated: boolean; occurredAt: string },
 ): Promise<AnalyticsEmit[]> => {
     const item = sub.items[0];
     const priceId = item?.price?.id;
@@ -426,14 +426,27 @@ const handleSubscriptionUpsert = async (
     if (!data) {
         return [];
     }
-    await subscriptionRepo.upsertFromPaddle(data, tx);
+    const row = await subscriptionRepo.upsertFromPaddle(data, tx);
+    const emits: AnalyticsEmit[] = [];
+    if (sub.status === 'past_due') {
+        if (!row.pastDueAt) {
+            row.pastDueAt = new Date(ctx.occurredAt);
+            await subscriptionRepo.updateForUser(userId, { pastDueAt: row.pastDueAt }, tx);
+        }
+        if (!row.pastDueEmailSentAt) {
+            const claim = await subscriptionRepo.claimPastDueEmail(tx, userId, new Date());
+            if (claim.count === 1) {
+                emits.push(() => {
+                    void sendBillingEmail('payment-failed', row);
+                });
+            }
+        }
+    }
 
     const billingPlan = billingPlanFromPriceId(priceId);
     if (!billingPlan) {
-        return [];
+        return emits;
     }
-
-    const emits: AnalyticsEmit[] = [];
     if (ctx.isCreated) {
         if (sub.status === 'trialing') {
             emits.push(() =>
@@ -457,8 +470,9 @@ const handleSubscriptionUpsert = async (
 const handleSubscriptionCanceled = async (
     tx: Tx,
     sub: SubscriptionNotification,
+    occurredAt: string,
 ): Promise<AnalyticsEmit[]> => {
-    await handleSubscriptionUpsert(tx, sub, { isCreated: false });
+    await handleSubscriptionUpsert(tx, sub, { isCreated: false, occurredAt });
 
     const userId = await resolveUserId(sub.customData, sub.customerId);
     if (!userId) {
@@ -490,7 +504,7 @@ const handleTransactionCompleted = async (
         await subscriptionRepo.updateForPaddleSub(
             txn.subscriptionId,
             {
-                ...clearedPastDue,
+                ...clearedPastDueDetails,
                 declineReason: null,
                 ...(card
                     ? {
@@ -587,31 +601,6 @@ const handleTransactionPastDue = async (
     return [];
 };
 
-const handleSubscriptionPastDue = async (
-    tx: Tx,
-    sub: SubscriptionNotification,
-    occurredAt: string,
-): Promise<DeferredEmit[]> => {
-    const previous = await subscriptionRepo.findPaddleSubForUpdate(tx, sub.id);
-    const emits = await handleSubscriptionUpsert(tx, sub, { isCreated: false });
-    const row = await subscriptionRepo.findPaddleSubInTransaction(tx, sub.id);
-    if (!row) {
-        return emits;
-    }
-    if (!row.pastDueAt) {
-        row.pastDueAt = new Date(occurredAt);
-        await subscriptionRepo.updateForUser(row.userId, { pastDueAt: row.pastDueAt }, tx);
-    }
-    // A subscription notification has no transaction totals or card error code.
-    // Preserve known values; do not substitute a recurring price for a failed total.
-    if (previous?.status !== 'past_due') {
-        emits.push(() => {
-            void sendBillingEmail('payment-failed', row);
-        });
-    }
-    return emits;
-};
-
 /**
  * Verifies and processes a Paddle webhook delivery, returning deferred
  * analytics emits. The caller ACKs Paddle before firing them (see
@@ -674,19 +663,20 @@ export const handleWebhookEvent = async (
                 case 'subscription.created':
                     return handleSubscriptionUpsert(tx, event.data as SubscriptionNotification, {
                         isCreated: true,
+                        occurredAt: event.occurredAt,
                     });
                 case 'subscription.activated':
                 case 'subscription.trialing':
                 case 'subscription.updated':
+                case 'subscription.past_due':
                 case 'subscription.paused':
                 case 'subscription.resumed':
                     return handleSubscriptionUpsert(tx, event.data, {
                         isCreated: false,
+                        occurredAt: event.occurredAt,
                     });
-                case 'subscription.past_due':
-                    return handleSubscriptionPastDue(tx, event.data, event.occurredAt);
                 case 'subscription.canceled':
-                    return handleSubscriptionCanceled(tx, event.data);
+                    return handleSubscriptionCanceled(tx, event.data, event.occurredAt);
                 case 'transaction.completed':
                     return handleTransactionCompleted(event.data, tx);
                 case 'transaction.payment_failed':

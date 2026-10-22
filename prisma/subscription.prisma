@@ -35,6 +35,7 @@ model Subscription {
   pastDueAmount           Int?
   pastDueCurrency         String?
   pastDueAt               DateTime?
+  pastDueEmailSentAt      DateTime?
   scheduledPlan           String?
   cancelReason            String?
   cancelFeedback          String?

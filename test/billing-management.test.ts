@@ -839,6 +839,78 @@ describe('billing management routes', () => {
 
 describe('billing notifications and trial reminders', () => {
     it.each([
+        ['subscription.updated', 'subscription.past_due'],
+        ['subscription.past_due', 'subscription.updated'],
+    ])(
+        'claims one email per episode for %s then %s, including redelivery and recovery',
+        async (firstType, secondType) => {
+            await seedSubscription();
+            const first = event(firstType!, paddleSub({ status: 'past_due' }));
+            const second = event(secondType!, paddleSub({ status: 'past_due' }));
+            const firstEmits = await handleWebhookEvent(first.body, first.signature);
+            const marker = (await row()).pastDueEmailSentAt;
+            expect(marker).toBeInstanceOf(Date);
+            expect(mail).not.toHaveBeenCalled();
+            expect(firstEmits).toHaveLength(1);
+            const secondEmits = await handleWebhookEvent(second.body, second.signature);
+            expect(secondEmits).toEqual([]);
+            expect((await row()).pastDueEmailSentAt).toEqual(marker);
+            for (const emit of firstEmits) emit();
+            await vi.waitFor(() => expect(mail).toHaveBeenCalledTimes(1));
+            expect(await handleWebhookEvent(first.body, first.signature)).toEqual([]);
+            expect(await handleWebhookEvent(second.body, second.signature)).toEqual([]);
+            expect(mail).toHaveBeenCalledTimes(1);
+
+            await deliver('subscription.updated', paddleSub({ status: 'active' }));
+            expect(await row()).toMatchObject({
+                pastDueEmailSentAt: null,
+                pastDueAt: null,
+                pastDueAmount: null,
+                pastDueCurrency: null,
+            });
+            await deliver(firstType!, paddleSub({ status: 'past_due' }));
+            await deliver(secondType!, paddleSub({ status: 'past_due' }));
+            await vi.waitFor(() => expect(mail).toHaveBeenCalledTimes(2));
+            expect((await row()).pastDueEmailSentAt).toBeInstanceOf(Date);
+        },
+    );
+    it('claims mail for an already past-due row with no marker even if its price is unknown to analytics', async () => {
+        await seedSubscription({ status: 'past_due', pastDueEmailSentAt: null });
+        const sub = paddleSub({ status: 'past_due' });
+        sub.items[0]!.price.id = 'pri_new_price';
+        await deliver('subscription.updated', sub);
+        await vi.waitFor(() => expect(mail).toHaveBeenCalledOnce());
+        expect((await row()).pastDueEmailSentAt).toBeInstanceOf(Date);
+        expect(analytics.track).not.toHaveBeenCalled();
+        await deliver('subscription.past_due', sub);
+        expect(mail).toHaveBeenCalledOnce();
+    });
+    it('claims once across concurrent updated and past_due notifications', async () => {
+        await seedSubscription();
+        const updated = event('subscription.updated', paddleSub({ status: 'past_due' }));
+        const pastDue = event('subscription.past_due', paddleSub({ status: 'past_due' }));
+        const results = await Promise.all([
+            handleWebhookEvent(updated.body, updated.signature),
+            handleWebhookEvent(pastDue.body, pastDue.signature),
+        ]);
+        expect(results.flat()).toHaveLength(1);
+        expect((await row()).pastDueEmailSentAt).toBeInstanceOf(Date);
+        for (const emit of results.flat()) emit();
+        await vi.waitFor(() => expect(mail).toHaveBeenCalledOnce());
+    });
+    it('keeps the episode marker through completed transactions until a subscription recovery', async () => {
+        const marker = new Date('2026-10-01T12:00:00Z');
+        await seedSubscription({ status: 'past_due', pastDueEmailSentAt: marker });
+        await deliver('transaction.completed', apiTransaction());
+        expect(await row()).toMatchObject({ status: 'past_due', pastDueEmailSentAt: marker });
+        await deliver('subscription.updated', paddleSub({ status: 'past_due' }));
+        expect(mail).not.toHaveBeenCalled();
+        await deliver('subscription.updated', paddleSub({ status: 'active' }));
+        expect((await row()).pastDueEmailSentAt).toBeNull();
+        await deliver('subscription.past_due', paddleSub({ status: 'past_due' }));
+        await vi.waitFor(() => expect(mail).toHaveBeenCalledOnce());
+    });
+    it.each([
         ['month', 'monthly'],
         ['year', 'annual'],
     ])(

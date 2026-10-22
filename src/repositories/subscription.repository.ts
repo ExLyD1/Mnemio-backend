@@ -41,13 +41,12 @@ export const updateForPaddleSub = (
 export const findPaddleSubInTransaction = (tx: Tx, paddleSubId: string) =>
     tx.subscription.findUnique({ where: { paddleSubId } });
 
-/** Serialize past-due transitions across distinct events, not just redeliveries. */
-export const findPaddleSubForUpdate = async (tx: Tx, paddleSubId: string) => {
-    const rows = await tx.$queryRaw<SubscriptionRow[]>`
-        SELECT * FROM "subscriptions" WHERE "paddleSubId" = ${paddleSubId} FOR UPDATE
-    `;
-    return rows[0] ?? null;
-};
+/** Claim one deferred email per past-due episode in the webhook transaction. */
+export const claimPastDueEmail = (tx: Tx, userId: string, sentAt: Date) =>
+    tx.subscription.updateMany({
+        where: { userId, status: 'past_due', pastDueEmailSentAt: null },
+        data: { pastDueEmailSentAt: sentAt },
+    });
 
 export const trialEndingCandidates = (now: Date, until: Date) =>
     prisma.subscription.findMany({

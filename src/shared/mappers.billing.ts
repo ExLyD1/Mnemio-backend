@@ -80,7 +80,12 @@ export const billingPlanFromPrice = (
     return null;
 };
 
-export const clearedPastDue = { pastDueAmount: null, pastDueCurrency: null, pastDueAt: null };
+export const clearedPastDueDetails = {
+    pastDueAmount: null,
+    pastDueCurrency: null,
+    pastDueAt: null,
+};
+export const clearedPastDue = { ...clearedPastDueDetails, pastDueEmailSentAt: null };
 
 // API entities and notification entities share these fields in SDK 3.10.
 type PaddleSubscription = Pick<
