@@ -55,7 +55,7 @@ PORT=3001                          # Railway sets this; leave the var
 HOST=0.0.0.0
 LOG_LEVEL=info
 WEB_URL=https://app.mnemio.<your-domain>
-APP_URL=https://api.mnemio.<your-domain>
+APP_URL=https://app.mnemio.<your-domain>  # frontend origin for billing mail links
 ```
 
 **Database (Railway injects automatically if you use the add-on):**
@@ -269,3 +269,14 @@ In order:
 
 That's the MVP path. Multi-region, blue/green deploys, and zero-downtime
 schema changes are tracked in [`backlog.md`](./backlog.md).
+
+## Billing management and trial-ending mail
+
+Apply the appearance_and_billing migration with prisma migrate deploy before starting the service.
+The app registers an hourly UTC trial-ending job (0 \* \* \* \*); it is skipped in NODE_ENV=test and stopped when Fastify closes. It claims trialing subscriptions ending in the next 48 hours and in the future, excluding scheduled cancellations, using an atomic updateMany guarded by trialEndingEmailSentAt IS NULL. Multiple replicas cannot send the same reminder twice. The claim remains after mail failure, so failed sends are logged and need manual handling if a resend is desired. No new environment variables are required.
+
+Billing mail uses MAIL_PROVIDER (console or resend), MAIL_PROVIDER_API_KEY, MAIL_FROM and APP_URL for frontend /settings/billing links. Configure APP_URL to the public app origin for these links. Payment-failed and cancelled mail are deferred until after the webhook/API response; no mail runs inside the DB transaction. Paddle sends the receipt/invoice; Mnemio deliberately does not duplicate it.
+
+In the Paddle notification destination, retain subscription.created, subscription.activated, subscription.trialing, subscription.canceled, transaction.completed, and enable subscription.paused, subscription.resumed, subscription.updated, subscription.past_due, transaction.payment_failed, transaction.past_due, adjustment.created. Signature verification and the transactional event ledger remain mandatory.
+
+Paddle SDK 3.10 accepts full_next_billing_period for renewal plan changes. Interval-change semantics require a sandbox check before production rollout; the implementation follows the requested proration mode.

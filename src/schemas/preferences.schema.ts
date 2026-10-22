@@ -12,6 +12,8 @@ export const updatePreferencesSchema = z
         avatarHue: z.number().int().min(0).max(360).nullable().optional(),
         mimiPlacement: z.enum(MIMI_PLACEMENTS).nullable().optional(),
         defaultStudyMode: z.enum(['srs', 'know']).nullable().optional(),
+        mascot: z.enum(['panda', 'red', 'pink', 'axolotl']).optional(),
+        palette: z.enum(['green', 'violet', 'pink']).optional(),
         favorites: z.array(z.string().uuid()).max(500).optional(),
     })
     .refine((v) => Object.keys(v).length > 0, {

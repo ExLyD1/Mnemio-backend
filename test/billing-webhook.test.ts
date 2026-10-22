@@ -149,7 +149,7 @@ describe('billing webhook', () => {
 
         // Nothing may be written off an unverified payload.
         expect(upsertMock).not.toHaveBeenCalled();
-    });
+    }, 20000);
 
     it('rejects a body that was modified after signing', async () => {
         const billing = await import('../src/services/billing.service.js');

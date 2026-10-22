@@ -36,6 +36,12 @@ export const update = async (
     if (input.defaultStudyMode !== undefined) {
         patch.defaultStudyMode = input.defaultStudyMode;
     }
+    if (input.mascot !== undefined) {
+        patch.mascot = input.mascot;
+    }
+    if (input.palette !== undefined) {
+        patch.palette = input.palette;
+    }
     const row = await repo.update(userId, patch);
     return toPublicPreference(row);
 };

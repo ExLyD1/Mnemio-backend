@@ -193,3 +193,9 @@ export class PremiumRequiredError extends ForbiddenError {
         super('PREMIUM_REQUIRED', 'This feature requires a premium subscription');
     }
 }
+
+export class BillingProviderError extends AppError {
+    constructor() {
+        super(502, 'BILLING_PROVIDER_ERROR', 'Billing provider request failed');
+    }
+}

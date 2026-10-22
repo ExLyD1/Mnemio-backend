@@ -1,38 +1,15 @@
 import { prisma } from '../db/prisma.js';
+import type { SubscriptionModel } from '../../generated/prisma/models/Subscription.js';
+import type { Prisma } from '../../generated/prisma/client.js';
+export type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+export const transaction = <T>(fn: (tx: Tx) => Promise<T>) => prisma.$transaction(fn);
 
 /** Paddle subscription statuses, mirrored verbatim onto the row. */
 export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'paused' | 'canceled';
 
-export type SubscriptionRow = {
-    id: string;
-    userId: string;
-    status: string;
-    plan: string;
-    paddleCustomerId: string;
-    paddleSubId: string;
-    paddlePriceId: string;
-    paddleProductId: string;
-    currentPeriodStart: Date;
-    currentPeriodEnd: Date;
-    cancelAtPeriodEnd: boolean;
-    trialEnd: Date | null;
-    createdAt: Date;
-    updatedAt: Date;
-};
+export type SubscriptionRow = SubscriptionModel;
 
-export type UpsertSubscriptionData = {
-    userId: string;
-    status: string;
-    plan: string;
-    paddleCustomerId: string;
-    paddleSubId: string;
-    paddlePriceId: string;
-    paddleProductId: string;
-    currentPeriodStart: Date;
-    currentPeriodEnd: Date;
-    cancelAtPeriodEnd: boolean;
-    trialEnd: Date | null;
-};
+export type UpsertSubscriptionData = Prisma.SubscriptionUncheckedCreateInput;
 
 export const findByUserId = (userId: string): Promise<SubscriptionRow | null> =>
     prisma.subscription.findUnique({ where: { userId } });
@@ -43,22 +20,57 @@ export const findByPaddleCustomerId = (paddleCustomerId: string): Promise<Subscr
 export const findByPaddleSubId = (paddleSubId: string): Promise<SubscriptionRow | null> =>
     prisma.subscription.findUnique({ where: { paddleSubId } });
 
-export const upsertFromPaddle = (data: UpsertSubscriptionData): Promise<SubscriptionRow> =>
-    prisma.subscription.upsert({
-        where: { userId: data.userId },
-        update: {
-            status: data.status,
-            plan: data.plan,
-            paddleCustomerId: data.paddleCustomerId,
-            paddleSubId: data.paddleSubId,
-            paddlePriceId: data.paddlePriceId,
-            paddleProductId: data.paddleProductId,
-            currentPeriodStart: data.currentPeriodStart,
-            currentPeriodEnd: data.currentPeriodEnd,
-            cancelAtPeriodEnd: data.cancelAtPeriodEnd,
-            trialEnd: data.trialEnd,
+export const upsertFromPaddle = (
+    data: UpsertSubscriptionData,
+    tx: Tx = prisma,
+): Promise<SubscriptionRow> =>
+    tx.subscription.upsert({ where: { userId: data.userId }, update: data, create: data });
+
+export const findInTransaction = (tx: Tx, userId: string) =>
+    tx.subscription.findUnique({ where: { userId } });
+export const updateForUser = (
+    userId: string,
+    data: Prisma.SubscriptionUpdateManyMutationInput,
+    tx: Tx = prisma,
+) => tx.subscription.updateMany({ where: { userId }, data });
+export const updateForPaddleSub = (
+    paddleSubId: string,
+    data: Prisma.SubscriptionUpdateManyMutationInput,
+    tx: Tx,
+) => tx.subscription.updateMany({ where: { paddleSubId }, data });
+export const findPaddleSubInTransaction = (tx: Tx, paddleSubId: string) =>
+    tx.subscription.findUnique({ where: { paddleSubId } });
+
+/** Serialize past-due transitions across distinct events, not just redeliveries. */
+export const findPaddleSubForUpdate = async (tx: Tx, paddleSubId: string) => {
+    const rows = await tx.$queryRaw<SubscriptionRow[]>`
+        SELECT * FROM "subscriptions" WHERE "paddleSubId" = ${paddleSubId} FOR UPDATE
+    `;
+    return rows[0] ?? null;
+};
+
+export const trialEndingCandidates = (now: Date, until: Date) =>
+    prisma.subscription.findMany({
+        where: {
+            status: 'trialing',
+            trialEnd: { gt: now, lte: until },
+            cancelAtPeriodEnd: false,
+            OR: [{ scheduledChangeAction: null }, { scheduledChangeAction: { not: 'cancel' } }],
+            trialEndingEmailSentAt: null,
         },
-        create: data,
+        include: { user: { select: { email: true } } },
+    });
+export const claimTrialEnding = (id: string, now: Date, until: Date) =>
+    prisma.subscription.updateMany({
+        where: {
+            id,
+            status: 'trialing',
+            trialEnd: { gt: now, lte: until },
+            cancelAtPeriodEnd: false,
+            OR: [{ scheduledChangeAction: null }, { scheduledChangeAction: { not: 'cancel' } }],
+            trialEndingEmailSentAt: null,
+        },
+        data: { trialEndingEmailSentAt: now },
     });
 
 /**

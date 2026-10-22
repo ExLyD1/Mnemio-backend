@@ -6,6 +6,8 @@ model Preference {
   learningLanguages  String[] @default([])
   avatarHue          Int?
   mimiPlacement      String?
+  mascot             String?
+  palette            String?
   defaultStudyMode   String?
   // Favorites kept as a deckId array (per backend-plan §Open question #3,
   // recommended option) — single GET/PATCH endpoint, no extra join table.

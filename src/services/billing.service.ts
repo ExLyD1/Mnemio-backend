@@ -3,34 +3,34 @@ import {
     Environment,
     type SubscriptionNotification,
     type TransactionNotification,
+    type Subscription,
+    type UpdateSubscriptionRequestBody,
 } from '@paddle/paddle-node-sdk';
 import { env } from '../config/env.js';
-import { prisma } from '../db/prisma.js';
 import * as subscriptionRepo from '../repositories/subscription.repository.js';
 import * as authRepo from '../repositories/auth.repository.js';
 import * as analytics from './analytics.service.js';
-import { BadRequestError, NotFoundError } from '../shared/errors.js';
+import {
+    BadRequestError,
+    NotFoundError,
+    ConflictError,
+    BillingProviderError,
+} from '../shared/errors.js';
 import type { SubscriptionRow } from '../repositories/subscription.repository.js';
 
-export type SubscriptionDto = {
-    id: string;
-    status: string;
-    plan: string;
-    currentPeriodStart: string;
-    currentPeriodEnd: string;
-    cancelAtPeriodEnd: boolean;
-    trialEnd: string | null;
-};
+import {
+    toSubscriptionDto as toDto,
+    subscriptionData,
+    billingPlanFromPriceId,
+    billingPlanFromPrice,
+    lowestUnitToMajor,
+    clearedPastDue,
+    type SubscriptionDto,
+} from '../shared/mappers.billing.js';
+import { sendBillingEmail } from './billing-mail.service.js';
+import type { CancelSubscriptionInput, ChangePlanInput } from '../schemas/billing.schema.js';
 
-const toDto = (row: SubscriptionRow): SubscriptionDto => ({
-    id: row.id,
-    status: row.status,
-    plan: row.plan,
-    currentPeriodStart: row.currentPeriodStart.toISOString(),
-    currentPeriodEnd: row.currentPeriodEnd.toISOString(),
-    cancelAtPeriodEnd: row.cancelAtPeriodEnd,
-    trialEnd: row.trialEnd ? row.trialEnd.toISOString() : null,
-});
+export type { SubscriptionDto };
 
 const getPaddle = (): Paddle => {
     if (!env.PADDLE_API_KEY) {
@@ -44,6 +44,17 @@ const getPaddle = (): Paddle => {
 export const getSubscription = async (userId: string): Promise<SubscriptionDto | null> => {
     const row = await subscriptionRepo.findByUserId(userId);
     return row ? toDto(row) : null;
+};
+
+const provider = async <T>(call: () => Promise<T>): Promise<T> => {
+    try {
+        return await call();
+    } catch (err) {
+        const code = err && typeof err === 'object' && 'code' in err ? err.code : 'unknown';
+        // eslint-disable-next-line no-console -- log only the provider code, never its raw message
+        console.warn('Paddle request failed', { code });
+        throw new BillingProviderError();
+    }
 };
 
 /**
@@ -60,48 +71,272 @@ export const createPortalSession = async (userId: string): Promise<{ url: string
         throw new NotFoundError('BILLING_NO_SUBSCRIPTION', 'No subscription found');
     }
 
-    const session = await paddle.customerPortalSessions.create(sub.paddleCustomerId, [
-        sub.paddleSubId,
-    ]);
+    const session = await provider(() =>
+        paddle.customerPortalSessions.create(sub.paddleCustomerId, [sub.paddleSubId]),
+    );
 
     // `overview` lands the customer on the portal home, where they can update
     // their payment method, cancel, and download invoices.
     return { url: session.urls.general.overview };
 };
 
+const ownSubscription = async (userId: string) => {
+    const paddle = getPaddle();
+    const row = await subscriptionRepo.findByUserId(userId);
+    if (!row) {
+        throw new NotFoundError('BILLING_NO_SUBSCRIPTION', 'No subscription found');
+    }
+    return { paddle, row };
+};
+const requireState = (allowed: boolean) => {
+    if (!allowed) {
+        throw new ConflictError(
+            'BILLING_INVALID_STATE',
+            'Action is not allowed for this subscription',
+        );
+    }
+};
+
+const persistAction = async (
+    row: SubscriptionRow,
+    sub: Subscription,
+    extra: Parameters<typeof subscriptionRepo.updateForUser>[1] = {},
+) => {
+    if (sub.id !== row.paddleSubId || sub.customerId !== row.paddleCustomerId) {
+        throw new BillingProviderError();
+    }
+    return subscriptionRepo.transaction(async (tx) => {
+        const previous = await subscriptionRepo.findInTransaction(tx, row.userId);
+        const data = subscriptionData(sub, row.userId, previous);
+        if (!data) {
+            throw new BillingProviderError();
+        }
+        await subscriptionRepo.updateForUser(row.userId, { ...data, ...extra }, tx);
+        const updated = await subscriptionRepo.findInTransaction(tx, row.userId);
+        if (!updated) {
+            throw new NotFoundError('BILLING_NO_SUBSCRIPTION', 'No subscription found');
+        }
+        return updated;
+    });
+};
+
+export const cancelSubscription = async (userId: string, input: CancelSubscriptionInput) => {
+    const { paddle, row } = await ownSubscription(userId);
+    requireState(
+        ['active', 'trialing'].includes(row.status) &&
+            !row.cancelAtPeriodEnd &&
+            row.scheduledChangeAction !== 'cancel',
+    );
+    const sub = await provider(() =>
+        paddle.subscriptions.cancel(row.paddleSubId, { effectiveFrom: 'next_billing_period' }),
+    );
+    const updated = await persistAction(row, sub, {
+        cancelReason: input.reason,
+        cancelFeedback: input.feedback ?? null,
+        cancelRequestedAt: new Date(),
+    });
+    return {
+        subscription: toDto(updated),
+        emits: [
+            () => {
+                void sendBillingEmail('cancelled', updated);
+            },
+        ],
+    };
+};
+
+/** Calendar-month addition in UTC, clamped to the destination month's final day. */
+export const addMonths = (date: Date, months: number) => {
+    const result = new Date(date);
+    const day = result.getUTCDate();
+    result.setUTCDate(1);
+    result.setUTCMonth(result.getUTCMonth() + months);
+    const last = new Date(
+        Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0),
+    ).getUTCDate();
+    result.setUTCDate(Math.min(day, last));
+    return result;
+};
+
+export const pauseSubscription = async (
+    userId: string,
+    months: 1 | 2 | 3,
+): Promise<SubscriptionDto> => {
+    const { paddle, row } = await ownSubscription(userId);
+    requireState(
+        row.status === 'active' &&
+            !row.scheduledChangeAction &&
+            !row.scheduledPlan &&
+            !row.cancelAtPeriodEnd,
+    );
+    const sub = await provider(() =>
+        paddle.subscriptions.pause(row.paddleSubId, {
+            effectiveFrom: 'next_billing_period',
+            resumeAt: addMonths(row.currentPeriodEnd, months).toISOString(),
+        }),
+    );
+    return toDto(await persistAction(row, sub));
+};
+
+export const resumeSubscription = async (userId: string): Promise<SubscriptionDto> => {
+    const { paddle, row } = await ownSubscription(userId);
+    const scheduled =
+        ['cancel', 'pause'].includes(row.scheduledChangeAction ?? '') || row.cancelAtPeriodEnd;
+    requireState(row.status === 'paused' || scheduled);
+    const sub = await provider(() =>
+        row.status === 'paused'
+            ? paddle.subscriptions.resume(row.paddleSubId, { effectiveFrom: 'immediately' })
+            : paddle.subscriptions.update(row.paddleSubId, { scheduledChange: null }),
+    );
+    return toDto(await persistAction(row, sub));
+};
+
+const planChangeArgs = (
+    row: SubscriptionRow,
+    input: ChangePlanInput,
+): UpdateSubscriptionRequestBody => {
+    requireState(
+        ['active', 'trialing'].includes(row.status) &&
+            row.plan !== input.plan &&
+            !row.scheduledChangeAction &&
+            !row.cancelAtPeriodEnd &&
+            !row.scheduledPlan &&
+            !(row.plan === 'annual' && input.when === 'now'),
+    );
+    const priceId = input.plan === 'annual' ? env.PADDLE_PRICE_ANNUAL : env.PADDLE_PRICE_MONTHLY;
+    if (!priceId) {
+        throw new BadRequestError('BILLING_NOT_CONFIGURED', 'Billing is not configured');
+    }
+    return {
+        items: [{ priceId, quantity: 1 }],
+        prorationBillingMode:
+            input.when === 'now' ? 'prorated_immediately' : 'full_next_billing_period',
+    };
+};
+
+export const previewPlanChange = async (userId: string, input: ChangePlanInput) => {
+    const { paddle, row } = await ownSubscription(userId);
+    const args = planChangeArgs(row, input);
+    const preview = await provider(() => paddle.subscriptions.previewUpdate(row.paddleSubId, args));
+    const unit = preview.items[0]?.price.unitPrice;
+    const recurring =
+        preview.recurringTransactionDetails?.totals ?? preview.nextTransaction?.details.totals;
+    const currency = unit?.currencyCode ?? recurring?.currencyCode ?? preview.currencyCode;
+    const immediate = preview.immediateTransaction?.details.totals;
+    const summary = preview.updateSummary;
+    const due =
+        input.when === 'now'
+            ? (immediate?.grandTotal ??
+              immediate?.total ??
+              (summary?.result.action === 'charge' ? summary.result.amount : '0'))
+            : '0';
+    return {
+        ...input,
+        newPrice: {
+            amount: lowestUnitToMajor(unit?.amount ?? recurring?.total, currency),
+            currency,
+        },
+        credit: {
+            amount: Math.abs(
+                lowestUnitToMajor(
+                    summary?.credit.amount ?? immediate?.credit,
+                    summary?.credit.currencyCode ?? currency,
+                ),
+            ),
+            currency: summary?.credit.currencyCode ?? currency,
+        },
+        dueToday: {
+            amount: Math.max(0, lowestUnitToMajor(due, immediate?.currencyCode ?? currency)),
+            currency: immediate?.currencyCode ?? currency,
+        },
+        nextBilledAt: preview.nextBilledAt ?? null,
+    };
+};
+
+export const changePlan = async (
+    userId: string,
+    input: ChangePlanInput,
+): Promise<SubscriptionDto> => {
+    const { paddle, row } = await ownSubscription(userId);
+    const args = planChangeArgs(row, input);
+    const sub = await provider(() => paddle.subscriptions.update(row.paddleSubId, args));
+    return toDto(
+        await persistAction(row, sub, {
+            scheduledPlan: input.when === 'renewal' ? input.plan : null,
+        }),
+    );
+};
+
+export const paymentMethodTransaction = async (userId: string) => {
+    const { paddle, row } = await ownSubscription(userId);
+    requireState(row.status !== 'canceled');
+    const txn = await provider(() =>
+        paddle.subscriptions.getPaymentMethodChangeTransaction(row.paddleSubId),
+    );
+    return { transactionId: txn.id };
+};
+
+export const invoices = async (userId: string) => {
+    const { paddle, row } = await ownSubscription(userId);
+    return provider(async () => {
+        const transactions = await paddle.transactions
+            .list({
+                subscriptionId: [row.paddleSubId],
+                status: ['completed', 'past_due', 'billed', 'paid'],
+                perPage: 50,
+                orderBy: 'billed_at[DESC]',
+                include: ['adjustment'],
+            })
+            .next();
+        const items = transactions
+            .slice(0, 50)
+            .filter(
+                (t) =>
+                    t.subscriptionId === row.paddleSubId && t.customerId === row.paddleCustomerId,
+            )
+            .map((t) => {
+                const currency = t.details?.totals?.currencyCode ?? t.currencyCode;
+                const amount = lowestUnitToMajor(t.details?.totals?.total, currency);
+                const refunded = t.adjustments?.some(
+                    (a) => a.action === 'refund' && a.status === 'approved',
+                );
+                const status =
+                    amount === 0
+                        ? ('trial' as const)
+                        : refunded
+                          ? ('refunded' as const)
+                          : t.status === 'past_due'
+                            ? ('failed' as const)
+                            : ('paid' as const);
+                return {
+                    id: t.id,
+                    billedAt: t.billedAt ?? t.createdAt,
+                    plan: billingPlanFromPrice(t.items[0]?.price),
+                    amount,
+                    currency,
+                    status,
+                    hasPdf: amount > 0 && !!t.invoiceId,
+                };
+            });
+        items.sort((a, b) => b.billedAt.localeCompare(a.billedAt));
+        return { items };
+    });
+};
+
+export const invoicePdf = async (userId: string, id: string) => {
+    const { paddle, row } = await ownSubscription(userId);
+    const txn = await provider(() => paddle.transactions.get(id));
+    if (txn.subscriptionId !== row.paddleSubId || txn.customerId !== row.paddleCustomerId) {
+        throw new NotFoundError('BILLING_INVOICE_NOT_FOUND', 'Invoice not found');
+    }
+    if (!txn.invoiceId || !txn.details?.totals || Number(txn.details.totals.total) === 0) {
+        throw new NotFoundError('BILLING_INVOICE_NOT_FOUND', 'Invoice not found');
+    }
+    const pdf = await provider(() => paddle.transactions.getInvoicePDF(id));
+    return { url: pdf.url };
+};
+
 // ---------- Webhook handling ----------
-
-const planFromPriceId = (priceId: string | undefined): string => {
-    if (priceId && priceId === env.PADDLE_PRICE_ANNUAL) {
-        return 'annual';
-    }
-    if (priceId && priceId === env.PADDLE_PRICE_MONTHLY) {
-        return 'monthly';
-    }
-    return 'unknown';
-};
-
-// Narrowed to the analytics contract's BillingPlan; null when the price isn't
-// one of our configured plans, so we skip emitting rather than send 'unknown'.
-const billingPlanFromPriceId = (priceId: string | undefined): 'monthly' | 'annual' | null => {
-    if (priceId && priceId === env.PADDLE_PRICE_ANNUAL) {
-        return 'annual';
-    }
-    if (priceId && priceId === env.PADDLE_PRICE_MONTHLY) {
-        return 'monthly';
-    }
-    return null;
-};
-
-/** Paddle amounts are strings in the currency's lowest denomination. */
-const lowestUnitToMajor = (amount: string | null | undefined, currency: string): number => {
-    const n = Number(amount ?? '0');
-    if (!Number.isFinite(n)) {
-        return 0;
-    }
-    // JPY, KRW and CLP have no minor unit — the integer IS the major amount.
-    return ['JPY', 'KRW', 'CLP'].includes(currency) ? n : n / 100;
-};
 
 const readUserIdFromCustomData = (customData: unknown): string | null => {
     if (customData && typeof customData === 'object' && 'userId' in customData) {
@@ -165,9 +400,10 @@ const resolveUserId = async (
 // Deferred analytics emission. Handlers return these instead of emitting inline
 // so the controller can ACK Paddle FIRST, then fire them — a Mixpanel outage
 // must never delay or fail the webhook acknowledgement.
-type AnalyticsEmit = () => void;
+export type DeferredEmit = () => void;
+type AnalyticsEmit = DeferredEmit;
 
-type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+type Tx = subscriptionRepo.Tx;
 
 const handleSubscriptionUpsert = async (
     tx: Tx,
@@ -185,57 +421,12 @@ const handleSubscriptionUpsert = async (
         return [];
     }
 
-    // Paddle reports a pending cancellation as a scheduled_change while the
-    // subscription itself stays active. Mirror it as a flag, never as a status.
-    const cancelAtPeriodEnd = sub.scheduledChange?.action === 'cancel';
-
-    const periodStart = sub.currentBillingPeriod?.startsAt;
-    const periodEnd = sub.currentBillingPeriod?.endsAt;
-    // A paused/canceled subscription can arrive with no current billing period.
-    // Keep whatever we already stored rather than inventing dates.
-    const previous = await tx.subscription.findUnique({ where: { userId } });
-    if ((!periodStart || !periodEnd) && !previous) {
+    const previous = await subscriptionRepo.findInTransaction(tx, userId);
+    const data = subscriptionData(sub, userId, previous);
+    if (!data) {
         return [];
     }
-
-    const trialEndsAt = item.trialDates?.endsAt ?? null;
-
-    const data: subscriptionRepo.UpsertSubscriptionData = {
-        userId,
-        status: sub.status,
-        plan: planFromPriceId(priceId),
-        paddleCustomerId: sub.customerId,
-        paddleSubId: sub.id,
-        paddlePriceId: priceId,
-        paddleProductId: item.price.productId,
-        currentPeriodStart: periodStart
-            ? new Date(periodStart)
-            : (previous?.currentPeriodStart ?? new Date()),
-        currentPeriodEnd: periodEnd
-            ? new Date(periodEnd)
-            : (previous?.currentPeriodEnd ?? new Date()),
-        cancelAtPeriodEnd,
-        trialEnd: trialEndsAt ? new Date(trialEndsAt) : null,
-    };
-
-    // Upsert keyed on userId — at-least-once delivery means this same event may
-    // arrive again, and a redelivery must not create a second row.
-    await tx.subscription.upsert({
-        where: { userId },
-        update: {
-            status: data.status,
-            plan: data.plan,
-            paddleCustomerId: data.paddleCustomerId,
-            paddleSubId: data.paddleSubId,
-            paddlePriceId: data.paddlePriceId,
-            paddleProductId: data.paddleProductId,
-            currentPeriodStart: data.currentPeriodStart,
-            currentPeriodEnd: data.currentPeriodEnd,
-            cancelAtPeriodEnd: data.cancelAtPeriodEnd,
-            trialEnd: data.trialEnd,
-        },
-        create: data,
-    });
+    await subscriptionRepo.upsertFromPaddle(data, tx);
 
     const billingPlan = billingPlanFromPriceId(priceId);
     if (!billingPlan) {
@@ -267,10 +458,7 @@ const handleSubscriptionCanceled = async (
     tx: Tx,
     sub: SubscriptionNotification,
 ): Promise<AnalyticsEmit[]> => {
-    await tx.subscription.updateMany({
-        where: { paddleSubId: sub.id },
-        data: { status: sub.status, cancelAtPeriodEnd: false },
-    });
+    await handleSubscriptionUpsert(tx, sub, { isCreated: false });
 
     const userId = await resolveUserId(sub.customData, sub.customerId);
     if (!userId) {
@@ -295,7 +483,27 @@ const handleSubscriptionCanceled = async (
  */
 const handleTransactionCompleted = async (
     txn: TransactionNotification,
+    tx: Tx,
 ): Promise<AnalyticsEmit[]> => {
+    if (txn.subscriptionId) {
+        const card = txn.payments.find((p) => p.status === 'captured')?.methodDetails?.card;
+        await subscriptionRepo.updateForPaddleSub(
+            txn.subscriptionId,
+            {
+                ...clearedPastDue,
+                declineReason: null,
+                ...(card
+                    ? {
+                          cardBrand: card.type,
+                          cardLast4: card.last4,
+                          cardExpMonth: card.expiryMonth,
+                          cardExpYear: card.expiryYear,
+                      }
+                    : {}),
+            },
+            tx,
+        );
+    }
     const item = txn.items[0];
     const priceId = item?.price?.id;
     const billingPlan = billingPlanFromPriceId(priceId);
@@ -334,6 +542,74 @@ const handleTransactionCompleted = async (
             }),
         () => analytics.setUserProps(userId, { plan: 'premium', is_ever_paid: true }),
     ];
+};
+
+const handleTransactionPastDue = async (
+    tx: Tx,
+    txn: TransactionNotification,
+    occurredAt: string,
+): Promise<DeferredEmit[]> => {
+    if (!txn.subscriptionId) {
+        return [];
+    }
+    const row = await subscriptionRepo.findPaddleSubInTransaction(tx, txn.subscriptionId);
+    if (!row || (txn.customerId && txn.customerId !== row.paddleCustomerId)) {
+        return [];
+    }
+    const failed = [...txn.payments].reverse().find((p) => p.status === 'error');
+    // Updating a card is not a renewal attempt and cannot affect entitlement
+    // status or overwrite the original failed invoice's amount/date.
+    if (txn.origin === 'subscription_payment_method_change') {
+        if (row.status === 'past_due' && failed?.errorCode) {
+            await subscriptionRepo.updateForUser(
+                row.userId,
+                { declineReason: failed.errorCode },
+                tx,
+            );
+        }
+        return [];
+    }
+    if (txn.origin !== 'subscription_recurring' && txn.status !== 'past_due') {
+        return [];
+    }
+    const totals = txn.details?.totals;
+    const patch = {
+        pastDueAt: new Date(failed?.createdAt ?? occurredAt),
+        ...(totals?.total !== undefined
+            ? {
+                  pastDueAmount: Number(totals.total),
+                  pastDueCurrency: totals.currencyCode,
+              }
+            : {}),
+        ...(failed?.errorCode ? { declineReason: failed.errorCode } : {}),
+    };
+    await subscriptionRepo.updateForUser(row.userId, patch, tx);
+    return [];
+};
+
+const handleSubscriptionPastDue = async (
+    tx: Tx,
+    sub: SubscriptionNotification,
+    occurredAt: string,
+): Promise<DeferredEmit[]> => {
+    const previous = await subscriptionRepo.findPaddleSubForUpdate(tx, sub.id);
+    const emits = await handleSubscriptionUpsert(tx, sub, { isCreated: false });
+    const row = await subscriptionRepo.findPaddleSubInTransaction(tx, sub.id);
+    if (!row) {
+        return emits;
+    }
+    if (!row.pastDueAt) {
+        row.pastDueAt = new Date(occurredAt);
+        await subscriptionRepo.updateForUser(row.userId, { pastDueAt: row.pastDueAt }, tx);
+    }
+    // A subscription notification has no transaction totals or card error code.
+    // Preserve known values; do not substitute a recurring price for a failed total.
+    if (previous?.status !== 'past_due') {
+        emits.push(() => {
+            void sendBillingEmail('payment-failed', row);
+        });
+    }
+    return emits;
 };
 
 /**
@@ -389,7 +665,7 @@ export const handleWebhookEvent = async (
     }
 
     try {
-        return await prisma.$transaction(async (tx): Promise<AnalyticsEmit[]> => {
+        return await subscriptionRepo.transaction(async (tx): Promise<AnalyticsEmit[]> => {
             // Inside the transaction: the primary-key conflict on a concurrent
             // redelivery aborts the whole thing, so an event can never apply twice.
             await subscriptionRepo.recordWebhookEvent(tx, event.eventId, event.eventType);
@@ -402,16 +678,22 @@ export const handleWebhookEvent = async (
                 case 'subscription.activated':
                 case 'subscription.trialing':
                 case 'subscription.updated':
-                case 'subscription.past_due':
                 case 'subscription.paused':
                 case 'subscription.resumed':
                     return handleSubscriptionUpsert(tx, event.data, {
                         isCreated: false,
                     });
+                case 'subscription.past_due':
+                    return handleSubscriptionPastDue(tx, event.data, event.occurredAt);
                 case 'subscription.canceled':
                     return handleSubscriptionCanceled(tx, event.data);
                 case 'transaction.completed':
-                    return handleTransactionCompleted(event.data);
+                    return handleTransactionCompleted(event.data, tx);
+                case 'transaction.payment_failed':
+                case 'transaction.past_due':
+                    return handleTransactionPastDue(tx, event.data, event.occurredAt);
+                case 'adjustment.created':
+                    return [];
                 default:
                     // customer.*, price.*, product.* and everything else: recorded
                     // for idempotency, otherwise safely ignored.

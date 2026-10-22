@@ -8,6 +8,8 @@ export type PreferencePatch = {
     avatarHue?: number | null;
     mimiPlacement?: string | null;
     defaultStudyMode?: 'srs' | 'know' | null;
+    mascot?: string;
+    palette?: string;
     favorites?: string[];
 };
 

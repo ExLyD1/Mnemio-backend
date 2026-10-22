@@ -76,6 +76,7 @@ export const reserve = async (userId: string, kind: aiUsageRepo.AiUsageKind): Pr
 export type UsageSnapshot = {
     plan: 'free' | 'premium';
     resetsAt: string;
+    freeCaps: Record<aiUsageRepo.AiUsageKind, number>;
     kinds: Record<aiUsageRepo.AiUsageKind, { used: number; cap: number; remaining: number }>;
 };
 
@@ -98,13 +99,15 @@ export const usageSnapshot = async (userId: string): Promise<UsageSnapshot> => {
         entitlementService.getPlan(userId),
         aiUsageRepo.findTodayCounts(userId),
     ]);
+    const freeCaps = {} as UsageSnapshot['freeCaps'];
     const kinds = {} as UsageSnapshot['kinds'];
     for (const kind of ALL_KINDS) {
+        freeCaps[kind] = capFor(kind, 'free');
         const cap = capFor(kind, plan);
         const used = counts[kind] ?? 0;
         kinds[kind] = { used, cap, remaining: Math.max(0, cap - used) };
     }
-    return { plan, resetsAt: aiUsageRepo.nextResetAt().toISOString(), kinds };
+    return { plan, resetsAt: aiUsageRepo.nextResetAt().toISOString(), kinds, freeCaps };
 };
 
 /** Return the reservation when the operation fails or is cancelled. */

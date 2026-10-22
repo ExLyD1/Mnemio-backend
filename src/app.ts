@@ -7,6 +7,7 @@ import fastifyStatic from '@fastify/static';
 import { env } from './config/env.js';
 import { prisma } from './db/prisma.js';
 import { registerCleanupJob } from './jobs/cleanup.job.js';
+import { registerTrialEndingJob } from './jobs/trial-ending.job.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { initSentry } from './plugins/sentry.js';
 import { initAnalytics } from './services/analytics.service.js';
@@ -153,6 +154,12 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     );
 
     const stopCleanup = registerCleanupJob(fastify.log);
+    const stopTrialEnding = registerTrialEndingJob(fastify.log);
+    if (stopTrialEnding) {
+        fastify.addHook('onClose', async () => {
+            stopTrialEnding();
+        });
+    }
     if (stopCleanup) {
         fastify.addHook('onClose', async () => {
             stopCleanup();
