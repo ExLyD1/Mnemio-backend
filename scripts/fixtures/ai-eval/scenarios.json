@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "about": "Non-chat scenario inputs. EN = English words with English definitions; UK = the same English words with Ukrainian definitions (the НМТ beachhead). Only the output language differs between the two columns.",
+  "topic": {
+    "topic": "Environment and climate change",
+    "count": 20
+  },
+  "tip": {
+    "context": "dashboard",
+    "dueCount": 12,
+    "streak": 3
+  },
+  "photo": {
+    "count": 8,
+    "note": "Photos are the founder's real textbook pages in photos/. Each photo is one run of the cell."
+  }
+}

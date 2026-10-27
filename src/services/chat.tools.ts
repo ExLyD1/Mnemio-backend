@@ -373,7 +373,7 @@ const isDraftAcceptable = (cards: AiCardDraft[], requestedCount?: number): boole
 // Wraps aiService.draftDeck with one deterministic retry if the draft fails the
 // sanity check above (e.g. the provider returned zero cards). Unmetered — the
 // tool charges once for what the user gets, however many drafts it took.
-const generateDeckWithRetry = async (
+export const generateDeckWithRetry = async (
     userId: string,
     params: Parameters<typeof aiService.draftDeck>[1],
 ) => {

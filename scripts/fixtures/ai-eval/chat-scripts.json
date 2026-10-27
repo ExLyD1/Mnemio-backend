@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "about": "Chat fixtures. userTurns are hand-written; the assistant replies in chat-history.json are generated once by --build-history and then frozen, so every model is measured on the same prior context. Turn N = the Nth user message of one conversation; the server sends at most AI_CHAT_CONTEXT_TURNS (20) messages, so turn 30 carries the same context size as turn ~10.",
+  "en": {
+    "locale": "en",
+    "userLangs": {
+      "native": "en",
+      "learning": [
+        "de"
+      ]
+    },
+    "userTurns": [
+      "Hi Mimi! I'm preparing for an English exam. Where should I start?",
+      "What's the difference between 'affect' and 'effect'?",
+      "Can you give me three example sentences with 'however'?",
+      "How do I use 'despite' correctly? I always write 'despite of'.",
+      "What does 'look forward to' mean, and why is it followed by -ing?",
+      "Explain the present perfect vs past simple in simple words.",
+      "Is it 'I have been to London' or 'I have gone to London'?",
+      "What are some synonyms for 'important' that sound more advanced?",
+      "How do I remember the spelling of 'necessary'?",
+      "What's the difference between 'make' and 'do'? Give examples.",
+      "Can you explain conditionals type 1 and type 2?",
+      "What does 'run out of' mean?",
+      "Is 'informations' correct?",
+      "How do I use articles with countries, like 'the UK' but 'France'?",
+      "What's a phrasal verb with 'put' that means to postpone?",
+      "Give me five useful linking words for an essay.",
+      "What's the difference between 'economic' and 'economical'?",
+      "How do I pronounce 'comfortable'?",
+      "Explain 'used to' vs 'be used to'.",
+      "What does 'ubiquitous' mean? Use it in a sentence.",
+      "Can you check this sentence: 'She suggested me to go home.'",
+      "What's the difference between 'rise' and 'raise'?",
+      "When do I use 'whom'?",
+      "What are false friends? Give a few examples.",
+      "How do I write a good opening sentence for an opinion essay?",
+      "What's the plural of 'phenomenon'?",
+      "Explain the passive voice with a simple example.",
+      "What does 'take after' mean?",
+      "Is 'less people' or 'fewer people' correct?",
+      "Can you explain 'although' vs 'even though'?"
+    ],
+    "createDeck": "Make me a deck of 20 German words about travel.",
+    "openDeck": {
+      "title": "German — Food",
+      "sourceLanguage": "en",
+      "targetLanguage": "de",
+      "words": [
+        "der Apfel",
+        "das Brot",
+        "die Milch",
+        "der Käse",
+        "das Wasser",
+        "der Kaffee",
+        "die Suppe",
+        "der Reis",
+        "das Fleisch",
+        "der Fisch",
+        "das Ei",
+        "der Zucker"
+      ]
+    },
+    "addCards": "Add 10 more words to this deck."
+  },
+  "uk": {
+    "locale": "uk",
+    "userLangs": {
+      "native": "uk",
+      "learning": [
+        "en"
+      ]
+    },
+    "userTurns": [
+      "Привіт, Мімі! Я готуюся до НМТ з англійської. З чого почати?",
+      "Яка різниця між «affect» і «effect»?",
+      "Дай три приклади речень зі словом «however».",
+      "Як правильно вживати «despite»? Я завжди пишу «despite of».",
+      "Що означає «look forward to» і чому після нього -ing?",
+      "Поясни простими словами різницю між Present Perfect і Past Simple.",
+      "Як правильно: «I have been to London» чи «I have gone to London»?",
+      "Які є синоніми до «important», що звучать солідніше?",
+      "Як запам'ятати написання «necessary»?",
+      "Яка різниця між «make» і «do»? Дай приклади.",
+      "Поясни умовні речення першого і другого типу.",
+      "Що означає «run out of»?",
+      "Чи правильно казати «informations»?",
+      "Як вживати артиклі з назвами країн, наприклад «the UK», але «France»?",
+      "Яке фразове дієслово з «put» означає «відкласти»?",
+      "Дай п'ять корисних слів-зв'язок для есе.",
+      "Яка різниця між «economic» і «economical»?",
+      "Як вимовляється «comfortable»?",
+      "Поясни різницю між «used to» і «be used to».",
+      "Що означає «ubiquitous»? Наведи приклад речення.",
+      "Перевір, будь ласка, речення: «She suggested me to go home.»",
+      "Яка різниця між «rise» і «raise»?",
+      "Коли вживати «whom»?",
+      "Що таке «хибні друзі перекладача»? Дай кілька прикладів.",
+      "Як написати гарне перше речення для есе-міркування?",
+      "Яка множина слова «phenomenon»?",
+      "Поясни пасивний стан на простому прикладі.",
+      "Що означає «take after»?",
+      "Як правильно: «less people» чи «fewer people»?",
+      "Поясни різницю між «although» і «even though»."
+    ],
+    "createDeck": "Зроби колоду з 20 англійських слів на тему «Навколишнє середовище».",
+    "openDeck": {
+      "title": "Англійська — Подорожі",
+      "sourceLanguage": "uk",
+      "targetLanguage": "en",
+      "words": [
+        "airport",
+        "luggage",
+        "passport",
+        "ticket",
+        "journey",
+        "destination",
+        "departure",
+        "arrival",
+        "hotel",
+        "sightseeing",
+        "boarding pass",
+        "customs"
+      ]
+    },
+    "addCards": "Додай ще 10 слів до цієї колоди."
+  }
+}

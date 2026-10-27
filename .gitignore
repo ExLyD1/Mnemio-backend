@@ -19,3 +19,9 @@ prisma.config.js
 prisma.config.js.map
 prisma.config.d.ts
 prisma.config.d.ts.map
+
+# AI eval: raw run output, spend ledger, and the founder's textbook photos
+# (real pages, not ours to publish).
+scripts/fixtures/ai-eval/out/
+scripts/fixtures/ai-eval/photos/*
+!scripts/fixtures/ai-eval/photos/.gitkeep
