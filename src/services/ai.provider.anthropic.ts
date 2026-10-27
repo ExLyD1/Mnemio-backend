@@ -35,6 +35,7 @@ import {
     buildSuggestPrompt,
 } from './ai.prompts.js';
 import { normalizeLang } from '../shared/lang.js';
+import { logAiCall } from './ai.usage-log.js';
 
 const cardItemSchema = {
     type: 'object',
@@ -154,7 +155,10 @@ const callToolUse = async <T>(args: {
     tool: typeof ENRICH_TOOL | typeof DECK_TOOL | typeof SUGGEST_TOOL;
     maxTokens: number;
     model?: string;
+    op?: string;
+    attempt?: number;
 }): Promise<{ data: T; tokensInput: number; tokensOutput: number }> => {
+    const started = Date.now();
     let response;
     try {
         response = await client().messages.create({
@@ -169,6 +173,14 @@ const callToolUse = async <T>(args: {
         throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
 
+    logAiCall({
+        op: args.op ?? 'unknown',
+        model: args.model ?? env.ANTHROPIC_MODEL,
+        usage: response.usage,
+        stopReason: response.stop_reason,
+        attempt: args.attempt,
+        durationMs: Date.now() - started,
+    });
     const toolBlock = response.content.find((b) => b.type === 'tool_use');
     if (toolBlock?.type !== 'tool_use') {
         throw new AiValidationFailedError('Provider returned no tool_use block');
@@ -191,6 +203,7 @@ const callWithRetry = async <T>(
     }
     const second = await callToolUse<T>({
         ...args,
+        attempt: 2,
         user: `${args.user}\n\nRetry: your previous output failed schema validation. Return only the tool call, fully populated.`,
     });
     if (validate(second.data)) {
@@ -246,7 +259,7 @@ const enrichWords = async (
 ): Promise<EnrichWordsResult> => {
     const start = Date.now();
     const { system, user } = buildEnrichWordsPrompt(input);
-    const maxTokens = Math.min(8000, Math.max(1000, input.words.length * 200));
+    const maxTokens = Math.min(16000, Math.max(1000, input.words.length * 200));
     const model = contentModel(input.sourceLanguage, input.targetLanguage);
 
     // Non-streaming fast path: caller doesn't want incremental events.
@@ -261,6 +274,7 @@ const enrichWords = async (
                 tool: ENRICH_TOOL,
                 maxTokens,
                 model,
+                op: 'enrich',
             },
             isValidCardArray,
         );
@@ -317,6 +331,14 @@ const enrichWords = async (
         });
 
         const finalMessage = await stream.finalMessage();
+        logAiCall({
+            op: 'enrich',
+            model,
+            usage: finalMessage.usage,
+            stopReason: finalMessage.stop_reason,
+            durationMs: Date.now() - start,
+            stream: true,
+        });
         tokensInput = finalMessage.usage.input_tokens;
         tokensOutput = finalMessage.usage.output_tokens;
 
@@ -377,6 +399,7 @@ const generateDeck = async (
                 tool: DECK_TOOL,
                 maxTokens,
                 model,
+                op: 'generate_deck',
             },
             isValidDeckDraft,
         );
@@ -434,6 +457,14 @@ const generateDeck = async (
         });
 
         const finalMessage = await stream.finalMessage();
+        logAiCall({
+            op: 'generate_deck',
+            model,
+            usage: finalMessage.usage,
+            stopReason: finalMessage.stop_reason,
+            durationMs: Date.now() - start,
+            stream: true,
+        });
         tokensInput = finalMessage.usage.input_tokens;
         tokensOutput = finalMessage.usage.output_tokens;
         const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
@@ -489,7 +520,9 @@ const callImageToolUse = async (args: {
     content: Anthropic.ContentBlockParam[];
     maxTokens: number;
     model?: string;
+    attempt?: number;
 }): Promise<{ data: AiDeckDraft; tokensInput: number; tokensOutput: number }> => {
+    const started = Date.now();
     let response;
     try {
         response = await client().messages.create({
@@ -503,6 +536,14 @@ const callImageToolUse = async (args: {
     } catch (err) {
         throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
+    logAiCall({
+        op: 'deck_from_image',
+        model: args.model ?? env.ANTHROPIC_MODEL,
+        usage: response.usage,
+        stopReason: response.stop_reason,
+        attempt: args.attempt,
+        durationMs: Date.now() - started,
+    });
     const toolBlock = response.content.find((b) => b.type === 'tool_use');
     if (toolBlock?.type !== 'tool_use') {
         throw new AiValidationFailedError('Provider returned no tool_use block');
@@ -531,6 +572,7 @@ const deckFromImage = async (
         let result = await callImageToolUse({ system, content: baseContent, maxTokens, model });
         if (!isValidImageDeckDraft(result.data)) {
             result = await callImageToolUse({
+                attempt: 2,
                 system,
                 content: [
                     ...baseContent,
@@ -601,6 +643,14 @@ const deckFromImage = async (
         });
 
         const finalMessage = await stream.finalMessage();
+        logAiCall({
+            op: 'deck_from_image',
+            model,
+            usage: finalMessage.usage,
+            stopReason: finalMessage.stop_reason,
+            durationMs: Date.now() - start,
+            stream: true,
+        });
         tokensInput = finalMessage.usage.input_tokens;
         tokensOutput = finalMessage.usage.output_tokens;
         const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
@@ -649,6 +699,7 @@ const suggest = async (input: {
             toolName: SUGGEST_TOOL.name,
             tool: SUGGEST_TOOL,
             maxTokens: 400,
+            op: 'suggest',
         },
         isValidSuggestion,
     );
@@ -675,6 +726,7 @@ const runChatRound = async (params: {
     tools?: ChatToolsConfig;
     onEvent?: (event: ChatStreamEvent) => void;
     signal?: AbortSignal;
+    op: string;
 }): Promise<{
     content: string;
     tokensInput: number;
@@ -682,6 +734,7 @@ const runChatRound = async (params: {
     toolUse: ToolUseBlock | null;
     rawAssistantBlocks: Anthropic.ContentBlock[];
 }> => {
+    const started = Date.now();
     let buffer = '';
     try {
         const stream = client().messages.stream({
@@ -712,6 +765,14 @@ const runChatRound = async (params: {
         });
 
         const finalMessage = await stream.finalMessage();
+        logAiCall({
+            op: params.op,
+            model: env.ANTHROPIC_MODEL,
+            usage: finalMessage.usage,
+            stopReason: finalMessage.stop_reason,
+            durationMs: Date.now() - started,
+            stream: true,
+        });
         const toolBlock = finalMessage.content.find(
             (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
         );
@@ -792,6 +853,7 @@ const chat = async (
     }));
 
     const round1 = await runChatRound({
+        op: 'chat_round1',
         messages: initialMessages,
         system: input.systemPrompt,
         maxOutputTokens: input.maxOutputTokens,
@@ -876,6 +938,7 @@ const chat = async (
     let round2: { content: string; tokensInput: number; tokensOutput: number };
     try {
         round2 = await runChatRound({
+            op: 'chat_round2',
             messages: round2Messages,
             system: input.systemPrompt,
             maxOutputTokens: input.maxOutputTokens,
