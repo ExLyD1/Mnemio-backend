@@ -64,23 +64,32 @@ const envSchema = z
         // stay on ANTHROPIC_MODEL.
         ANTHROPIC_CONTENT_MODEL_UK: z.string().default('claude-sonnet-5'),
 
-        // Per-user daily caps on each AI operation.
-        AI_DAILY_ENRICH_CAP_PER_USER: z.coerce.number().int().positive().default(5),
-        AI_DAILY_GENERATE_CAP_PER_USER: z.coerce.number().int().positive().default(20),
-        AI_DAILY_SUGGEST_CAP_PER_USER: z.coerce.number().int().positive().default(60),
+        // What a user can ask Mimi for each day. Free users see these three
+        // ("2 decks · 50 messages · 5 card additions left today"), and only when
+        // they are running low.
+        //   DECKS    — Mimi makes a new deck (from a topic, a word list or a photo).
+        //   MESSAGES — the user sends Mimi a chat message (with or without a photo).
+        //   ACTIONS  — Mimi generates cards into an existing deck.
+        // Premium is UNLIMITED as far as users can tell: the *_PREMIUM values are
+        // hidden safety caps against abuse and are never shown to anyone.
+        MIMI_DECKS_PER_DAY_FREE: z.coerce.number().int().positive().default(2),
+        MIMI_DECKS_PER_DAY_PREMIUM: z.coerce.number().int().positive().default(100),
+        MIMI_MESSAGES_PER_DAY_FREE: z.coerce.number().int().positive().default(50),
+        MIMI_MESSAGES_PER_DAY_PREMIUM: z.coerce.number().int().positive().default(1000),
+        MIMI_ACTIONS_PER_DAY_FREE: z.coerce.number().int().positive().default(5),
+        MIMI_ACTIONS_PER_DAY_PREMIUM: z.coerce.number().int().positive().default(200),
 
-        // Hard ceiling on words per enrich call.
-        AI_MAX_WORDS_PER_ENRICH: z.coerce.number().int().positive().max(200).default(100),
+        // Mimi's automatic tips (dashboard / review). Users never ask for these,
+        // so they aren't shown as a limit — this only stops runaway clients.
+        MIMI_TIPS_PER_DAY: z.coerce.number().int().positive().default(100),
 
-        // Vision (deck-from-image + image-attached chat turns) — separate daily
-        // cap since vision calls cost more than text-only ones, and a hard byte
-        // ceiling on the uploaded image (images are never persisted).
-        AI_DAILY_IMAGE_CAP_PER_USER: z.coerce.number().int().positive().default(10),
+        // Most words Mimi fills in one go (one pasted word list).
+        MIMI_MAX_WORDS_PER_REQUEST: z.coerce.number().int().positive().max(200).default(100),
+
+        // Hard byte ceiling on an uploaded image (images are never persisted).
         AI_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
 
-        // Real-time chat — daily per-user cap on user-message turns, context
-        // window size (turns sent to the model), and per-reply output ceiling.
-        AI_DAILY_CHAT_CAP_PER_USER: z.coerce.number().int().positive().default(50),
+        // Chat — how many recent messages Mimi remembers, and the longest reply.
         AI_CHAT_CONTEXT_TURNS: z.coerce.number().int().positive().max(100).default(20),
         AI_CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().max(8000).default(1024),
 
@@ -131,13 +140,7 @@ const envSchema = z
         MIXPANEL_TOKEN: z.string().optional(),
         MIXPANEL_API_SECRET: z.string().optional(),
 
-        // Per-user daily caps for premium plan (defaults = 10× free)
-        AI_DAILY_ENRICH_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(50),
-        AI_DAILY_GENERATE_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),
-        AI_DAILY_SUGGEST_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(600),
-        AI_DAILY_CHAT_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(500),
         IMPORT_DAILY_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),
-        AI_DAILY_IMAGE_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(100),
     })
     .refine(
         (v) =>

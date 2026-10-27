@@ -78,10 +78,14 @@ MAIL_FROM="Mnemio <noreply@mnemio.app>"
 AI_PROVIDER=anthropic              # or `mock` for paid-down env
 ANTHROPIC_API_KEY=<sk-ant-...>
 ANTHROPIC_MODEL=claude-haiku-4-5-20251001
-AI_DAILY_ENRICH_CAP_PER_USER=5
-AI_DAILY_GENERATE_CAP_PER_USER=20
-AI_DAILY_SUGGEST_CAP_PER_USER=60
-AI_MAX_WORDS_PER_ENRICH=100
+MIMI_DECKS_PER_DAY_FREE=2         # new decks Mimi makes (topic, word list, photo)
+MIMI_DECKS_PER_DAY_PREMIUM=100    # Premium = unlimited for users; these are hidden abuse caps
+MIMI_MESSAGES_PER_DAY_FREE=50     # chat messages the user sends
+MIMI_MESSAGES_PER_DAY_PREMIUM=1000
+MIMI_ACTIONS_PER_DAY_FREE=5       # cards Mimi generates into an existing deck
+MIMI_ACTIONS_PER_DAY_PREMIUM=200
+MIMI_TIPS_PER_DAY=100             # hidden anti-abuse cap on automatic tips
+MIMI_MAX_WORDS_PER_REQUEST=100
 ```
 
 **Observability (optional but recommended):**

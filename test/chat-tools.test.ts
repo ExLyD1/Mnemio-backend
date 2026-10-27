@@ -6,6 +6,7 @@ import {
     type UserLanguages,
 } from '../src/services/chat.tools.js';
 import * as aiService from '../src/services/ai.service.js';
+import * as budget from '../src/services/ai.budget.service.js';
 import * as decksService from '../src/services/decks.service.js';
 import * as cardsService from '../src/services/cards.service.js';
 import * as decksRepo from '../src/repositories/decks.repository.js';
@@ -13,8 +14,13 @@ import * as cardsRepo from '../src/repositories/cards.repository.js';
 import { AiBudgetExceededError } from '../src/shared/errors.js';
 
 vi.mock('../src/services/ai.service.js', () => ({
-    enrichWords: vi.fn(),
-    generateDeck: vi.fn(),
+    fillCards: vi.fn(),
+    draftDeck: vi.fn(),
+}));
+vi.mock('../src/services/ai.budget.service.js', () => ({
+    assertWithinBudget: vi.fn(),
+    recordUse: vi.fn(),
+    metered: vi.fn(),
 }));
 vi.mock('../src/services/decks.service.js', () => ({
     create: vi.fn(),
@@ -31,6 +37,7 @@ vi.mock('../src/repositories/cards.repository.js', () => ({
 }));
 
 const mAi = vi.mocked(aiService);
+const mBudget = vi.mocked(budget);
 const mDecks = vi.mocked(decksService);
 const mCards = vi.mocked(cardsService);
 const mDecksRepo = vi.mocked(decksRepo);
@@ -73,6 +80,7 @@ beforeEach(() => {
     // the duplicate filter nor the wrong-deck guard fires unless a test says so.
     mCardsRepo.listAllCardsForDeck.mockResolvedValue([] as never);
     mDecksRepo.listDeckTitles.mockResolvedValue([] as never);
+    mBudget.metered.mockImplementation((_u, _k, work) => work());
 });
 
 describe('chat.tools / runCreateDeck — input validation', () => {
@@ -80,8 +88,8 @@ describe('chat.tools / runCreateDeck — input validation', () => {
         const r = await runCreateDeck('u1', {}, UK_ES);
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toMatch(/topic.*words/i);
-        expect(mAi.enrichWords).not.toHaveBeenCalled();
-        expect(mAi.generateDeck).not.toHaveBeenCalled();
+        expect(mAi.fillCards).not.toHaveBeenCalled();
+        expect(mAi.draftDeck).not.toHaveBeenCalled();
     });
 
     it('refuses when words is an empty array', async () => {
@@ -196,7 +204,7 @@ describe('chat.tools / resolveDeckLanguages', () => {
 
 describe('chat.tools / runCreateDeck — languages', () => {
     beforeEach(() => {
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [{ word: 'agua', definition: 'water' }],
             meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
         } as never);
@@ -204,7 +212,7 @@ describe('chat.tools / runCreateDeck — languages', () => {
 
     it('uses profile languages when the model omits them', async () => {
         await runCreateDeck('u1', { words: ['agua'] }, langs('uk', ['pt']), 'en');
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+        expect(mAi.fillCards).toHaveBeenCalledWith({
             words: ['agua'],
             sourceLanguage: 'uk',
             targetLanguage: 'pt',
@@ -217,7 +225,7 @@ describe('chat.tools / runCreateDeck — languages', () => {
             { words: ['agua'], wordsLanguage: 'ja', definitionsLanguage: 'en' },
             langs('uk', ['pt']),
         );
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+        expect(mAi.fillCards).toHaveBeenCalledWith({
             words: ['agua'],
             sourceLanguage: 'en',
             targetLanguage: 'ja',
@@ -231,14 +239,14 @@ describe('chat.tools / runCreateDeck — languages', () => {
             reason: 'WORDS_LANGUAGE_AMBIGUOUS',
             details: { options: ['en', 'de'] },
         });
-        expect(mAi.generateDeck).not.toHaveBeenCalled();
+        expect(mAi.draftDeck).not.toHaveBeenCalled();
         expect(mDecks.create).not.toHaveBeenCalled();
     });
 });
 
 describe('chat.tools / runCreateDeck — words branch', () => {
     it('runs enrichWords → decks.create → cards.bulkCreate and returns the deck attachment', async () => {
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [
                 { word: 'agua', definition: 'water' },
                 { word: 'pan', definition: 'bread' },
@@ -287,7 +295,7 @@ describe('chat.tools / runCreateDeck — words branch', () => {
     });
 
     it('prefers the explicit input.title when given', async () => {
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [{ word: 'agua', definition: 'water' }],
             meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
         } as never);
@@ -301,7 +309,7 @@ describe('chat.tools / runCreateDeck — words branch', () => {
 
 describe('chat.tools / runCreateDeck — topic branch', () => {
     it('calls generateDeck and persists the returned draft', async () => {
-        mAi.generateDeck.mockResolvedValue({
+        mAi.draftDeck.mockResolvedValue({
             title: 'Spanish café',
             description: 'Café vocabulary.',
             sourceLanguage: 'en',
@@ -316,7 +324,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
         const r = await runCreateDeck('u1', { topic: 'Spanish café vocabulary', count: 2 }, UK_ES);
 
         expect(r.ok).toBe(true);
-        expect(mAi.generateDeck).toHaveBeenCalledWith(
+        expect(mAi.draftDeck).toHaveBeenCalledWith(
             'u1',
             expect.objectContaining({
                 topic: 'Spanish café vocabulary',
@@ -336,7 +344,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
     });
 
     it("persists the resolved language pair, not the model's echo of it", async () => {
-        mAi.generateDeck.mockResolvedValue({
+        mAi.draftDeck.mockResolvedValue({
             title: 'Школа',
             description: '',
             // Model misread "uk" as UK English and echoed en/en.
@@ -355,7 +363,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
     });
 
     it('retries once when the first draft fails the count sanity check, then persists the retry', async () => {
-        mAi.generateDeck
+        mAi.draftDeck
             .mockResolvedValueOnce({
                 title: 'Rivers',
                 description: '',
@@ -377,7 +385,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
 
         const r = await runCreateDeck('u1', { topic: 'river parrots', count: 2 }, UK_ES);
 
-        expect(mAi.generateDeck).toHaveBeenCalledTimes(2);
+        expect(mAi.draftDeck).toHaveBeenCalledTimes(2);
         expect(r.ok).toBe(true);
         expect((r as { ok: true; words: string[] }).words).toEqual(['a', 'b']);
     });
@@ -385,14 +393,14 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
 
 describe('chat.tools / runCreateDeck — error surface', () => {
     it('returns { ok:false, reason: AppError.code } on a known AppError', async () => {
-        mAi.enrichWords.mockRejectedValue(new AiBudgetExceededError('enrich', 5));
+        mAi.fillCards.mockRejectedValue(new AiBudgetExceededError('deck', 5));
         const r = await runCreateDeck('u1', { words: ['agua'] }, UK_ES);
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toBe('AI_BUDGET_EXCEEDED');
     });
 
     it('returns { ok:false, reason: "INTERNAL" } on an unknown error', async () => {
-        mAi.enrichWords.mockRejectedValue(new Error('database imploded'));
+        mAi.fillCards.mockRejectedValue(new Error('database imploded'));
         const r = await runCreateDeck('u1', { words: ['agua'] }, UK_ES);
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toBe('INTERNAL');
@@ -430,7 +438,7 @@ describe('chat.tools / runAddCards — append to an existing deck', () => {
             .mockResolvedValueOnce(
                 fakeDeckRow({ sourceLanguage: 'en', targetLanguage: 'fr', cardCount: 7 }),
             );
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [
                 { word: 'eau', definition: 'water' },
                 { word: 'pain', definition: 'bread' },
@@ -440,7 +448,7 @@ describe('chat.tools / runAddCards — append to an existing deck', () => {
 
         const r = await runAddCards('u1', 'deck-99', { words: ['eau', 'pain'] });
 
-        expect(mAi.enrichWords).toHaveBeenCalledWith('u1', {
+        expect(mAi.fillCards).toHaveBeenCalledWith({
             words: ['eau', 'pain'],
             sourceLanguage: 'en',
             targetLanguage: 'fr', // the deck's languages, not user prefs
@@ -464,7 +472,7 @@ describe('chat.tools / runAddCards — append to an existing deck', () => {
         const r = await runAddCards('u1', 'deck-x', { words: ['eau'] });
         expect(r.ok).toBe(false);
         expect((r as { reason: string }).reason).toBe('DECK_NOT_FOUND');
-        expect(mAi.enrichWords).not.toHaveBeenCalled();
+        expect(mAi.fillCards).not.toHaveBeenCalled();
         expect(mCards.bulkCreate).not.toHaveBeenCalled();
     });
 
@@ -496,7 +504,7 @@ describe('chat.tools / runAddCards — wrong-deck guard', () => {
             reason: 'DECK_MISMATCH',
             details: { openDeck: 'QA-Fruits', requestedDeck: 'QA-Animals' },
         });
-        expect(mAi.enrichWords).not.toHaveBeenCalled();
+        expect(mAi.fillCards).not.toHaveBeenCalled();
         expect(mCards.bulkCreate).not.toHaveBeenCalled();
     });
 
@@ -524,7 +532,7 @@ describe('chat.tools / runAddCards — wrong-deck guard', () => {
             .mockResolvedValueOnce(
                 fakeDeckRow({ id: 'deck-99', title: 'QA-Fruits', cardCount: 6 }),
             );
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [{ word: 'pear', definition: 'fruit' }],
             meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
         } as never);
@@ -551,7 +559,7 @@ describe('chat.tools / runAddCards — duplicates', () => {
 
     it('skips a word already in the deck and reports it', async () => {
         deckWithApple();
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [{ word: 'peach', definition: 'fruit' }],
             meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
         } as never);
@@ -562,8 +570,7 @@ describe('chat.tools / runAddCards — duplicates', () => {
         });
 
         // Only the new word is sent for enrichment — no AI spend on a duplicate.
-        expect(mAi.enrichWords).toHaveBeenCalledWith(
-            'u1',
+        expect(mAi.fillCards).toHaveBeenCalledWith(
             expect.objectContaining({
                 words: ['peach'],
             }),
@@ -587,7 +594,7 @@ describe('chat.tools / runAddCards — duplicates', () => {
         });
 
         expect(r).toMatchObject({ ok: false, reason: 'ALL_DUPLICATES' });
-        expect(mAi.enrichWords).not.toHaveBeenCalled();
+        expect(mAi.fillCards).not.toHaveBeenCalled();
         expect(mCards.bulkCreate).not.toHaveBeenCalled();
     });
 
@@ -599,7 +606,7 @@ describe('chat.tools / runAddCards — duplicates', () => {
             { word: 'apple' },
             { word: 'pear' },
         ] as never);
-        mAi.generateDeck.mockResolvedValue({
+        mAi.draftDeck.mockResolvedValue({
             title: 'more fruit',
             description: '',
             cards: [
@@ -613,7 +620,7 @@ describe('chat.tools / runAddCards — duplicates', () => {
             deckTitle: 'My Spanish deck',
         });
 
-        expect(mAi.generateDeck).toHaveBeenCalledWith(
+        expect(mAi.draftDeck).toHaveBeenCalledWith(
             'u1',
             expect.objectContaining({ exclude: ['apple', 'pear'] }),
         );
@@ -626,8 +633,8 @@ describe('chat.tools / runAddCards — duplicates', () => {
 describe('chat.tools / failure details', () => {
     it('passes the cap and reset time to the model instead of a bare code', async () => {
         mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow({ id: 'deck-99' }));
-        mAi.enrichWords.mockRejectedValue(
-            new AiBudgetExceededError('enrich', 5, '2026-06-11T00:00:00.000Z'),
+        mAi.fillCards.mockRejectedValue(
+            new AiBudgetExceededError('action', 5, '2026-06-11T00:00:00.000Z'),
         );
 
         const r = await runAddCards('u1', 'deck-99', {
@@ -639,7 +646,7 @@ describe('chat.tools / failure details', () => {
             ok: false,
             reason: 'AI_BUDGET_EXCEEDED',
             details: {
-                kind: 'enrich',
+                kind: 'action',
                 capPerDay: 5,
                 resetsAt: '2026-06-11T00:00:00.000Z',
                 // Nothing is retried in the background — the model used to
@@ -652,7 +659,7 @@ describe('chat.tools / failure details', () => {
 
 describe('chat.tools / deck title', () => {
     it("keeps the name the user quoted instead of the model's embellishment", async () => {
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [{ word: 'hola', definition: 'hello' }],
             meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
         } as never);
@@ -672,7 +679,7 @@ describe('chat.tools / deck title', () => {
     });
 
     it('caps an over-long title rather than passing it straight to the DB', async () => {
-        mAi.enrichWords.mockResolvedValue({
+        mAi.fillCards.mockResolvedValue({
             cards: [{ word: 'hola', definition: 'hello' }],
             meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
         } as never);
@@ -681,5 +688,90 @@ describe('chat.tools / deck title', () => {
 
         const title = (mDecks.create.mock.calls[0]?.[1] as { title: string }).title;
         expect(title.length).toBeLessThanOrEqual(120);
+    });
+});
+
+describe('chat.tools / what the user is charged', () => {
+    const okCards = {
+        cards: [{ word: 'agua', definition: 'water' }],
+        meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
+    } as never;
+
+    it('a new deck costs one deck, whether it came from words or a topic', async () => {
+        mAi.fillCards.mockResolvedValue(okCards);
+        await runCreateDeck('u1', { words: ['agua'] }, UK_ES);
+        mAi.draftDeck.mockResolvedValue({
+            title: 'T',
+            description: '',
+            sourceLanguage: 'uk',
+            targetLanguage: 'es',
+            cards: [{ word: 'agua', definition: 'water' }],
+        } as never);
+        await runCreateDeck('u1', { topic: 'water' }, UK_ES);
+
+        expect(mBudget.metered).toHaveBeenCalledTimes(2);
+        expect(mBudget.metered.mock.calls.map((c) => c[1])).toEqual(['deck', 'deck']);
+    });
+
+    it('a deck whose first draft is retried is still charged once', async () => {
+        mAi.draftDeck
+            .mockResolvedValueOnce({
+                title: 'T',
+                description: '',
+                sourceLanguage: 'uk',
+                targetLanguage: 'es',
+                cards: [],
+            } as never)
+            .mockResolvedValueOnce({
+                title: 'T',
+                description: '',
+                sourceLanguage: 'uk',
+                targetLanguage: 'es',
+                cards: [{ word: 'agua', definition: 'water' }],
+            } as never);
+
+        await runCreateDeck('u1', { topic: 'water', count: 2 }, UK_ES);
+
+        expect(mAi.draftDeck).toHaveBeenCalledTimes(2);
+        expect(mBudget.metered).toHaveBeenCalledTimes(1);
+    });
+
+    it('adding cards costs one action, counted only after the cards are saved', async () => {
+        mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow());
+        mAi.fillCards.mockResolvedValue(okCards);
+
+        const r = await runAddCards('u1', 'deck-99', { words: ['agua'] });
+
+        expect(r.ok).toBe(true);
+        expect(mBudget.assertWithinBudget).toHaveBeenCalledWith('u1', 'action');
+        expect(mBudget.recordUse).toHaveBeenCalledWith('u1', 'action');
+        expect(mCards.bulkCreate.mock.invocationCallOrder[0]).toBeLessThan(
+            mBudget.recordUse.mock.invocationCallOrder[0]!,
+        );
+    });
+
+    it('adding only duplicates costs nothing and spends no AI', async () => {
+        mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow());
+        mCardsRepo.listAllCardsForDeck.mockResolvedValue([{ word: 'agua' }] as never);
+
+        const r = await runAddCards('u1', 'deck-99', { words: ['agua'] });
+
+        expect(r).toMatchObject({ ok: false, reason: 'ALL_DUPLICATES' });
+        expect(mBudget.assertWithinBudget).not.toHaveBeenCalled();
+        expect(mAi.fillCards).not.toHaveBeenCalled();
+        expect(mBudget.recordUse).not.toHaveBeenCalled();
+    });
+
+    it('with no actions left, refuses before any AI spend', async () => {
+        mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow());
+        mBudget.assertWithinBudget.mockRejectedValue(
+            new AiBudgetExceededError('action', 5, '2026-06-11T00:00:00.000Z'),
+        );
+
+        const r = await runAddCards('u1', 'deck-99', { words: ['agua'] });
+
+        expect(r).toMatchObject({ ok: false, reason: 'AI_BUDGET_EXCEEDED' });
+        expect(mAi.fillCards).not.toHaveBeenCalled();
+        expect(mCards.bulkCreate).not.toHaveBeenCalled();
     });
 });

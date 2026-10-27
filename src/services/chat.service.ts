@@ -296,14 +296,10 @@ export const sendMessage = async (
         throw new ChatNotFoundError();
     }
 
-    // Image-attached turns are metered under the 'image' cap (vision calls
-    // cost more) instead of 'chat' — one consistent cap across both the
-    // standalone deck-from-image endpoint and this attachment path.
-    const budgetKind = opts.image ? 'image' : 'chat';
-
-    // Budget check BEFORE we persist anything. We don't charge for messages
-    // that 429.
-    await budget.assertWithinBudget(userId, budgetKind);
+    // Every user turn is one message, photo or not. A deck or card change the
+    // turn makes is charged separately by the tool that makes it.
+    // Checked BEFORE we persist anything — we don't charge for messages that 429.
+    await budget.assertWithinBudget(userId, 'message');
 
     // Resolve the in-context deck (the one the user is viewing). Ownership-scoped
     // — a deckId the user doesn't own is silently ignored, so add_cards simply
@@ -323,15 +319,14 @@ export const sendMessage = async (
 
     const userLangs = await loadUserLanguages(userId);
 
-    // Real remaining deck-building allowance, so the reply can state it instead
-    // of inventing one (and so an exhausted budget costs a sentence, not a
-    // doomed tool call).
+    // Real remaining allowance, so the reply can state it instead of inventing
+    // one (and so an exhausted budget costs a sentence, not a doomed tool call).
     const usage = await budget.usageSnapshot(userId);
     const budgetCtx = {
-        wordListRemaining: usage.kinds.enrich.remaining,
-        wordListCap: usage.kinds.enrich.cap,
-        topicRemaining: usage.kinds.generate.remaining,
-        topicCap: usage.kinds.generate.cap,
+        decksRemaining: usage.kinds.deck.remaining,
+        decksCap: usage.kinds.deck.cap,
+        actionsRemaining: usage.kinds.action.remaining,
+        actionsCap: usage.kinds.action.cap,
         resetsAt: usage.resetsAt,
         plan: usage.plan,
     };
@@ -478,7 +473,7 @@ export const sendMessage = async (
     }
 
     // Charge the user only after a successful turn.
-    await budget.recordUse(userId, budgetKind);
+    await budget.recordUse(userId, 'message');
 
     const assistantMessage = toPublicMessage(finalAssistantDb);
     onFrame({

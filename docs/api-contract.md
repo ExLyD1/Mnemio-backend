@@ -1284,7 +1284,7 @@ shows the result, lets the user review, then commits via the existing
   order verbatim.
 
 **Errors:**
-- `400 AI_TOO_MANY_WORDS` — input exceeds `AI_MAX_WORDS_PER_ENRICH` (default 100).
+- `400 AI_TOO_MANY_WORDS` — input exceeds `MIMI_MAX_WORDS_PER_REQUEST` (default 100).
 - `429 AI_BUDGET_EXCEEDED` — daily per-user cap hit.
 - `502 AI_PROVIDER_ERROR` — upstream LLM failure; retry with backoff.
 - `502 AI_VALIDATION_FAILED` — provider output failed schema validation
@@ -1413,7 +1413,7 @@ Request is `multipart/form-data` (not JSON):
 - `400 AI_IMAGE_MISSING` — no `image` field in the multipart body.
 - `400 AI_IMAGE_UNSUPPORTED_TYPE` — MIME type isn't png/jpeg/webp/gif.
 - `400 AI_IMAGE_TOO_LARGE` — image exceeds `AI_IMAGE_MAX_BYTES`.
-- `429 AI_BUDGET_EXCEEDED` — daily `image` cap hit (separate from `generate`).
+- `429 AI_BUDGET_EXCEEDED` — daily `deck` cap hit (a photo deck is a deck).
 - `502 AI_PROVIDER_ERROR` / `502 AI_VALIDATION_FAILED` — same as generate-deck.
 
 ##### Streaming variant — `Accept: text/event-stream`
@@ -1462,18 +1462,25 @@ Always single-response (small payload, no streaming needed).
 | Limit | Free tier | Premium tier | Throws |
 |---|---|---|---|
 | Request rate | 30/min/user | 30/min/user | `429 RATE_LIMITED` |
-| Daily `enrich` cap | 5/day | 50/day (env) | `429 AI_BUDGET_EXCEEDED` |
-| Daily `generate` cap | 20/day | 200/day (env) | `429 AI_BUDGET_EXCEEDED` |
-| Daily `suggest` cap | 60/day | 600/day (env) | `429 AI_BUDGET_EXCEEDED` |
-| Daily `chat` cap | 50/day | 500/day (env) | `429 AI_BUDGET_EXCEEDED` |
-| Daily `image` cap | 10/day | 100/day (env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `deck` cap — new decks Mimi makes | 2/day | 100/day (hidden, env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `message` cap — chat messages the user sends | 50/day | 1000/day (hidden, env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `action` cap — Mimi generates cards into an existing deck | 5/day | 200/day (hidden, env) | `429 AI_BUDGET_EXCEEDED` |
+| Daily `tip` cap — automatic suggestions (not shown to users) | 100/day | 100/day (env) | `429 AI_BUDGET_EXCEEDED` |
 | Daily `import` cap | 20/day | 200/day (env) | `429 IMPORT_BUDGET_EXCEEDED` |
-| Max words per `enrich` call | 100 | 100 | `400 AI_TOO_MANY_WORDS` |
+| Max words per request (word-list fill) | 100 | 100 | `400 AI_TOO_MANY_WORDS` |
 | Max image size (`deck-from-image` + chat attachment) | 5 MB (env) | 5 MB (env) | `400 AI_IMAGE_TOO_LARGE` |
 
-`image` is its own daily cap — vision calls cost more than text-only ones. It
-covers **both** `POST /ai/deck-from-image` and any chat turn with an attached
-image (a chat turn with an image is metered as `image`, not `chat`).
+Limits count **what the user gets**, not which AI call produced it:
+
+| User sees | Charged |
+|---|---|
+| A new deck — `POST /ai/generate-deck`, `POST /ai/deck-from-image`, chat `create_deck` | 1 `deck` |
+| Cards added to an existing deck — chat `add_cards`, `POST /ai/enrich-words` (word-list fill) | 1 `action` |
+| A chat message (with or without an image) | 1 `message` |
+| Mimi's automatic tip — `POST /ai/suggest` | 1 `tip` |
+
+A chat message that creates a deck costs 1 `message` + 1 `deck`. Internal
+retries never charge twice, and nothing is charged when the call fails.
 
 **`GET /ai/usage`** *(auth)* reports today's consumption for every kind, so the
 UI can show a limit before the user hits it:
@@ -1483,18 +1490,19 @@ UI can show a limit before the user hits it:
   plan: 'free' | 'premium';
   resetsAt: string;                 // ISO — next UTC midnight; counters are per UTC day
   kinds: Record<
-    'enrich' | 'generate' | 'suggest' | 'import' | 'chat' | 'image',
-    { used: number; cap: number; remaining: number }
+    'deck' | 'message' | 'action' | 'tip' | 'import',
+    { used: number; cap: number; remaining: number; unlimited: boolean }
   >;
 }
 ```
+`unlimited` is `true` for Premium: the cap is a hidden safety net, so the FE
+shows no counter. Free users only need a counter when `remaining` is low.
 Every `429 AI_BUDGET_EXCEEDED` also carries `details.resetsAt` alongside
 `details.kind` and `details.capPerDay`. Show the real reset time; nothing is
 retried automatically.
 
 Free and premium caps are independently configurable via env
-(`AI_DAILY_*_CAP_PER_USER` for free, `AI_DAILY_*_CAP_PREMIUM_PER_USER` for
-premium). The cap used is determined server-side from the caller's active
+(`MIMI_{DECKS,MESSAGES,ACTIONS}_PER_DAY_{FREE,PREMIUM}`, `MIMI_TIPS_PER_DAY`). The cap used is determined server-side from the caller's active
 subscription — the FE never sends plan information in the request body.
 
 ### Imports  *(Quizlet + paste-text)*
@@ -1563,7 +1571,8 @@ TSV (`word<TAB>definition`), CSV (`word,definition`), or newline-paired
 Server-persisted multi-turn chat against Claude Haiku 4.5. Conversations
 live in their own tables so users can resume on any device; the sidebar
 orders by `lastMessageAt DESC`. Each user-message turn counts against the
-`chat` daily cap (`AI_DAILY_CHAT_CAP_PER_USER`, default 50).
+`message` daily cap (`MIMI_MESSAGES_PER_DAY_FREE`, default 50); a turn that
+creates a deck or adds cards is additionally charged 1 `deck` / 1 `action`.
 
 The send-message endpoint streams tokens via SSE; all other endpoints are
 plain JSON. SSE-or-JSON negotiation is the same `Accept: text/event-stream`

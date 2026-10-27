@@ -91,12 +91,11 @@ const usage = (overrides: Record<string, { used: number; cap: number; remaining:
         plan: 'free',
         resetsAt: '2026-06-09T00:00:00.000Z',
         kinds: {
-            enrich: { used: 0, cap: 5, remaining: 5 },
-            generate: { used: 0, cap: 20, remaining: 20 },
-            suggest: { used: 0, cap: 60, remaining: 60 },
+            deck: { used: 0, cap: 2, remaining: 2 },
+            message: { used: 0, cap: 50, remaining: 50 },
+            action: { used: 0, cap: 5, remaining: 5 },
+            tip: { used: 0, cap: 100, remaining: 100 },
             import: { used: 0, cap: 20, remaining: 20 },
-            chat: { used: 0, cap: 50, remaining: 50 },
-            image: { used: 0, cap: 10, remaining: 10 },
             ...overrides,
         },
     } as never);
@@ -176,7 +175,7 @@ describe('chat.service / sendMessage', () => {
         expect(mockedRepo.renameAndTouch).toHaveBeenCalledWith('c', 'Hi Mnemio!', expect.any(Date));
         expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
         // budget recorded only after success
-        expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'chat');
+        expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'message');
     });
 
     it('on provider failure: keeps user msg, flips placeholder to partial with buffered content, does not record use', async () => {
@@ -481,7 +480,7 @@ describe('chat.service / sendMessage', () => {
         );
     });
 
-    it('with an attached image: meters under "image" (not "chat"), adds the image clause to the prompt, and attaches the image to only the newest turn', async () => {
+    it('with an attached image: counts as one message, adds the image clause to the prompt, and attaches the image to only the newest turn', async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([
@@ -503,9 +502,9 @@ describe('chat.service / sendMessage', () => {
 
         await sendMessage('u', 'c', '', () => undefined, { image });
 
-        // Metered as 'image', not 'chat'.
-        expect(mockedBudget.assertWithinBudget).toHaveBeenCalledWith('u', 'image');
-        expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'image');
+        // A photo is just part of the message — no separate limit.
+        expect(mockedBudget.assertWithinBudget).toHaveBeenCalledWith('u', 'message');
+        expect(mockedBudget.recordUse).toHaveBeenCalledWith('u', 'message');
         // System prompt gets the image-handling clause.
         expect(seenPrompt).toContain('attached an image');
         // Only the newest (last) turn carries the image; the prior DB turn doesn't.
