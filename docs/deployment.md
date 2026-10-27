@@ -28,6 +28,10 @@ Railway is the best fit. Reasons:
 - **Pricing.** Hobby plan: $5/mo flat + usage. For the MVP load (a few
   concurrent users, small DB), expect $10–25/mo end-to-end.
 
+### Chat cancellation and scaling
+
+Explicit chat cancellation is in-process. Production uses one Railway service instance. With more than one replica, route a conversation's requests to one instance (sticky routing) or move cancellation to shared state. Closing the HTTP request still aborts generation on the instance serving it.
+
 Alternatives considered:
 
 | Option | Verdict |
@@ -51,7 +55,7 @@ PORT=3001                          # Railway sets this; leave the var
 HOST=0.0.0.0
 LOG_LEVEL=info
 WEB_URL=https://app.mnemio.<your-domain>
-APP_URL=https://api.mnemio.<your-domain>
+APP_URL=https://app.mnemio.<your-domain>  # frontend origin for billing mail links
 ```
 
 **Database (Railway injects automatically if you use the add-on):**
@@ -77,7 +81,9 @@ MAIL_FROM="Mnemio <noreply@mnemio.app>"
 ```
 AI_PROVIDER=anthropic              # or `mock` for paid-down env
 ANTHROPIC_API_KEY=<sk-ant-...>
-ANTHROPIC_MODEL=claude-haiku-4-5-20251001
+ANTHROPIC_MODEL=claude-haiku-5-5
+ANTHROPIC_CHAT_EFFORT=low          # `off` for models without effort (claude-haiku-4-5)
+AI_CHAT_MAX_OUTPUT_TOKENS=8000     # includes thinking; long Ukrainian answers hit 4096
 MIMI_DECKS_PER_DAY_FREE=2         # new decks Mimi makes (topic, word list, photo)
 MIMI_DECKS_PER_DAY_PREMIUM=100    # Premium = unlimited for users; these are hidden abuse caps
 MIMI_MESSAGES_PER_DAY_FREE=50     # chat messages the user sends
@@ -239,7 +245,7 @@ of crash-looping the new image.
 | Item | Plan | Cost |
 |---|---|---|
 | Railway service + Postgres | Hobby | ~$5–10 |
-| Anthropic API (Claude Haiku 4.5) | Pay-as-you-go | ~$5–15 depending on usage |
+| Anthropic API (Claude Haiku 5.5) | Pay-as-you-go | ~$5–15 depending on usage |
 | Cloudflare R2 (when wired) | Free tier covers <10 GB | $0 |
 | Sentry | Free tier | $0 |
 | BetterUptime | Free tier | $0 |
@@ -267,3 +273,14 @@ In order:
 
 That's the MVP path. Multi-region, blue/green deploys, and zero-downtime
 schema changes are tracked in [`backlog.md`](./backlog.md).
+
+## Billing management and trial-ending mail
+
+Apply the appearance_and_billing migration with prisma migrate deploy before starting the service.
+The app registers an hourly UTC trial-ending job (0 \* \* \* \*); it is skipped in NODE_ENV=test and stopped when Fastify closes. It claims trialing subscriptions ending in the next 48 hours and in the future, excluding scheduled cancellations, using an atomic updateMany guarded by trialEndingEmailSentAt IS NULL. Multiple replicas cannot send the same reminder twice. The claim remains after mail failure, so failed sends are logged and need manual handling if a resend is desired. No new environment variables are required.
+
+Billing mail uses MAIL_PROVIDER (console or resend), MAIL_PROVIDER_API_KEY, MAIL_FROM and APP_URL for frontend /settings/billing links. Configure APP_URL to the public app origin for these links. Payment-failed and cancelled mail are deferred until after the webhook/API response; no mail runs inside the DB transaction. Paddle sends the receipt/invoice; Mnemio deliberately does not duplicate it.
+
+In the Paddle notification destination, retain subscription.created, subscription.activated, subscription.trialing, subscription.canceled, transaction.completed, and enable subscription.paused, subscription.resumed, subscription.updated, subscription.past_due, transaction.payment_failed, transaction.past_due, adjustment.created. Signature verification and the transactional event ledger remain mandatory.
+
+Paddle SDK 3.10 accepts full_next_billing_period for renewal plan changes. Interval-change semantics require a sandbox check before production rollout; the implementation follows the requested proration mode.

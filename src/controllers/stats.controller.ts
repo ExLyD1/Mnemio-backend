@@ -42,3 +42,9 @@ export const cardSeries = async (request: FastifyRequest, reply: FastifyReply) =
     const result = await service.cardSeries(request.currentUser.sub, range, tz);
     reply.send(result);
 };
+
+export const performance = async (request: FastifyRequest, reply: FastifyReply) => {
+    const { range } = rangeQuerySchema.parse(request.query);
+    const result = await service.performance(request.currentUser.sub, range);
+    reply.send(result);
+};

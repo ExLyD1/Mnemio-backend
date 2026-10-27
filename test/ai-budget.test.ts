@@ -1,110 +1,128 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-    assertWithinBudget,
+    capFor,
     metered,
-    recordUse,
+    release,
+    reserve,
     usageSnapshot,
 } from '../src/services/ai.budget.service.js';
-import { AiBudgetExceededError } from '../src/shared/errors.js';
-import * as aiUsageRepo from '../src/repositories/ai-usage.repository.js';
+import * as repo from '../src/repositories/ai-usage.repository.js';
+import * as entitlement from '../src/services/entitlement.service.js';
+import * as analytics from '../src/services/analytics.service.js';
 import { env } from '../src/config/env.js';
-import * as subscriptionRepo from '../src/repositories/subscription.repository.js';
+import { AiBudgetExceededError, ImportBudgetExceededError } from '../src/shared/errors.js';
 
-vi.mock('../src/repositories/ai-usage.repository.js', async () => {
-    const actual = await vi.importActual<typeof aiUsageRepo>(
-        '../src/repositories/ai-usage.repository.js',
-    );
-    return {
-        ...actual,
-        findTodayCount: vi.fn(),
-        findTodayCounts: vi.fn(),
-        recordUse: vi.fn(),
-    };
+vi.mock('../src/repositories/ai-usage.repository.js', async (actual) => ({
+    ...(await actual<typeof repo>()),
+    reserveUse: vi.fn(),
+    releaseUse: vi.fn(),
+    findTodayCounts: vi.fn(),
+}));
+vi.mock('../src/services/entitlement.service.js', () => ({ getPlan: vi.fn() }));
+vi.mock('../src/services/analytics.service.js', () => ({ track: vi.fn() }));
+beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(entitlement.getPlan).mockResolvedValue('free');
+    vi.mocked(repo.reserveUse).mockResolvedValue(1);
 });
 
-// The budget check looks up the user's plan (free vs premium caps) via the
-// subscription repository. Unmocked, that hit a real database and every test
-// here failed with a PrismaClientKnownRequestError. These tests cover the
-// free-tier caps, so the user is never entitled.
-vi.mock('../src/repositories/subscription.repository.js', async () => {
-    const actual = await vi.importActual<typeof subscriptionRepo>(
-        '../src/repositories/subscription.repository.js',
-    );
-    return { ...actual, isEntitled: vi.fn() };
+describe('caps', () => {
+    it('counts what the user sees, each kind with its own cap', () => {
+        expect(capFor('deck', 'free')).toBe(env.MIMI_DECKS_PER_DAY_FREE);
+        expect(capFor('message', 'free')).toBe(env.MIMI_MESSAGES_PER_DAY_FREE);
+        expect(capFor('action', 'free')).toBe(env.MIMI_ACTIONS_PER_DAY_FREE);
+        expect(capFor('tip', 'free')).toBe(env.MIMI_TIPS_PER_DAY);
+        expect(capFor('deck', 'premium')).toBe(env.MIMI_DECKS_PER_DAY_PREMIUM);
+        expect(capFor('message', 'premium')).toBe(env.MIMI_MESSAGES_PER_DAY_PREMIUM);
+        expect(capFor('action', 'premium')).toBe(env.MIMI_ACTIONS_PER_DAY_PREMIUM);
+    });
 });
 
-const mockedRepo = vi.mocked(aiUsageRepo);
-const mockedSubs = vi.mocked(subscriptionRepo);
-
-describe('ai.budget.service / assertWithinBudget', () => {
-    beforeEach(() => {
-        vi.resetAllMocks();
-        mockedSubs.isEntitled.mockResolvedValue(false);
-    });
-
-    it('passes when usage is below cap', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_ACTIONS_PER_DAY_FREE - 1);
-        await expect(assertWithinBudget('user-1', 'action')).resolves.toBeUndefined();
-    });
-
-    it('throws AI_BUDGET_EXCEEDED at exactly the cap', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_ACTIONS_PER_DAY_FREE);
-        await expect(assertWithinBudget('user-1', 'action')).rejects.toBeInstanceOf(
-            AiBudgetExceededError,
-        );
-    });
-
-    it('throws when over cap', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_ACTIONS_PER_DAY_FREE + 100);
-        await expect(assertWithinBudget('user-1', 'action')).rejects.toBeInstanceOf(
-            AiBudgetExceededError,
-        );
-    });
-
-    it('uses the right cap per kind (caps are not shared)', async () => {
-        // message cap > deck cap; usage at the deck cap should NOT trip messages.
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_DECKS_PER_DAY_FREE);
-        await expect(assertWithinBudget('u', 'message')).resolves.toBeUndefined();
-        await expect(assertWithinBudget('u', 'deck')).rejects.toBeInstanceOf(AiBudgetExceededError);
-    });
-
-    it('premium users get the premium caps', async () => {
-        mockedSubs.isEntitled.mockResolvedValue(true);
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_DECKS_PER_DAY_FREE);
-        await expect(assertWithinBudget('u', 'deck')).resolves.toBeUndefined();
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_DECKS_PER_DAY_PREMIUM);
-        await expect(assertWithinBudget('u', 'deck')).rejects.toBeInstanceOf(AiBudgetExceededError);
-    });
-
-    it('error payload carries kind + capPerDay so the FE can render "X of Y used"', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_DECKS_PER_DAY_FREE);
-        try {
-            await assertWithinBudget('u', 'deck');
-            expect.fail('should have thrown');
-        } catch (err) {
-            const payload = (err as AiBudgetExceededError).toPayload();
-            expect(payload.code).toBe('AI_BUDGET_EXCEEDED');
-            // resetsAt lets the FE say "resets at 3:00" instead of the
-            // assistant guessing "try again in a moment".
-            expect(payload.details).toMatchObject({
-                kind: 'deck',
-                capPerDay: env.MIMI_DECKS_PER_DAY_FREE,
+describe('atomic daily budget', () => {
+    it.each(['deck', 'message', 'action', 'tip', 'import'] as const)(
+        'reserves %s with the resolved plan cap',
+        async (kind) => {
+            vi.mocked(entitlement.getPlan).mockResolvedValue('premium');
+            await expect(reserve('u', kind)).resolves.toBeUndefined();
+            expect(repo.reserveUse).toHaveBeenCalledWith('u', kind, capFor(kind, 'premium'));
+            expect(repo.releaseUse).not.toHaveBeenCalled();
+        },
+    );
+    it.each(['deck', 'message', 'action', 'tip'] as const)(
+        'keeps the %s cap error contract',
+        async (kind) => {
+            vi.mocked(repo.reserveUse).mockResolvedValue(null);
+            await expect(reserve('u', kind)).rejects.toBeInstanceOf(AiBudgetExceededError);
+            await expect(reserve('u', kind)).rejects.toMatchObject({
+                code: 'AI_BUDGET_EXCEEDED',
+                details: {
+                    kind,
+                    capPerDay: capFor(kind, 'free'),
+                    resetsAt: expect.any(String),
+                },
             });
-            expect(new Date(payload.details?.resetsAt as string).getTime()).toBeGreaterThan(
-                Date.now(),
-            );
-        }
+            expect(repo.releaseUse).not.toHaveBeenCalled();
+        },
+    );
+    it('keeps the import error and excludes it from AI analytics', async () => {
+        vi.mocked(repo.reserveUse).mockResolvedValue(null);
+        await expect(reserve('u', 'import')).rejects.toBeInstanceOf(ImportBudgetExceededError);
+        expect(analytics.track).not.toHaveBeenCalled();
+    });
+    it.each([
+        ['deck', 'generate_deck'],
+        ['action', 'enrich_words'],
+        ['tip', 'suggestion'],
+    ] as const)('emits the existing analytics event once for %s', async (kind, feature) => {
+        vi.mocked(repo.reserveUse).mockResolvedValue(null);
+        await expect(reserve('u', kind)).rejects.toBeDefined();
+        expect(analytics.track).toHaveBeenCalledExactlyOnceWith('u', 'ai_cap_reached', {
+            ai_feature: feature,
+            cap_per_day: capFor(kind, 'free'),
+        });
+    });
+    it('sends no analytics event for messages', async () => {
+        vi.mocked(repo.reserveUse).mockResolvedValue(null);
+        await expect(reserve('u', 'message')).rejects.toBeDefined();
+        expect(analytics.track).not.toHaveBeenCalled();
+    });
+    it('releases a reservation through the repository', async () => {
+        await release('u', 'message');
+        expect(repo.releaseUse).toHaveBeenCalledExactlyOnceWith('u', 'message');
     });
 });
 
-describe('ai.budget.service / usageSnapshot', () => {
+describe('metered', () => {
+    it('keeps the reservation when the work succeeds', async () => {
+        await expect(metered('u', 'deck', async () => 'ok')).resolves.toBe('ok');
+        expect(repo.reserveUse).toHaveBeenCalledWith('u', 'deck', capFor('deck', 'free'));
+        expect(repo.releaseUse).not.toHaveBeenCalled();
+    });
+
+    it('gives the slot back when the work fails', async () => {
+        await expect(
+            metered('u', 'deck', async () => {
+                throw new Error('provider down');
+            }),
+        ).rejects.toThrow('provider down');
+        expect(repo.releaseUse).toHaveBeenCalledExactlyOnceWith('u', 'deck');
+    });
+
+    it('never runs the work when the cap is reached', async () => {
+        vi.mocked(repo.reserveUse).mockResolvedValue(null);
+        const work = vi.fn();
+        await expect(metered('u', 'deck', work)).rejects.toBeInstanceOf(AiBudgetExceededError);
+        expect(work).not.toHaveBeenCalled();
+        expect(repo.releaseUse).not.toHaveBeenCalled();
+    });
+});
+
+describe('usageSnapshot', () => {
     beforeEach(() => {
-        vi.resetAllMocks();
-        mockedRepo.findTodayCounts.mockResolvedValue({ deck: 1 });
+        vi.mocked(repo.findTodayCounts).mockResolvedValue({ deck: 1 });
     });
 
     it('free users get real caps and are not unlimited', async () => {
-        mockedSubs.isEntitled.mockResolvedValue(false);
         const snap = await usageSnapshot('u');
         expect(snap.kinds.deck).toEqual({
             used: 1,
@@ -112,57 +130,17 @@ describe('ai.budget.service / usageSnapshot', () => {
             remaining: env.MIMI_DECKS_PER_DAY_FREE - 1,
             unlimited: false,
         });
+        expect(snap.freeCaps.deck).toBe(env.MIMI_DECKS_PER_DAY_FREE);
     });
 
     it('Premium users are flagged unlimited so the UI shows no counter', async () => {
-        mockedSubs.isEntitled.mockResolvedValue(true);
+        vi.mocked(entitlement.getPlan).mockResolvedValue('premium');
         const snap = await usageSnapshot('u');
         expect(snap.kinds.deck.unlimited).toBe(true);
         expect(snap.kinds.message.unlimited).toBe(true);
         expect(snap.kinds.action.unlimited).toBe(true);
-    });
-});
-
-describe('ai.budget.service / metered', () => {
-    beforeEach(() => {
-        vi.resetAllMocks();
-        mockedSubs.isEntitled.mockResolvedValue(false);
-    });
-
-    it('counts the use only after the work succeeds', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(0);
-        await expect(metered('u', 'deck', async () => 'ok')).resolves.toBe('ok');
-        expect(mockedRepo.recordUse).toHaveBeenCalledWith('u', 'deck');
-    });
-
-    it('does not count a failed call', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(0);
-        await expect(
-            metered('u', 'deck', async () => {
-                throw new Error('provider down');
-            }),
-        ).rejects.toThrow('provider down');
-        expect(mockedRepo.recordUse).not.toHaveBeenCalled();
-    });
-
-    it('never runs the work when the cap is reached', async () => {
-        mockedRepo.findTodayCount.mockResolvedValue(env.MIMI_DECKS_PER_DAY_FREE);
-        const work = vi.fn();
-        await expect(metered('u', 'deck', work)).rejects.toBeInstanceOf(AiBudgetExceededError);
-        expect(work).not.toHaveBeenCalled();
-    });
-});
-
-describe('ai.budget.service / recordUse', () => {
-    beforeEach(() => {
-        vi.resetAllMocks();
-        mockedSubs.isEntitled.mockResolvedValue(false);
-    });
-
-    it('delegates to the repo upsert', async () => {
-        mockedRepo.recordUse.mockResolvedValue(3);
-        const next = await recordUse('user-1', 'action');
-        expect(next).toBe(3);
-        expect(mockedRepo.recordUse).toHaveBeenCalledWith('user-1', 'action');
+        expect(snap.kinds.import.unlimited).toBe(false);
+        // The free caps still ride along, so the UI can show what Free offers.
+        expect(snap.freeCaps.message).toBe(env.MIMI_MESSAGES_PER_DAY_FREE);
     });
 });

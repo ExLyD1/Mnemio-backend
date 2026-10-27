@@ -139,47 +139,44 @@ export const generateDeck = (
 
 // Result carries an optional `note` when the image had no readable/learnable
 // text — this is a normal outcome, not an error (empty cards, not a throw).
-export const deckFromImage = async (
+export const deckFromImage = (
     userId: string,
     input: DeckFromImageRequest & { image: AiImageInput },
     opts?: { onEvent?: (event: GenerateDeckEvent) => void },
-): Promise<{ draft: AiDeckDraft; note?: 'no_text' }> => {
-    await budget.assertWithinBudget(userId, 'deck');
-    const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
-    const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
-    const raw = await provider.deckFromImage(
-        { ...input, sourceLanguage },
-        onEvent ? { onEvent } : undefined,
-    );
-    await budget.recordUse(userId, 'deck');
-    const draft = withResolvedLangs(raw, sourceLanguage, input.targetLanguage);
-    return draft.cards.length === 0 ? { draft, note: 'no_text' } : { draft };
-};
+): Promise<{ draft: AiDeckDraft; note?: 'no_text' }> =>
+    budget.metered(userId, 'deck', async () => {
+        const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
+        const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
+        const raw = await provider.deckFromImage(
+            { ...input, sourceLanguage },
+            onEvent ? { onEvent } : undefined,
+        );
+        const draft = withResolvedLangs(raw, sourceLanguage, input.targetLanguage);
+        return draft.cards.length === 0 ? { draft, note: 'no_text' as const } : { draft };
+    });
 
-export const suggest = async (userId: string, input: SuggestInput, tz: string = DEFAULT_TZ) => {
-    await budget.assertWithinBudget(userId, 'tip');
-    const [dueCount, days] = await Promise.all([
-        srsRepo.countDueCards(userId),
-        activityRepo.allDays(userId),
-    ]);
-    const streak = computeStreak(days, tzDayKey(new Date(), tz));
+export const suggest = (userId: string, input: SuggestInput, tz: string = DEFAULT_TZ) =>
+    budget.metered(userId, 'tip', async () => {
+        const [dueCount, days] = await Promise.all([
+            srsRepo.countDueCards(userId),
+            activityRepo.allDays(userId),
+        ]);
+        const streak = computeStreak(days, tzDayKey(new Date(), tz));
 
-    const args: {
-        context: SuggestInput['context'];
-        deckId?: string;
-        dueCount: number;
-        streak: number;
-    } = {
-        context: input.context,
-        dueCount,
-        streak,
-    };
-    if (input.deckId !== undefined) {
-        args.deckId = input.deckId;
-    }
-    const result = await provider.suggest(args);
-    await budget.recordUse(userId, 'tip');
-    return result;
-};
+        const args: {
+            context: SuggestInput['context'];
+            deckId?: string;
+            dueCount: number;
+            streak: number;
+        } = {
+            context: input.context,
+            dueCount,
+            streak,
+        };
+        if (input.deckId !== undefined) {
+            args.deckId = input.deckId;
+        }
+        return provider.suggest(args);
+    });
 
 export const providerName = (): string => provider.name;

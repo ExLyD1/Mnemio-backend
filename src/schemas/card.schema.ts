@@ -33,8 +33,8 @@ const mediaUrl = (max: number) =>
         .nullish();
 
 export const cardBaseSchema = z.object({
-    word: z.string().trim().min(1, 'Word is required').max(120),
-    definition: z.string().trim().min(1, 'Definition is required').max(1000),
+    word: z.string().trim().min(1, 'Word is required').max(500),
+    definition: z.string().trim().min(1, 'Definition is required').max(2000),
     phonetic: optionalShortText(120),
     reading: optionalShortText(120),
     partOfSpeech: optionalShortText(40),

@@ -1,4 +1,82 @@
 import { prisma } from '../db/prisma.js';
+import type { Prisma } from '../../generated/prisma/client.js';
+
+const accessibleCardScope = (userId: string, deckId?: string): Prisma.CardWhereInput => ({
+    deck: { OR: [{ authorId: userId }, { isPublic: true }] },
+    ...(deckId ? { deckId } : { cardProgresses: { some: { userId } } }),
+});
+
+export const queueData = async (
+    userId: string,
+    deckId: string | undefined,
+    now: Date,
+    ahead: Date,
+    newLimit: number,
+    reviewLimit: number,
+) => {
+    const card = accessibleCardScope(userId, deckId);
+    const where = { userId, card };
+    const learning = { state: { in: ['learning', 'relearning'] } };
+    const orderBy = [{ nextReviewAt: 'asc' as const }, { cardId: 'asc' as const }];
+    // Deck title rides along so the review page needs no per-deck fetches.
+    const include = { card: { include: { deck: { select: { id: true, title: true } } } } };
+    const [dueLearning, reviews, learnAhead, newCards, newTotal] = await Promise.all([
+        prisma.cardProgress.findMany({
+            where: { ...where, ...learning, nextReviewAt: { lte: now } },
+            include,
+            orderBy,
+        }),
+        prisma.cardProgress.findMany({
+            where: { ...where, state: 'review', nextReviewAt: { lte: now } },
+            include,
+            orderBy,
+            take: reviewLimit,
+        }),
+        prisma.cardProgress.findMany({
+            where: {
+                ...where,
+                ...learning,
+                learningStepSecs: { lt: 86400 },
+                nextReviewAt: { gt: now, lte: ahead },
+            },
+            include,
+            orderBy,
+        }),
+        deckId
+            ? prisma.card.findMany({
+                  where: { ...card, cardProgresses: { none: { userId } } },
+                  include: { deck: { select: { id: true, title: true } } },
+                  orderBy: [{ position: 'asc' }, { id: 'asc' }],
+                  take: newLimit,
+              })
+            : [],
+        deckId
+            ? prisma.card.count({ where: { ...card, cardProgresses: { none: { userId } } } })
+            : 0,
+    ]);
+    return { dueLearning, reviews, learnAhead, newCards, newTotal };
+};
+export const newIntroducedToday = (userId: string, deckId: string | undefined, since: Date) =>
+    prisma.cardProgress.count({
+        where: { userId, card: accessibleCardScope(userId, deckId), createdAt: { gte: since } },
+    });
+
+export const nextFutureDue = (
+    userId: string,
+    deckId: string | undefined,
+    now: Date,
+    returnedIds: string[],
+) =>
+    prisma.cardProgress.findFirst({
+        where: {
+            userId,
+            card: accessibleCardScope(userId, deckId),
+            nextReviewAt: { gt: now },
+            cardId: { notIn: returnedIds },
+        },
+        orderBy: { nextReviewAt: 'asc' },
+        select: { nextReviewAt: true },
+    });
 
 export const findProgress = (userId: string, cardId: string) =>
     prisma.cardProgress.findUnique({ where: { userId_cardId: { userId, cardId } } });
@@ -15,31 +93,21 @@ export const upsertProgress = (data: {
     easeFactor: number;
     lastReviewedAt: Date | null;
     nextReviewAt: Date;
-    // Set-once: the caller passes the preserved existing value (or the new
-    // first-crossing time). Written verbatim so it is never cleared on lapse.
     masteredAt: Date | null;
-}) =>
-    prisma.cardProgress.upsert({
-        where: { userId_cardId: { userId: data.userId, cardId: data.cardId } },
-        update: {
-            repetitions: data.repetitions,
-            interval: data.interval,
-            easeFactor: data.easeFactor,
-            lastReviewedAt: data.lastReviewedAt,
-            nextReviewAt: data.nextReviewAt,
-            masteredAt: data.masteredAt,
-        },
-        create: {
-            userId: data.userId,
-            cardId: data.cardId,
-            repetitions: data.repetitions,
-            interval: data.interval,
-            easeFactor: data.easeFactor,
-            lastReviewedAt: data.lastReviewedAt,
-            nextReviewAt: data.nextReviewAt,
-            masteredAt: data.masteredAt,
-        },
+    state: string;
+    remainingSteps: number;
+    lapses: number;
+    leeched: boolean;
+    reps: number;
+    learningStepSecs: number;
+}) => {
+    const { userId, cardId, ...update } = data;
+    return prisma.cardProgress.upsert({
+        where: { userId_cardId: { userId, cardId } },
+        update,
+        create: data,
     });
+};
 
 export type DueCard = {
     cardId: string;
@@ -78,26 +146,6 @@ export const findDueCards = async (userId: string, limit: number): Promise<DueCa
          LIMIT ${limit}
     `;
 };
-
-/**
- * The full review queue in ONE query: every due card with its card row, its
- * progress and its deck title.
- *
- * The client used to build this itself — list every deck (paging at 100), then
- * GET each deck individually to find the cards — which was 20+ requests on each
- * /review and /dashboard mount.
- */
-export const findDueQueue = (userId: string, limit: number) =>
-    prisma.cardProgress.findMany({
-        where: {
-            userId,
-            nextReviewAt: { lte: new Date() },
-            card: { deck: { OR: [{ authorId: userId }, { isPublic: true }] } },
-        },
-        orderBy: { nextReviewAt: 'asc' },
-        take: limit,
-        include: { card: { include: { deck: { select: { id: true, title: true } } } } },
-    });
 
 // `deckId` comes along via the card relation. Without it the FE could not tell
 // which deck a progress row belonged to, so it fetched every deck individually

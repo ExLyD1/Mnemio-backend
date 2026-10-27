@@ -737,11 +737,15 @@ const runChatRound = async (params: {
     const started = Date.now();
     let buffer = '';
     try {
+        params.signal?.throwIfAborted();
         const stream = client().messages.stream({
             model: env.ANTHROPIC_MODEL,
             max_tokens: params.maxOutputTokens,
             system: params.system,
             messages: params.messages,
+            ...(env.ANTHROPIC_CHAT_EFFORT === 'off'
+                ? {}
+                : { output_config: { effort: env.ANTHROPIC_CHAT_EFFORT } }),
             ...(params.tools
                 ? {
                       tools: params.tools.defs as unknown as Anthropic.Tool[],
@@ -755,16 +759,20 @@ const runChatRound = async (params: {
                 : {}),
         });
 
-        if (params.signal) {
-            params.signal.addEventListener('abort', () => stream.abort(), { once: true });
-        }
+        const onAbort = () => stream.abort();
+        params.signal?.addEventListener('abort', onAbort, { once: true });
 
         stream.on('text', (delta) => {
             buffer += delta;
             params.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
         });
 
-        const finalMessage = await stream.finalMessage();
+        let finalMessage: Anthropic.Message;
+        try {
+            finalMessage = await stream.finalMessage();
+        } finally {
+            params.signal?.removeEventListener('abort', onAbort);
+        }
         logAiCall({
             op: params.op,
             model: env.ANTHROPIC_MODEL,
@@ -773,6 +781,11 @@ const runChatRound = async (params: {
             durationMs: Date.now() - started,
             stream: true,
         });
+        // The model declined mid-reply: any streamed text is cut off, so fail
+        // the turn (nothing was written) instead of saving a partial answer.
+        if (finalMessage.stop_reason === 'refusal') {
+            throw new AiProviderError('refusal', 'Model declined to answer');
+        }
         const toolBlock = finalMessage.content.find(
             (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
         );
@@ -791,6 +804,9 @@ const runChatRound = async (params: {
             rawAssistantBlocks: finalMessage.content,
         };
     } catch (err) {
+        if (err instanceof AiProviderError) {
+            throw err;
+        }
         throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
 };

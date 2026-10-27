@@ -32,7 +32,7 @@ unless it says so explicitly.
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
-| Billing | `GET /billing/subscription` · `POST /billing/portal` · `POST /billing/webhook` |
+| Billing | `GET /billing/subscription` - `POST /billing/portal` - `POST /billing/cancel` - `POST /billing/pause` - `POST /billing/resume` - `POST /billing/change-plan/preview` - `POST /billing/change-plan` - `GET /billing/payment-method-transaction` - `GET /billing/invoices` - `GET /billing/invoices/:id/pdf` - `POST /billing/webhook` |
 | Ops | `GET /health` · `GET /ready` (both un-prefixed) |
 
 ### Invariants the FE must respect
@@ -42,7 +42,7 @@ unless it says so explicitly.
 | 1 | Refresh token is an **HttpOnly cookie** `mnemio_refresh` on path `/api/v1/auth`. **Never in any body.** Send `credentials: 'include'` on every call. |
 | 2 | Access token in `localStorage`, sent as `Authorization: Bearer …`. |
 | 3 | On `{ code: 'AUTH_INVALID_TOKEN' }` → `POST /auth/refresh` (no body), retry once; on `{ code: 'AUTH_INVALID_REFRESH' }` → hard logout, never retry. |
-| 4 | `POST /srs/rate` body is `{ cardId, rating }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
+| 4 | `POST /srs/rate` body is `{ cardId, rating, tz? }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
 | 5 | Session XP is **server-computed** `correct*10 + 25`. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
@@ -156,7 +156,10 @@ type ApiError = {
 | `CHAT_BUSY` | `POST /chat/conversations/:id/messages` | 409 — a reply is already streaming in this conversation (another tab). Nothing was written; wait for it to finish. |
 | `PREMIUM_REQUIRED` | any gated endpoint | 403 — feature requires an active subscription. Show paywall/upgrade modal. |
 | `BILLING_NOT_CONFIGURED` | any `/billing/*` | 400 — Paddle keys absent on this deployment. Hide billing UI entirely. |
-| `BILLING_NO_SUBSCRIPTION` | `POST /billing/portal` | 404 — user has no subscription row. Treat the same as `plan: 'free'`. `GET /billing/subscription` returns `200 null` instead. |
+| `BILLING_NO_SUBSCRIPTION` | Billing management endpoints (including portal) | 404 — user has no subscription row. Treat the same as `plan: 'free'`. `GET /billing/subscription` returns `200 null` instead. |
+| `BILLING_INVALID_STATE` | Billing actions | 409 - action not allowed in the current state. |
+| `BILLING_PROVIDER_ERROR` | Billing management | 502 - Paddle request failed; no local subscription change. Provider code is logged, raw messages are not exposed. |
+| `BILLING_INVOICE_NOT_FOUND` | Invoice PDF | 404 - transaction belongs to another subscription/customer or has no nonzero invoice. |
 | `BILLING_PRICE_NOT_CONFIGURED` | FE checkout | Raised client-side when a plan has no Paddle price ID in `app/data/plans.ts`. |
 
 **429 envelope:** `@fastify/rate-limit` is now configured with our standard
@@ -210,16 +213,39 @@ type User = {
 type Plan = 'free' | 'premium';
 
 // Current subscription details. Returned by GET /billing/subscription.
-// Null / 404 means no subscription row exists — treat as plan: 'free'.
-type Subscription = {
-  id: string;
-  status: 'trialing' | 'active' | 'past_due' | 'canceled' | 'expired';
-  plan: 'monthly' | 'annual';
-  currentPeriodStart: string;   // ISO 8601 UTC
-  currentPeriodEnd: string;     // ISO 8601 UTC — access until this date on 'canceled'
-  cancelAtPeriodEnd: boolean;   // true when user canceled but period hasn't ended
-  trialEnd: string | null;      // ISO 8601 UTC, non-null only during 'trialing'
+// A 200 null response means no subscription row exists — treat as plan: 'free'.
+type Money = { amount: number; currency: string }; // major currency units
+type SubscriptionDto = {
+    id: string;
+    status: 'trialing' | 'active' | 'past_due' | 'paused' | 'canceled';
+    plan: 'monthly' | 'annual';
+    currentPeriodStart: string;
+    currentPeriodEnd: string;
+    cancelAtPeriodEnd: boolean;
+    trialEnd: string | null;
+    scheduledChange: {
+        action: 'cancel' | 'pause' | 'resume';
+        effectiveAt: string;
+        resumeAt: string | null;
+    } | null;
+    price: Money | null;
+    paymentMethod: {
+        brand: string;
+        last4: string;
+        expMonth: number | null;
+        expYear: number | null;
+        declineReason: string | null;
+    } | null;
+    pastDue: {
+        amount: number;
+        currency: string;
+        failedAt: string;
+        nextRetryAt: string | null;
+        graceEndsAt: string;
+    } | null;
+    scheduledPlanChange: 'monthly' | 'annual' | null;
 };
+type Subscription = SubscriptionDto;
 
 type DeckStats = {
   total: number;          // = cardCount
@@ -245,6 +271,7 @@ type Deck = {
   featured: boolean;           // P2: curator-flagged for Discover home
   copyCount: number;           // P2: # of times this deck has been cloned
   sourceDeckId: string | null; // P2: id of the public deck this was copied from
+  importedFrom: 'anki' | null; // set for decks created by POST /imports/apkg
   stats: DeckStats;            // P1: embedded per-deck stats
   createdAt: string;
   updatedAt: string;
@@ -337,6 +364,9 @@ type Preference = {
   learningLanguages: string[];
   avatarHue: number | null;    // 0..360
   mimiPlacement: 'left' | 'right' | null;
+  mascot: 'panda' | 'red' | 'pink' | 'axolotl'; // panda when stored null
+  palette: 'green' | 'violet' | 'pink'; // green when stored null
+  defaultStudyMode: 'srs' | 'know' | null;
   favorites: string[];         // deckIds
   updatedAt: string;
 };
@@ -866,23 +896,60 @@ Most-recent incomplete session (or `null`). Powers "Continue studying" CTA.
 ### SRS
 
 #### `POST /srs/rate`  *(auth)*
-Rate a card. Server runs SM-2 and upserts the user's `CardProgress`.
+Rate a card. Server runs Mnemio's SRS engine (`services/srs-engine.ts`,
+spec in `docs/srs-algorithm.md`, checked against transitions recorded from
+Anki) and upserts the user's `CardProgress`.
 ```ts
-// Request: { cardId: string; rating: 'again' | 'hard' | 'good' | 'easy' }
-// 200 Response: CardProgress & { newAchievements: Achievement[] }
-// newAchievements: any achievement(s) unlocked by this rating, empty
-// array otherwise — see "Achievements" below.
-// Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN
+// Request: { cardId: string; rating: 'again' | 'hard' | 'good' | 'easy'; tz?: string /* IANA; else X-Timezone header */ }
+// 200 Response: CardProgress & {
+//   newAchievements: Achievement[];
+//   requeueAt: string | null;   // set while the card is in an intraday (re)learning step
+//   previews: Previews | null;  // button previews for that next appearance
+// }
+// Errors: 404 CARD_NOT_FOUND · 403 CARD_FORBIDDEN · 400 VALIDATION_ERROR (bad tz)
 ```
-Rating → SM-2 quality mapping (matches the frontend composable). EF delta uses
-the standard SuperMemo-2 formula `ΔEF = 0.1 − (5−q)(0.08 + (5−q)·0.02)`, with EF
-floored at 1.3.
-| Rating | Quality | Effect |
-|---|---|---|
-| `again` | 0 | Failure path: repetitions=0, interval=1d, **EF −0.2** |
-| `hard`  | 2 | Treated as failure (q<3): same reset path, **EF −0.32** |
-| `good`  | 3 | Advance: repetitions++, interval = 1 / 6 / round(prev × prevEF), **EF −0.14** |
-| `easy`  | 5 | Advance same way, **EF +0.10** |
+`CardProgress` additionally carries `state: 'new'|'learning'|'review'|'relearning'`,
+`lapses`, `leeched`, `remainingSteps`, `reps`.
+
+Defaults (Anki-compatible): learning steps 1m 10m, relearning 10m, graduating 1d / easy 4d,
+starting ease 2.5 (min 1.3; again −0.2, hard −0.15, easy +0.15), easy bonus 1.3,
+hard ×1.2, lapse multiplier 0, max interval 36500d, leech at 8 lapses, review
+fuzz and learning-step fuzz (deterministic per card + reps). `hard` is a pass.
+Review days roll over at 04:00 in `tz`. `repetitions` = consecutive passing
+answers (again → 0), which keeps the mastery rule (`repetitions >= 3`).
+
+```ts
+type Previews = Record<'again'|'hard'|'good'|'easy', { kind: 'secs' | 'days'; value: number }>;
+```
+
+#### `GET /srs/queue`  *(auth)*
+The Anki-style study queue for "now", ready to render in one response (no
+client-side per-deck fan-out).
+```ts
+// Query: ?deckId?=uuid &extraNew?=0..100 &limit?=number(<=2000, due reviews; default 200)
+// Timezone: X-Timezone header (else ?tz), as everywhere else
+// 200 Response
+{
+  items: {
+    card: Card;                     // the full card, as GET /decks/:id returns it
+    state: SrsState;
+    dueAt: string | null;           // null for new cards
+    previews: Previews;
+    progress: CardProgress | null;  // includes deckId; null for new cards
+    deckId: string;
+    deckTitle: string;
+  }[];
+  counts: { new: number; learning: number; review: number };
+  nextDueAt: string | null;      // earliest future due beyond the returned items
+  newAvailable: number;          // new cards held back by the daily limit
+  limits: { newPerDay: number; newIntroducedToday: number };
+}
+// Errors: 404 DECK_NOT_FOUND · 403 CARD_FORBIDDEN · 400 VALIDATION_ERROR
+```
+With `deckId`: due (re)learning + due reviews + new cards by `position`
+(20/day per deck, + `extraNew`). Without: due cards across all accessible
+decks, no new cards. Order: due learning, then reviews with new cards mixed in
+evenly, then learning cards due within 20 minutes (learn-ahead).
 
 #### `GET /srs/due`  *(auth)*
 ```ts
@@ -905,27 +972,6 @@ floored at 1.3.
 ```
 `nextReviewAt ASC` (most-overdue first). Only cards with an existing
 `CardProgress` row appear (i.e. rated at least once and now due).
-
-#### `GET /srs/queue`  *(auth)*
-The review queue, ready to render: each due card with its full card row, its
-progress and its deck title. Prefer this over assembling the queue client-side
-— doing that meant listing every deck and then fetching each deck individually
-(20+ requests per page load), and any deck past the paging bound went missing
-from the queue.
-```ts
-// Query: ?limit?=number(<=2000)  default 500
-
-// 200 Response
-{
-  items: {
-    card: Card;                    // the full card, as GET /decks/:id returns it
-    progress: CardProgress;        // includes deckId
-    deckId: string;
-    deckTitle: string;
-  }[];
-}
-```
-Same due rule and ordering as `GET /srs/due`.
 
 #### `GET /srs/progress`  *(auth)*
 Full progress map for the user. Powers the FE's `srs.progress` store. Capped
@@ -976,8 +1022,8 @@ Lazy-creates an empty row on first access; never returns 404.
 ```
 
 #### `PATCH /users/me/preferences`  *(auth)*
-All fields optional; **at least one** required. `null` clears the field; arrays
-replace.
+All fields optional; **at least one** required. `null` clears nullable fields; arrays
+replace. Mascot/palette accept only enum strings (not null); invalid values return 400 `VALIDATION_ERROR`.
 ```ts
 // Request
 {
@@ -987,7 +1033,10 @@ replace.
   learningLanguages?: string[];    // ≤ 10 entries
   avatarHue?: number | null;       // 0..360
   mimiPlacement?: 'left' | 'right' | null;
+  mascot?: 'panda' | 'red' | 'pink' | 'axolotl';
+  palette?: 'green' | 'violet' | 'pink';
   favorites?: string[];            // deckIds, ≤ 500
+  defaultStudyMode?: 'srs' | 'know' | null; // null = ask every time
 }
 // 200 Response: Preference
 // Errors: 400 VALIDATION_ERROR
@@ -1489,6 +1538,7 @@ UI can show a limit before the user hits it:
 {
   plan: 'free' | 'premium';
   resetsAt: string;                 // ISO — next UTC midnight; counters are per UTC day
+  freeCaps: Record<'deck' | 'message' | 'action' | 'tip' | 'import', number>; // free-plan daily caps, even for Premium
   kinds: Record<
     'deck' | 'message' | 'action' | 'tip' | 'import',
     { used: number; cap: number; remaining: number; unlimited: boolean }
@@ -1505,7 +1555,27 @@ Free and premium caps are independently configurable via env
 (`MIMI_{DECKS,MESSAGES,ACTIONS}_PER_DAY_{FREE,PREMIUM}`, `MIMI_TIPS_PER_DAY`). The cap used is determined server-side from the caller's active
 subscription — the FE never sends plan information in the request body.
 
-### Imports  *(Quizlet + paste-text)*
+### Imports  *(Quizlet + paste-text + Anki .apkg)*
+
+#### `POST /imports/apkg`  *(auth, multipart/form-data)*
+Imports an Anki package (`collection.anki21b` → `anki21` → `anki2`, zstd and
+legacy media maps). Unlike the other imports it **persists**: one deck per Anki
+deck that has cards. Only fields Mnemio cards already have are filled (front/
+back from the rendered templates, tags, cloze type, first image/audio, reading/
+example/part of speech by field name); everything else is kept in
+`Card.sourceData` / `Deck.sourceData` (never returned by the API).
+```ts
+// Fields: file (the .apkg) · sourceLanguage · targetLanguage (as in POST /decks)
+// 201 Response
+{
+  decks: { id: string; title: string; cardCount: number }[];
+  cardsImported: number; cardsSkipped: number; mediaImported: number;
+  warnings: string[]; newAchievements: Achievement[];
+}
+// Errors: 400 IMPORT_APKG_INVALID · 413 IMPORT_APKG_TOO_LARGE (IMPORT_APKG_MAX_BYTES, default 100 MB)
+//         422 IMPORT_APKG_EMPTY · 422 IMPORT_APKG_UNSUPPORTED · 429 import budget
+```
+
 
 Stateless: nothing is persisted by these endpoints. They return
 `AiCardDraft[]` in the same shape as `/ai/enrich-words` so the FE reuses
@@ -1598,13 +1668,21 @@ first and sends the user's first message in a follow-up call.
 ```
 
 #### `GET /chat/conversations/:id`  *(auth)*
-Fetch the conversation header plus its most recent 50 messages, returned
-oldest-first. A message with `status: 'streaming'` means a reply is being
+`GET /api/v1/chat/conversations/:id?before=<cursor>` returns
+`{ conversation, messages, hasMore, before }`. Without `before` it returns the latest
+50 messages; each page is chronological. When `hasMore` is true, `before` is an
+opaque base64url cursor for the oldest returned message (`{ ts: createdAt, id }`).
+Pass it unchanged to fetch up to 50 strictly older messages. Timestamp ties use
+the id as a tiebreaker. The final page returns `hasMore: false, before: null`.
+Ownership is checked on every page (404 for another user's conversation);
+malformed cursors return 400 `INVALID_CURSOR`.
+
+A page is returned oldest-first. A message with `status: 'streaming'` means a reply is being
 generated right now: render the typing indicator and re-fetch until it
 settles, rather than treating an empty assistant row as a failure.
 ```ts
-// 200 Response: { conversation: Conversation; messages: ChatMessage[] }
-// Errors: 404 CHAT_NOT_FOUND
+// 200 Response: { conversation: Conversation; messages: ChatMessage[]; hasMore: boolean; before: string | null }
+// Errors: 400 INVALID_CURSOR; 404 CHAT_NOT_FOUND
 ```
 
 #### `PATCH /chat/conversations/:id`  *(auth)*
@@ -1809,10 +1887,24 @@ and offer the user a "retry" affordance.
 // 502 AI_VALIDATION_FAILED  — provider returned nothing usable
 ```
 
+**Interrupted replies and retries:** `POST /chat/conversations/:id/cancel` (body `{}`)
+requires ownership and returns 204 after requesting cancellation of the active
+reply in this API process. This explicit request also works through proxies
+that keep the upstream SSE connection open. Closing SSE directly cancels the active
+chat provider request; the turn also has a two-minute deadline. The partial
+reply is saved without charging the chat allowance. Reopening a conversation
+marks abandoned streaming placeholders older than three minutes as partial.
+An optional `retryOf` UUID replaces only the latest partial assistant reply
+and its matching user message. The original text must match, and a reply that
+already saved a deck cannot be retried. Invalid/repeated retries return
+`400 CHAT_RETRY_UNAVAILABLE`. Concurrent sends to one conversation return
+`409 CHAT_BUSY`. Chat route throttles are per authenticated user, so customers
+sharing an IP do not consume each other's allowance.
+
 **Context window:** the backend sends only the most recent
 `AI_CHAT_CONTEXT_TURNS` (default 20) `user`+`assistant` messages to the
-LLM, oldest first. Older messages remain in the DB and are returned by
-`GET /chat/conversations/:id` for display but don't ride along to Claude.
+LLM, oldest first. Older messages remain in the DB; `GET /chat/conversations/:id` returns the
+newest 50 for display and accepts `before` to load older pages (see the GET contract above).
 
 **Auto-title rule:** on the user's first message in a conversation, the
 title flips from `"New chat"` to the trimmed message (up to 60 chars, ellipsis
@@ -1964,13 +2056,84 @@ The backend processes:
 | Paddle event | Effect |
 |---|---|
 | `subscription.created` | Upsert subscription row (→ `trialing`/`active`) |
-| `subscription.activated` / `.trialing` / `.updated` / `.past_due` / `.paused` / `.resumed` | Update status, plan, period, `cancelAtPeriodEnd` |
-| `subscription.canceled` | Set status → `canceled`, clear `cancelAtPeriodEnd` |
-| `transaction.completed` | Analytics only (subscription row is owned by the `subscription.*` handlers) |
+| `subscription.activated` / `.trialing` / `.updated` / `.paused` / `.resumed` | Update status, plan, period, scheduled change, price and cancelAtPeriodEnd; clear failure totals when status leaves past_due. |
+| `subscription.canceled` | Persist status, scheduled change, price and period; clear past-due fields. |
+| `transaction.completed` | Revenue analytics, captured card, clear decline/past-due fields. No receipt email. |
+| `transaction.payment_failed` | Store eligible renewal/past-due transaction totals, failure date and error code; no status change or email. |
+| `transaction.past_due` | Store eligible transaction totals/failure date; no status change or email. |
+| `subscription.past_due` | Preserve known failed totals, store failure date when absent; claim one deferred Payment failed email per episode using pastDueEmailSentAt. |
+| `adjustment.created` | Ledger only; invoices read refund adjustments live. |
+
+Every subscription upsert with status past_due atomically claims pastDueEmailSentAt if null and returns one deferred Payment failed email. This includes subscription.updated, so notification order does not suppress mail. Leaving past_due clears the marker with the failure fields; transaction events do not reset the marker.
 
 All events are idempotent: each `event_id` is recorded in `paddle_webhook_events`
 inside the same transaction that applies it, so an at-least-once redelivery is a
 no-op. Unhandled event types are recorded and ignored, returning 200.
+
+#### In-app subscription management _(auth)_
+
+All paths below are under `/api/v1`. Subscription/customer IDs come only from the JWT user's stored row.
+Actions return 200 `SubscriptionDto` and persist Paddle's response before replying. Provider errors return 502 without local writes. Mutations/preview: 10 requests/minute per route; payment-method/invoice reads: 30/minute per route.
+
+| Endpoint | Body / response and allowed state |
+|---|---|
+| `POST /billing/cancel` | CancelInput below. Active/trialing without a scheduled cancel. Cancel next billing period; store reason, feedback and request time. Cancelled email is deferred until after response. |
+| `POST /billing/pause` | PauseInput below. Active or paused, no scheduled cancellation/plan. Pause next period; resume at currentPeriodEnd plus calendar months, clamped to month end. Clear a scheduled pause before replacing it. For an already paused subscription, schedule a resume on the new date; a date not in the future returns 409. |
+| `POST /billing/resume` | No body (with or without Content-Type: application/json) or `{}`. Remove a scheduled cancel/pause, or resume paused immediately. |
+| `POST /billing/change-plan/preview` | ChangePlanInput below. Different plan, active/trialing, no scheduled change/plan. Annual to monthly requires renewal. Trial upgrades now are allowed. Returns the preview below; no local changes. |
+| `POST /billing/change-plan` | Same body and rules as preview; returns SubscriptionDto. Renewal stores scheduledPlanChange until Paddle reports the target price. |
+| `GET /billing/payment-method-transaction` | Any non-canceled subscription; returns `{ transactionId: string }` for Paddle.js card update. |
+| `GET /billing/invoices` | Returns the list below, newest first, max 50. Fetches completed/past_due/billed/paid transactions for this subscription with live adjustments. |
+| `GET /billing/invoices/:id/pdf` | Returns `{ url: string }` only after verifying transaction subscription AND customer ownership and a nonzero invoice. |
+
+```ts
+// Request bodies
+// Any feedback longer than 500 characters is rejected.
+type CancelInput = {
+  reason: 'too_expensive'|'not_using'|'free_enough'|'missing_feature'|'not_working'|'other';
+  feedback?: string;
+};
+type PauseInput = { months: 1|2|3 };
+type ChangePlanInput = { plan: 'monthly'|'annual'; when: 'now'|'renewal' };
+```
+
+```ts
+// POST /billing/change-plan/preview response
+{
+    plan: 'monthly' | 'annual';
+    when: 'now' | 'renewal';
+    newPrice: Money;
+    credit: Money;
+    dueToday: Money;
+    nextBilledAt: string | null;
+}
+// credit is positive; all Money amounts are major currency units.
+// GET /billing/invoices response
+{
+    items: Array<{
+        id: string;
+        billedAt: string;
+        plan: 'monthly' | 'annual' | null;
+        amount: number;
+        currency: string;
+        status: 'paid' | 'failed' | 'refunded' | 'trial';
+        hasPdf: boolean;
+    }>;
+}
+```
+
+Invoice status: zero total means trial (no PDF); an approved refund adjustment means refunded;
+past_due means failed; otherwise paid. Unrecognized price IDs fall back to the price billing cycle (month = monthly, year = annual); otherwise invoice plan is null. Subscription mapping then falls back to the previous stored plan. PDF URLs are temporary Paddle URLs.
+
+`pastDue` is non-null only for past_due with known totals/date. Its graceEndsAt is exactly currentPeriodEnd (the entitlement boundary). The SDK data supplies no next retry date, so nextRetryAt is null. Scheduled cancellation leaves status active/trialing and preserves access until the period ends. Paused/canceled do not grant Premium.
+
+Plan changes use `prorated_immediately` for now and `full_next_billing_period` for renewal. SDK 3.10 accepts both; the billing/interval-change behavior of full_next_billing_period still needs Paddle sandbox verification.
+
+Billing errors: 400 BILLING_NOT_CONFIGURED, 404 BILLING_NO_SUBSCRIPTION, 409 BILLING_INVALID_STATE, 502 BILLING_PROVIDER_ERROR, 404 BILLING_INVOICE_NOT_FOUND. Zod validation uses the existing 400 VALIDATION_ERROR envelope. GET /billing/subscription retains 200 null when no row exists and reads the local mirror even without a Paddle key.
+
+Subscribe in the Paddle dashboard to the existing subscription.created/activated/trialing/canceled and transaction.completed events, plus **subscription.paused, subscription.resumed, subscription.updated, subscription.past_due, transaction.payment_failed, transaction.past_due, adjustment.created**.
+
+Billing mail uses APP_URL links to /settings/billing (card updates add ?action=update-card), MAIL_PROVIDER and MAIL_FROM. Mail and analytics run after the webhook ACK; failures are logged. The hourly trial-ending job claims future trials ending within 48 hours without a scheduled cancel, once per subscription. Failed mail sends keep the claim (at-most-once attempt; no automatic resend). **No Mnemio receipt email:** Paddle, our merchant of record, sends receipts/invoices already.
 
 #### Subscription lifecycle UX
 | `status` from `GET /billing/subscription` | What the FE should show |
@@ -1984,7 +2147,7 @@ no-op. Unhandled event types are recorded and ignored, returning 200.
 
 A pending cancellation is surfaced as `cancelAtPeriodEnd: true` while `status`
 stays `active` — show "Plan ends on {currentPeriodEnd}" and keep access. Access
-is revoked only when `status` actually becomes `canceled`.
+also stops at currentPeriodEnd; paused/canceled statuses do not grant access.
 
 ### Health (ops)
 
@@ -2207,8 +2370,8 @@ hide UI elements, but always handles `403 PREMIUM_REQUIRED` from the server as
 the authoritative gate.
 
 **`BILLING_NOT_CONFIGURED`:** when the backend is running without Paddle keys
-(local dev, staging without billing), every `/billing/*` call returns this
-code. Guard: before rendering any billing UI, check that a prior call didn't
+(local dev, staging without billing), provider-backed `/billing/*` calls return this
+code. GET /billing/subscription continues to read the local mirror. Guard: before rendering any billing UI, check that a prior call didn't
 return this error; if it did, hide all upgrade/subscription UI silently.
 
 ### Session flow

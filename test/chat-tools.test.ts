@@ -18,8 +18,8 @@ vi.mock('../src/services/ai.service.js', () => ({
     draftDeck: vi.fn(),
 }));
 vi.mock('../src/services/ai.budget.service.js', () => ({
-    assertWithinBudget: vi.fn(),
-    recordUse: vi.fn(),
+    reserve: vi.fn(),
+    release: vi.fn(),
     metered: vi.fn(),
 }));
 vi.mock('../src/services/decks.service.js', () => ({
@@ -736,18 +736,29 @@ describe('chat.tools / what the user is charged', () => {
         expect(mBudget.metered).toHaveBeenCalledTimes(1);
     });
 
-    it('adding cards costs one action, counted only after the cards are saved', async () => {
+    it('adding cards costs one action, reserved before the AI call and kept once saved', async () => {
         mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow());
         mAi.fillCards.mockResolvedValue(okCards);
 
         const r = await runAddCards('u1', 'deck-99', { words: ['agua'] });
 
         expect(r.ok).toBe(true);
-        expect(mBudget.assertWithinBudget).toHaveBeenCalledWith('u1', 'action');
-        expect(mBudget.recordUse).toHaveBeenCalledWith('u1', 'action');
-        expect(mCards.bulkCreate.mock.invocationCallOrder[0]).toBeLessThan(
-            mBudget.recordUse.mock.invocationCallOrder[0]!,
+        expect(mBudget.reserve).toHaveBeenCalledExactlyOnceWith('u1', 'action');
+        expect(mBudget.reserve.mock.invocationCallOrder[0]).toBeLessThan(
+            mAi.fillCards.mock.invocationCallOrder[0]!,
         );
+        expect(mBudget.release).not.toHaveBeenCalled();
+    });
+
+    it('gives the action back when the AI call fails', async () => {
+        mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow());
+        mAi.fillCards.mockRejectedValue(new Error('provider down'));
+
+        const r = await runAddCards('u1', 'deck-99', { words: ['agua'] });
+
+        expect(r.ok).toBe(false);
+        expect(mBudget.release).toHaveBeenCalledExactlyOnceWith('u1', 'action');
+        expect(mCards.bulkCreate).not.toHaveBeenCalled();
     });
 
     it('adding only duplicates costs nothing and spends no AI', async () => {
@@ -757,14 +768,13 @@ describe('chat.tools / what the user is charged', () => {
         const r = await runAddCards('u1', 'deck-99', { words: ['agua'] });
 
         expect(r).toMatchObject({ ok: false, reason: 'ALL_DUPLICATES' });
-        expect(mBudget.assertWithinBudget).not.toHaveBeenCalled();
+        expect(mBudget.reserve).not.toHaveBeenCalled();
         expect(mAi.fillCards).not.toHaveBeenCalled();
-        expect(mBudget.recordUse).not.toHaveBeenCalled();
     });
 
     it('with no actions left, refuses before any AI spend', async () => {
         mDecksRepo.findDeckById.mockResolvedValue(fakeDeckRow());
-        mBudget.assertWithinBudget.mockRejectedValue(
+        mBudget.reserve.mockRejectedValue(
             new AiBudgetExceededError('action', 5, '2026-06-11T00:00:00.000Z'),
         );
 

@@ -56,7 +56,11 @@ const envSchema = z
         //   'anthropic' → real LLM via @anthropic-ai/sdk (requires ANTHROPIC_API_KEY)
         AI_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
         ANTHROPIC_API_KEY: z.string().optional(),
-        ANTHROPIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
+        ANTHROPIC_MODEL: z.string().default('claude-haiku-5-5'),
+        // Thinking effort for chat replies. 'low' matched 'medium' on our chat
+        // eval at lower cost. 'off' omits the parameter — needed for models
+        // without effort support (e.g. claude-haiku-4-5), which reject it.
+        ANTHROPIC_CHAT_EFFORT: z.enum(['off', 'low', 'medium', 'high']).default('low'),
         // Card CONTENT (enrich / generate / deck-from-image) for decks with a
         // Ukrainian side. Haiku's Ukrainian came back with Russian words and
         // broken agreement, and cards are the product — a stronger model is
@@ -90,8 +94,9 @@ const envSchema = z
         AI_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
 
         // Chat — how many recent messages Mimi remembers, and the longest reply.
+        // The ceiling includes thinking tokens, so it sits well above reply length.
         AI_CHAT_CONTEXT_TURNS: z.coerce.number().int().positive().max(100).default(20),
-        AI_CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().max(8000).default(1024),
+        AI_CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().max(16000).default(8000),
 
         // External-import cap (Quizlet scrape + paste-text). Shares the ai_usage
         // table — same atomic upsert pattern, no extra schema needed.
@@ -99,6 +104,7 @@ const envSchema = z
         // Hard ceiling on response size + request timeout for the Quizlet fetch.
         IMPORT_FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
         IMPORT_MAX_BYTES: z.coerce.number().int().positive().default(2_000_000),
+        IMPORT_APKG_MAX_BYTES: z.coerce.number().int().positive().default(100_000_000),
 
         // Media storage. 'local' writes to MEDIA_DIR and serves under MEDIA_PUBLIC_BASE
         // via @fastify/static. For prod, swap to S3-compatible presigned PUTs (see

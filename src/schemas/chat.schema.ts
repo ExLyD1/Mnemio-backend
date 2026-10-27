@@ -46,3 +46,5 @@ export type CreateConversationInput = z.infer<typeof createConversationSchema>;
 export type RenameConversationInput = z.infer<typeof renameConversationSchema>;
 export type SendMessageInput = z.infer<typeof sendMessageSchema>;
 export type ListConversationsQuery = z.infer<typeof listConversationsQuerySchema>;
+
+export const listMessagesQuerySchema = z.object({ before: z.string().optional() });

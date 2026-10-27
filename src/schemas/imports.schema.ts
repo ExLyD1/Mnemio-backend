@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { deckBaseSchema } from './deck.schema.js';
+
+export const importApkgSchema = deckBaseSchema.pick({ sourceLanguage: true, targetLanguage: true });
+export type ImportApkgInput = z.infer<typeof importApkgSchema>;
 
 export const importQuizletSchema = z.object({
     // We don't enforce the quizlet.com host here — the parser does that and

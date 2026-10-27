@@ -10,6 +10,9 @@
 // the assistant message; on failure we send the reason to the model as a
 // tool_result so it can apologise rather than 500-ing the request.
 
+import * as writes from '../repositories/chat-tools.repository.js';
+import * as achievements from './achievements.service.js';
+import * as milestone from './milestone.service.js';
 import * as aiService from './ai.service.js';
 import * as budget from './ai.budget.service.js';
 import * as decksService from './decks.service.js';
@@ -271,7 +274,14 @@ const persistDeck = async (
     userId: string,
     meta: { title: string; description?: string; sourceLanguage: string; targetLanguage: string },
     cards: AiCardDraft[],
+    assistantMessageId?: string,
 ): Promise<{ attachment: ChatAttachment; words: string[] }> => {
+    if (assistantMessageId) {
+        const attachment = await writes.writeDeck({ userId, assistantMessageId, meta, cards });
+        void milestone.checkFirstDeck(userId);
+        await achievements.evaluate(userId, 'card_create').catch(() => []);
+        return { attachment, words: cards.map((c) => c.word) };
+    }
     const deck = await decksService.create(userId, {
         title: meta.title,
         description: meta.description ?? '',
@@ -390,7 +400,7 @@ const buildDeck = async (
         sourceLanguage: string;
         targetLanguage: string;
     },
-    ctx: { userMessage?: string },
+    ctx: { userMessage?: string; signal?: AbortSignal; assistantMessageId?: string },
 ): Promise<ToolResult> => {
     const { words, topic, sourceLanguage, targetLanguage } = p;
     if (words) {
@@ -400,10 +410,12 @@ const buildDeck = async (
             userMessage: ctx.userMessage,
             fallback: titleForWordList(input, targetLanguage),
         });
+        ctx.signal?.throwIfAborted();
         const persisted = await persistDeck(
             userId,
             { title, sourceLanguage, targetLanguage },
             enriched.cards,
+            ctx.assistantMessageId,
         );
         // eslint-disable-next-line no-console
         console.log('[chat.tools] create_deck persisted', {
@@ -421,6 +433,7 @@ const buildDeck = async (
         targetLanguage,
         ...(input.count ? { count: input.count } : {}),
     });
+    ctx.signal?.throwIfAborted();
     const persisted = await persistDeck(
         userId,
         {
@@ -438,6 +451,7 @@ const buildDeck = async (
             targetLanguage,
         },
         draft.cards,
+        ctx.assistantMessageId,
     );
     // eslint-disable-next-line no-console
     console.log('[chat.tools] create_deck persisted', {
@@ -453,7 +467,7 @@ export const runCreateDeck = async (
     input: CreateDeckToolInput,
     userLangs: UserLanguages,
     locale?: string | null,
-    ctx: { userMessage?: string } = {},
+    ctx: { userMessage?: string; signal?: AbortSignal; assistantMessageId?: string } = {},
 ): Promise<ToolResult> => {
     // Require at least one of words/topic — the JSON schema is loose so the
     // model doesn't get confused by oneOf, but we tighten here.
@@ -561,7 +575,7 @@ export const runAddCards = async (
     userId: string,
     deckId: string,
     input: AddCardsToolInput,
-    ctx: { userMessage?: string } = {},
+    ctx: { userMessage?: string; signal?: AbortSignal; assistantMessageId?: string } = {},
 ): Promise<ToolResult> => {
     const words = input.words && input.words.length > 0 ? input.words : null;
     const topic = input.topic?.trim() ? input.topic : null;
@@ -614,77 +628,102 @@ export const runAddCards = async (
             };
         }
 
-        // Charged as one action — checked before any AI spend, counted only
-        // once cards were actually added.
-        await budget.assertWithinBudget(userId, 'action');
-
-        if (words && fresh) {
-            skipped = words.filter((w) => existingKeys.has(compareKey(w)));
-            drafts = (
-                await aiService.fillCards({
-                    words: fresh,
-                    sourceLanguage,
-                    targetLanguage,
-                })
-            ).cards;
-        } else {
-            drafts = (
-                await generateDeckWithRetry(userId, {
-                    topic: topic ?? '',
-                    sourceLanguage,
-                    targetLanguage,
-                    ...(input.count ? { count: input.count } : {}),
-                    // The model can't see the deck, so it happily re-generates
-                    // words that are already in it.
-                    exclude: existing.map((c) => c.word),
-                })
-            ).cards;
-        }
-
-        // Final net: catches duplicates the generator produced anyway, and any
-        // the enrich step renamed.
-        const seen = new Set(existingKeys);
-        const cards: AiCardDraft[] = [];
-        for (const c of drafts) {
-            const key = compareKey(c.word);
-            if (seen.has(key)) {
-                skipped.push(c.word);
-                continue;
+        // Charged as one action — reserved before any AI spend, given back
+        // unless cards were actually added.
+        await budget.reserve(userId, 'action');
+        let added = false;
+        try {
+            if (words && fresh) {
+                skipped = words.filter((w) => existingKeys.has(compareKey(w)));
+                drafts = (
+                    await aiService.fillCards({
+                        words: fresh,
+                        sourceLanguage,
+                        targetLanguage,
+                    })
+                ).cards;
+            } else {
+                drafts = (
+                    await generateDeckWithRetry(userId, {
+                        topic: topic ?? '',
+                        sourceLanguage,
+                        targetLanguage,
+                        ...(input.count ? { count: input.count } : {}),
+                        // The model can't see the deck, so it happily re-generates
+                        // words that are already in it.
+                        exclude: existing.map((c) => c.word),
+                    })
+                ).cards;
             }
-            seen.add(key);
-            cards.push(c);
-        }
-        if (cards.length === 0) {
+
+            // Final net: catches duplicates the generator produced anyway, and any
+            // the enrich step renamed.
+            const seen = new Set(existingKeys);
+            const cards: AiCardDraft[] = [];
+            for (const c of drafts) {
+                const key = compareKey(c.word);
+                if (seen.has(key)) {
+                    skipped.push(c.word);
+                    continue;
+                }
+                seen.add(key);
+                cards.push(c);
+            }
+            if (cards.length === 0) {
+                return {
+                    ok: false,
+                    reason: 'ALL_DUPLICATES',
+                    details: { deck: deck.title, skipped },
+                };
+            }
+
+            ctx.signal?.throwIfAborted();
+            if (ctx.assistantMessageId) {
+                const attachment = await writes.writeDeck({
+                    userId,
+                    assistantMessageId: ctx.assistantMessageId,
+                    deckId,
+                    meta: { title: deck.title, sourceLanguage, targetLanguage },
+                    cards,
+                    skippedCount: skipped.length,
+                });
+                await achievements.evaluate(userId, 'card_create').catch(() => []);
+                added = true;
+                return {
+                    ok: true,
+                    attachment,
+                    words: cards.map((c) => c.word),
+                    ...(skipped.length > 0 ? { skipped } : {}),
+                };
+            }
+            await cardsService.bulkCreate(userId, deckId, {
+                cards: cards.map(cardFromDraft),
+            });
+
+            added = true;
+            // Re-read for the deck's new total (bulkCreate recomputes cardCount).
+            const updated = await decksRepo.findDeckById(deckId, userId);
             return {
-                ok: false,
-                reason: 'ALL_DUPLICATES',
-                details: { deck: deck.title, skipped },
+                ok: true,
+                attachment: {
+                    type: 'deck',
+                    deckId,
+                    title: deck.title,
+                    cardCount: updated?.cardCount ?? cards.length,
+                    action: 'appended',
+                    addedCount: cards.length,
+                    ...(skipped.length > 0 ? { skippedCount: skipped.length } : {}),
+                    sourceLanguage,
+                    targetLanguage,
+                },
+                words: cards.map((c) => c.word),
+                ...(skipped.length > 0 ? { skipped } : {}),
             };
+        } finally {
+            if (!added) {
+                await budget.release(userId, 'action');
+            }
         }
-
-        await cardsService.bulkCreate(userId, deckId, {
-            cards: cards.map(cardFromDraft),
-        });
-        await budget.recordUse(userId, 'action');
-
-        // Re-read for the deck's new total (bulkCreate recomputes cardCount).
-        const updated = await decksRepo.findDeckById(deckId, userId);
-        return {
-            ok: true,
-            attachment: {
-                type: 'deck',
-                deckId,
-                title: deck.title,
-                cardCount: updated?.cardCount ?? cards.length,
-                action: 'appended',
-                addedCount: cards.length,
-                ...(skipped.length > 0 ? { skippedCount: skipped.length } : {}),
-                sourceLanguage,
-                targetLanguage,
-            },
-            words: cards.map((c) => c.word),
-            ...(skipped.length > 0 ? { skipped } : {}),
-        };
     } catch (err) {
         return toFailure(err);
     }

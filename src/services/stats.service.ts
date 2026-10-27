@@ -479,3 +479,94 @@ export const cardSeries = async (
         points: buildCumulativeMasteredSeries(timestamps, tz, labels),
     };
 };
+
+// ---------- Performance (recall percentile vs other learners) ----------
+//
+// Each learner's recall = correct / reviews over the range, aggregated from
+// DailyActivity across ALL users. We only count learners with enough reviews so
+// a single lucky card can't top the chart, return the distribution as 10 buckets
+// for the curve, and gate on a minimum peer count so a percentile is meaningful.
+
+export type StatsPerformance = {
+    range: StatsRange;
+    userRecall: number; // 0..100, rounded
+    percentile: number; // 0..100 — share of peers strictly below the user
+    sampleSize: number; // eligible learners in the window (incl. the user)
+    buckets: number[]; // 10 counts: [0,10) … [90,100]
+    enoughData: boolean;
+};
+
+// A learner needs at least this many reviews in the window to be ranked.
+export const PERF_MIN_REVIEWS = 10;
+// And we need at least this many eligible learners before a percentile means anything.
+export const PERF_MIN_PEERS = 3;
+
+// Pure: turn per-user review/correct sums into the performance payload.
+export const buildPerformance = (
+    range: StatsRange,
+    userId: string,
+    rows: { userId: string; reviews: number; correct: number }[],
+): StatsPerformance => {
+    const recalls = rows
+        .filter((r) => r.reviews >= PERF_MIN_REVIEWS)
+        .map((r) => ({ userId: r.userId, recall: (r.correct / r.reviews) * 100 }));
+
+    const me = recalls.find((r) => r.userId === userId);
+    const userRecall = me ? Math.round(me.recall) : 0;
+    const sampleSize = recalls.length;
+
+    let below = 0;
+    for (const r of recalls) {
+        if (r.userId === userId) {
+            continue;
+        }
+        if (me && r.recall < me.recall) {
+            below += 1;
+        }
+    }
+    const peers = me ? sampleSize - 1 : 0;
+    const percentile = peers > 0 ? Math.round((below / peers) * 100) : 0;
+
+    const buckets = Array<number>(10).fill(0);
+    for (const r of recalls) {
+        const idx = Math.min(9, Math.max(0, Math.floor(r.recall / 10)));
+        buckets[idx] = (buckets[idx] ?? 0) + 1;
+    }
+
+    return {
+        range,
+        userRecall,
+        percentile,
+        sampleSize,
+        buckets,
+        enoughData: Boolean(me) && sampleSize >= PERF_MIN_PEERS,
+    };
+};
+
+export const performance = async (userId: string, range: StatsRange): Promise<StatsPerformance> => {
+    const days = rangeDays(range);
+
+    const where =
+        days === null
+            ? {}
+            : (() => {
+                  const [from, to] = dayWindowBounds(
+                      tzDayKeysEndingOn(new Date(), DEFAULT_TZ, days),
+                  );
+                  return { date: { gte: from, lte: to } };
+              })();
+
+    const grouped = await prisma.dailyActivity.groupBy({
+        by: ['userId'],
+        where,
+        _sum: { reviews: true, correct: true },
+    });
+
+    const rows = grouped.map((g) => ({
+        userId: g.userId,
+        reviews: g._sum.reviews ?? 0,
+        correct: g._sum.correct ?? 0,
+    }));
+
+    return buildPerformance(range, userId, rows);
+};
