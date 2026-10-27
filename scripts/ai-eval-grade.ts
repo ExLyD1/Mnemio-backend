@@ -250,14 +250,17 @@ type JudgeRow = {
 const judgeCache = readJsonl<JudgeRow>(join(OUT, 'judge.jsonl'));
 const judged = new Set(judgeCache.map((j) => j.key));
 
+// The headword always travels with its card: without it the judge has
+// nothing to check a definition against.
 const cardText = (c: Card | null) =>
     c?.definition.trim()
         ? {
+              word: c.word,
               definition: c.definition,
               example: c.example ?? '',
               exampleTranslation: c.exampleTranslation ?? '',
           }
-        : '(empty card)';
+        : { word: c?.word ?? '—', card: '(empty card)' };
 
 const runJudge = async (ledger: Ledger, client: Anthropic): Promise<void> => {
     for (const lang of ['en', 'uk'] as const) {
@@ -446,10 +449,16 @@ type ArmQuality = {
     meanUk: number;
     p95WallContent: number;
     p95TtftChat: number;
+    p95WallChat: number;
     countOk: string;
     dupCards: number;
 };
-const qualityFor = (arm: string, lang: Lang, opsFilter?: Set<string>): ArmQuality => {
+const qualityFor = (
+    arm: string,
+    lang: Lang,
+    opsFilter?: Set<string>,
+    side: 'candidate' | 'base' = 'candidate',
+): ArmQuality => {
     const rs = runs.filter(
         (r) => r.arm === arm && r.lang === lang && (!opsFilter || opsFilter.has(r.op)),
     );
@@ -466,13 +475,17 @@ const qualityFor = (arm: string, lang: Lang, opsFilter?: Set<string>): ArmQualit
         return a + keys.length - new Set(keys).size;
     }, 0);
     const words = rs.filter((r) => r.op.startsWith('enrich'));
-    const js = judgeCache.filter((j) => j.arm === arm && j.lang === lang);
-    const jsBase = judgeCache.filter((j) => j.lang === lang && j.baseline === arm);
-    const scores = js.length ? js.map((j) => j.candidate) : jsBase.map((j) => j.base);
+    // Pairwise: a candidate is scored against the baseline's verdicts from the
+    // SAME comparisons. The baseline row on its own has no judge figures —
+    // it was judged once per candidate, so pooling those would count it 3×.
+    const scores = judgeCache
+        .filter((j) => j.arm === arm && j.lang === lang)
+        .map((j) => (side === 'base' ? j.base : j.candidate));
     const chatTtft = rs
         .filter((r) => r.op.startsWith('chat_turn'))
         .flatMap((r) => callsOf(r).map((c) => c.ttftMs ?? NaN))
         .filter((n) => !Number.isNaN(n));
+    const chatWall = rs.filter((r) => r.op.startsWith('chat_turn')).map((r) => r.wallMs);
     return {
         schemaValid: content.length ? firstTry / content.length : NaN,
         criticalAuto: words.reduce((a, r) => a + autoCriticals(r).length, 0),
@@ -490,6 +503,7 @@ const qualityFor = (arm: string, lang: Lang, opsFilter?: Set<string>): ArmQualit
             95,
         ),
         p95TtftChat: pct(chatTtft, 95),
+        p95WallChat: pct(chatWall, 95),
         countOk: counted.length ? `${countHits}/${counted.length}` : '—',
         dupCards,
     };
@@ -508,10 +522,16 @@ for (const arm of ARMS) {
         const x = qualityFor(arm, lang);
         q[`${arm}|${lang}`] = x;
         say(
-            `| ${arm} | ${lang} | ${(x.schemaValid * 100).toFixed(1)}% | ${x.countOk} | ${x.dupCards} | ${x.criticalAuto} · ${x.criticalJudge} | ${Number.isNaN(x.meanScore) ? '—' : `${(x.meanScore * 100).toFixed(1)}%`} | ${Number.isNaN(x.meanUk) ? '—' : `${(x.meanUk * 100).toFixed(1)}%`} | ${(x.p95WallContent / 1000).toFixed(1)} | ${Number.isNaN(x.p95TtftChat) ? '—' : (x.p95TtftChat / 1000).toFixed(1)} |`,
+            `| ${arm} | ${lang} | ${(x.schemaValid * 100).toFixed(1)}% | ${x.countOk} | ${x.dupCards} | ${x.criticalAuto} · ${arm === BASELINE ? '—' : x.criticalJudge} | ${Number.isNaN(x.meanScore) ? '—' : `${(x.meanScore * 100).toFixed(1)}%`} | ${Number.isNaN(x.meanUk) ? '—' : `${(x.meanUk * 100).toFixed(1)}%`} | ${(x.p95WallContent / 1000).toFixed(1)} | ${Number.isNaN(x.p95TtftChat) ? '—' : (x.p95TtftChat / 1000).toFixed(1)} |`,
         );
     }
 }
+
+// Judge-derived figures for one side of the arm-vs-baseline comparisons.
+const judgeSide = (arm: string, lang: Lang, side: 'candidate' | 'base') => {
+    const q2 = qualityFor(arm, lang, new Set<string>(), side);
+    return { criticalJudge: q2.criticalJudge, meanScore: q2.meanScore, meanUk: q2.meanUk };
+};
 
 say();
 say(`## Pass bar vs ${BASELINE} (same cells only)`);
@@ -523,7 +543,9 @@ for (const arm of ARMS.filter((a) => a !== BASELINE)) {
             continue;
         }
         const c = qualityFor(arm, lang, ops);
-        const b = qualityFor(BASELINE, lang, ops);
+        // Baseline: automatic checks on the same cells, judge verdicts from
+        // the same pairwise comparisons as the candidate.
+        const b = { ...qualityFor(BASELINE, lang, ops), ...judgeSide(arm, lang, 'base') };
         const checks = [
             ['schema ≥98%', c.schemaValid >= 0.98],
             [
@@ -537,10 +559,17 @@ for (const arm of ARMS.filter((a) => a !== BASELINE)) {
             ...(lang === 'uk'
                 ? [['UK ≥ baseline', Number.isNaN(c.meanUk) ? null : c.meanUk >= b.meanUk] as const]
                 : []),
-            ['p95 latency ≤1.5×', c.p95WallContent <= 1.5 * b.p95WallContent],
+            ['p95 content latency ≤1.5×', c.p95WallContent <= 1.5 * b.p95WallContent],
+            ...(Number.isNaN(c.p95TtftChat)
+                ? []
+                : [['p95 chat TTFT ≤1.5×', c.p95TtftChat <= 1.5 * b.p95TtftChat] as const]),
         ] as const;
         say(
             `- **${arm} ${lang}**: ${checks.map(([n, ok]) => `${n} ${ok === null ? '(no judge yet)' : ok ? '✅' : '❌'}`).join(' · ')}`,
+        );
+        const pctOf = (n: number) => (Number.isNaN(n) ? '—' : `${(n * 100).toFixed(1)}%`);
+        say(
+            `  - judge, same comparisons: critical ${c.criticalJudge} vs ${b.criticalJudge} · mean ${pctOf(c.meanScore)} vs ${pctOf(b.meanScore)}${lang === 'uk' ? ` · UK ${pctOf(c.meanUk)} vs ${pctOf(b.meanUk)}` : ''} · auto critical ${c.criticalAuto} vs ${b.criticalAuto} · p95 content ${(c.p95WallContent / 1000).toFixed(1)}s vs ${(b.p95WallContent / 1000).toFixed(1)}s${Number.isNaN(c.p95TtftChat) ? '' : ` · p95 chat TTFT ${(c.p95TtftChat / 1000).toFixed(1)}s vs ${(b.p95TtftChat / 1000).toFixed(1)}s, chat total ${(c.p95WallChat / 1000).toFixed(1)}s vs ${(b.p95WallChat / 1000).toFixed(1)}s`}`,
         );
     }
 }
