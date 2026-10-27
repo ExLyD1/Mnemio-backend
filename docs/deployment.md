@@ -81,8 +81,14 @@ MAIL_FROM="Mnemio <noreply@mnemio.app>"
 ```
 AI_PROVIDER=anthropic              # or `mock` for paid-down env
 ANTHROPIC_API_KEY=<sk-ant-...>
-ANTHROPIC_MODEL=claude-haiku-5-5
-ANTHROPIC_CHAT_EFFORT=low          # `off` for models without effort (claude-haiku-4-5)
+ANTHROPIC_MODEL=claude-haiku-5-5          # chat replies + tips
+ANTHROPIC_CHAT_EFFORT=low                 # off | low | medium | high
+ANTHROPIC_CONTENT_MODEL_EN=               # non-UK cards; unset → ANTHROPIC_MODEL
+ANTHROPIC_CONTENT_EFFORT_EN=off
+ANTHROPIC_CONTENT_MODEL_UK=claude-sonnet-5  # cards with a Ukrainian side
+ANTHROPIC_CONTENT_EFFORT_UK=off
+ANTHROPIC_PHOTO_MODEL=                    # photo → deck; unset → content route by language
+ANTHROPIC_PHOTO_EFFORT=off
 AI_CHAT_MAX_OUTPUT_TOKENS=8000     # includes thinking; long Ukrainian answers hit 4096
 MIMI_DECKS_PER_DAY_FREE=2         # new decks Mimi makes (topic, word list, photo)
 MIMI_DECKS_PER_DAY_PREMIUM=100    # Premium = unlimited for users; these are hidden abuse caps

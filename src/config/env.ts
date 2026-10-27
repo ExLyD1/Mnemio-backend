@@ -25,6 +25,14 @@ const parseCsvOrigins = (value: string | undefined, ctx: z.RefinementCtx): strin
     return origins;
 };
 
+// Thinking effort for one AI route. 'off' sends no effort parameter.
+const effort = z.enum(['off', 'low', 'medium', 'high']);
+// A model id that may be left blank (`KEY=` in .env counts as unset).
+const optionalModel = z
+    .string()
+    .optional()
+    .transform((v) => (v?.trim() ? v.trim() : undefined));
+
 const envSchema = z
     .object({
         NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -56,17 +64,28 @@ const envSchema = z
         //   'anthropic' → real LLM via @anthropic-ai/sdk (requires ANTHROPIC_API_KEY)
         AI_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
         ANTHROPIC_API_KEY: z.string().optional(),
+        // Model per route. Each route has its own effort; 'off' omits the
+        // parameter, and it is also dropped for models that reject it (e.g.
+        // claude-haiku-4-5). Unset routes fall back as noted — the defaults
+        // reproduce the routing that existed before these were split out.
+        //
+        // Chat replies and Mimi's tips.
         ANTHROPIC_MODEL: z.string().default('claude-haiku-5-5'),
-        // Thinking effort for chat replies. 'low' matched 'medium' on our chat
-        // eval at lower cost. 'off' omits the parameter — needed for models
-        // without effort support (e.g. claude-haiku-4-5), which reject it.
-        ANTHROPIC_CHAT_EFFORT: z.enum(['off', 'low', 'medium', 'high']).default('low'),
-        // Card CONTENT (enrich / generate / deck-from-image) for decks with a
-        // Ukrainian side. Haiku's Ukrainian came back with Russian words and
-        // broken agreement, and cards are the product — a stronger model is
-        // worth the extra cost on the few calls that write them. Chat replies
-        // stay on ANTHROPIC_MODEL.
+        // 'low' matched 'medium' on our chat eval at lower cost.
+        ANTHROPIC_CHAT_EFFORT: effort.default('low'),
+        // Card CONTENT (word lists, topic decks, chat create_deck / add_cards)
+        // when neither side is Ukrainian. Unset → ANTHROPIC_MODEL.
+        ANTHROPIC_CONTENT_MODEL_EN: optionalModel,
+        ANTHROPIC_CONTENT_EFFORT_EN: effort.default('off'),
+        // Card content for decks with a Ukrainian side. Haiku 4.5's Ukrainian
+        // came back with Russian words and broken agreement, and cards are the
+        // product — a stronger model is worth the extra cost here.
         ANTHROPIC_CONTENT_MODEL_UK: z.string().default('claude-sonnet-5'),
+        ANTHROPIC_CONTENT_EFFORT_UK: effort.default('off'),
+        // Photo → deck. Unset → the content route for the deck's languages
+        // (model AND effort); when set, ANTHROPIC_PHOTO_EFFORT applies.
+        ANTHROPIC_PHOTO_MODEL: optionalModel,
+        ANTHROPIC_PHOTO_EFFORT: effort.default('off'),
 
         // What a user can ask Mimi for each day. Free users see these three
         // ("2 decks · 50 messages · 5 card additions left today"), and only when
