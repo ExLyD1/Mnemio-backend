@@ -13,7 +13,7 @@ subscriptions via Paddle). **65 endpoints under `/api/v1`** + `GET /health` +
 `GET /ready` + static `/media/*`. Nothing in this document is "coming later"
 unless it says so explicitly.
 
-### Endpoint inventory (68 under `/api/v1`)
+### Endpoint inventory (69 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -26,6 +26,7 @@ unless it says so explicitly.
 | Dashboard | `GET /dashboard` |
 | Achievements | `GET /achievements` · `GET /achievements/unseen` · `POST /achievements/ack` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
+| Library | `GET /library` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
 | AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/classify-subject` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
@@ -46,7 +47,7 @@ unless it says so explicitly.
 | 5 | Session XP is **server-computed** `correct*10 + 25`. The +25 is awarded **at most once per `runId`**, to the first session of the run that completes; sessions without `runId` always get it. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
-| 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
+| 8 | Every list response is `{ items, nextCursor }`; the paged ones (`GET /decks`, `GET /library`, Discover) add `total`. Cursor is opaque. |
 | 9 | Ownership is checked at the repo layer — listing/**modifying** someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. **Exception (public decks):** an authenticated non-owner may **read, study, and rate** a deck with `isPublic = true` — `GET /decks/:id`, `POST /sessions`, and `POST /srs/rate` succeed. SRS is keyed by `(requesterId, cardId)`, so each studier has fully independent progress and a viewer never touches the owner's. **Writes stay owner-only** (`PATCH`/`DELETE` deck, all card create/update/delete). Flipping `isPublic = false` re-locks read/study/rate immediately (back to `404`); previously-written viewer SRS rows persist but become unreachable. |
 | 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
 | 11 | Every auth response (`login`, `verify-email`, `refresh`, `me`) now carries `welcome: { hasDeck, hasSession, hasReviewed }` — use it for dashboard variant selection instead of fanning out three count probes from the FE. |
@@ -1280,6 +1281,60 @@ never restarts at 0 for a user who already had mastered cards.
 > final value can sit slightly above a deck's *current* `stats.mastered` when
 > cards have lapsed — intended. Historical `masteredAt` (backfilled) is
 > approximate; masteries recorded from the migration onward are exact.
+
+### Library
+
+#### `GET /library`  *(auth)*
+Every deck the requester is **learning or owns**: the decks they authored, plus
+any deck — theirs or someone else's public one — they have studied enough of.
+`GET /decks` is unchanged and stays "decks I authored".
+```ts
+// Query
+?scope?='all' | 'my' | 'learning'     // default 'all'
+&subject?=Subject                     // one of the 12
+&lang?=string                         // ISO 639-1 (aliases normalize); matches targetLanguage
+&cursor?=string&limit?=number(<=50)   // default 24
+
+// 200 Response
+{
+  items: LibraryDeck[];
+  nextCursor: string | null;
+  total: number;                      // matches scope + subject + lang
+  facets?: LibraryFacets;             // FIRST PAGE ONLY (no cursor)
+}
+
+type LibraryDeck = DeckWithAuthor & {
+  isOwner: boolean;
+  studiedCount: number;               // distinct cards the requester studied (0 if never)
+  lastStudiedAt: string | null;       // ISO 8601; null = never studied (own decks only)
+  // deck.stats is the REQUESTER's progress, as GET /decks/:id
+};
+
+type LibraryFacets = {
+  scopes: { all: number; my: number; learning: number };    // ignore scope/subject/lang
+  subjects: { subject: Subject; count: number }[];          // within scope; taxonomy order; zeros omitted
+  languages: { lang: string; count: number }[];             // within scope, decks with subject='languages'
+};
+// Errors: 400 VALIDATION_ERROR (scope / subject / lang / limit) · 400 INVALID_CURSOR
+```
+Membership:
+- **my** — `authorId = requester`.
+- **learning** — the requester has studied `>= LEAST(5, cardCount)` distinct
+  cards of the deck (so a fully studied 3-card deck counts; an empty deck never
+  does), **and** the deck is still readable by them (theirs, or `isPublic`).
+- **all** — my ∪ learning.
+
+"Studied" means any mode: an SRS rating, progress through a flashcard /
+multiple-choice round (the cards before `cardIndex`), or a completed round —
+including browse mode (SRS off), abandoned rounds and review runs. A card
+counts once however often it is studied. It is a best-effort side effect: it
+never changes XP, streaks, daily activity, achievements or `/stats/*`.
+
+Sort: `COALESCE(lastStudiedAt, deck.createdAt) DESC, id DESC` — most recently
+studied first, and a just-created own deck lands on top. The cursor is opaque
+(keyset on that key). A deck another user makes private (or deletes) leaves the
+requester's Learning on the next load; their progress is kept, so it returns
+if the deck becomes public again.
 
 ### Discover  *(P2)*
 

@@ -142,3 +142,23 @@ export const toPublicCard = (card: CardModel): PublicCard => ({
     createdAt: card.createdAt.toISOString(),
     updatedAt: card.updatedAt.toISOString(),
 });
+
+// `GET /library` item: a deck with its author, the REQUESTER's stats, and how
+// far the requester got in it.
+export type PublicLibraryDeck = PublicDeckWithAuthor & {
+    isOwner: boolean;
+    studiedCount: number;
+    lastStudiedAt: string | null;
+};
+
+export const toLibraryDeck = (
+    deck: DeckModel & { author: { id: string; username: string | null; fullName: string | null } },
+    viewerId: string,
+    stats: DeckStats | undefined,
+    progress: { studiedCount: number | null; lastStudiedAt: Date | null },
+): PublicLibraryDeck => ({
+    ...toPublicDeckWithAuthor(deck, stats),
+    isOwner: deck.authorId === viewerId,
+    studiedCount: progress.studiedCount ?? 0,
+    lastStudiedAt: progress.lastStudiedAt ? progress.lastStudiedAt.toISOString() : null,
+});
