@@ -14,7 +14,7 @@
 >
 > Two linked changes:
 > **A. Categories.** Every deck gets one of **12 fixed subjects**. A language
-> deck's language is its `targetLanguage`, taken from **one fixed list of 29
+> deck's language is its `targetLanguage`, taken from **one fixed list of 28
 > codes**. Both are enforced on every write path, existing rows are backfilled,
 > and labels are localized in en and uk. Ukrainian displays as **"UA"**
 > everywhere a code is shown; the internal code stays `uk`.
@@ -30,7 +30,7 @@
    Discover copy. Discover and the library filter on exactly those 12, shown
    with localized labels.
 2. Language decks are faceted by `targetLanguage` from one backend-served list
-   of 29 codes. The FE form, Discover and the library all use that list with
+   of 28 codes. The FE form, Discover and the library all use that list with
    localized names.
 3. All existing decks are cleaned up with deterministic rules first, then a
    one-off AI pass for whatever the rules couldn't place.
@@ -76,7 +76,7 @@
   (`discover.repository.ts:91`, `pages/discover/index.vue:54`). `/discover/[subject]`
   slugifies raw values. The `lang` filter matches source OR target. Discover
   language chips are 7 hardcoded English names (`useDiscover.ts:25`).
-- The backend accepts 29 language codes (`src/shared/lang.ts`). The FE form
+- The backend accepts 28 language codes (`src/shared/lang.ts`). The FE form
   offers 12 (`app/schemas/deck.ts:3`). Codes are displayed `toUpperCase()`, so
   Ukrainian reads "UK" (`decks/[id]/index.vue:41`, `ai.vue:558`,
   `ai/DeckCard.vue:51`, `studyCard.ts:33,42`).
@@ -113,7 +113,7 @@ separate classification call**. If the model's value is missing or invalid,
 the rules mapping (`normalizeSubject` → `inferSubject`) decides.
 
 **C3 — Language facet.** A deck with `subject = languages` is filterable by its
-`targetLanguage`. Every language picker offers the same 29 codes with localized
+`targetLanguage`. Every language picker offers the same 28 codes with localized
 names (en + uk).
 
 **C4 — Discover uses the fixed list.** Category tiles = the 12 subjects with
@@ -128,7 +128,7 @@ deck) that filter by `targetLanguage`. The same applies to the public SEO pages
 
 **C5 — Existing decks cleaned.** After deploy and the backfill script, every
 deck has `subject ∈ 12` and `subjectSource ≠ 'pending'`. Every deck's
-`targetLanguage` and `sourceLanguage` is in the 29 (or the script's report
+`targetLanguage` and `sourceLanguage` is in the 28 (or the script's report
 lists it, with reasons).
 
 **C6 — "UA".** Wherever a language or locale code is shown in caps (locale
@@ -272,9 +272,9 @@ Old → new mapping (`src/shared/subjects.ts`, `LEGACY_SUBJECT_MAP`):
   `subjectSource = 'ai'`. On any AI failure it uses the rule fallback with
   `subjectSource = 'rules'`.
 - Second pass: decks whose `sourceLanguage`/`targetLanguage` is **not** in the
-  29 (left untouched by `20260924…normalize_language_codes`). It asks the model
+  28 (left untouched by `20260924…normalize_language_codes`). It asks the model
   to detect the language from the card words and the definitions. A confident
-  answer inside the 29 is written. Anything else is listed in the report, not
+  answer inside the 28 is written. Anything else is listed in the report, not
   guessed.
 - Flags: `--dry-run`, `--limit N`. **Dry-run is a hard no-write mode.** It
   makes the AI calls and prints every proposed change (deck id, title, old →
@@ -314,7 +314,7 @@ type LibraryDeck = DeckWithAuthor & {
   `400 VALIDATION_ERROR`. On PATCH, `null` → 400.
 - Omitted on create: `languages` if `sourceLanguage ≠ targetLanguage`, else
   `other` (`subjectSource = 'rules'`). An explicit value → `subjectSource = 'user'`.
-- `sourceLanguage` / `targetLanguage` are unchanged: they accept the 29 codes
+- `sourceLanguage` / `targetLanguage` are unchanged: they accept the 28 codes
   (and aliases), normalized to ISO 639-1.
 
 ### 3. `GET /public/taxonomy` — **new** *(public, cacheable 1 h)*
@@ -323,7 +323,7 @@ type LibraryDeck = DeckWithAuthor & {
 // 200
 {
   subjects: Subject[];                        // display order
-  languages: string[];                        // the 29 ISO 639-1 codes
+  languages: string[];                        // the 28 ISO 639-1 codes
   legacySubjects: Record<string, Subject>;    // old slug → new, for 301s
 }
 ```
@@ -401,7 +401,7 @@ Rate limit: 30/min per user.
   constrain it with `enum`. The server runs `normalizeSubject()` on model
   output, with the rule fallback on a miss.
 - Chat `create_deck` gains `subject` (enum = the 12) and `targetLanguage` (enum =
-  the 29) as tool input, so the model picks both in the same call. There is no
+  the 28) as tool input, so the model picks both in the same call. There is no
   separate classification call. If either value is missing or invalid:
   `subject` → `normalizeSubject()`, then `inferSubject(src, tgt)`.
   `targetLanguage` → the existing `wordsLanguage` / profile fallback.
@@ -456,7 +456,7 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
 - `UiCategorySelect` stays as the picker. Options come from the taxonomy plus
   i18n. An optional `allowAuto` prop adds an "Auto-detect" first option
   (value `''`).
-- i18n (`en.json` + `uk.json`): `subject.<12>`, `lang.<29>`,
+- i18n (`en.json` + `uk.json`): `subject.<12>`, `lang.<28>`,
   `library.{tabAll,tabMy,tabLearning,byAuthor,emptyLearningTitle,emptyLearningMsg,
   browseDiscover,emptyFiltered,clearFilters,loadError}`, `deck.subjectAuto`.
   Remove `deck.category.*` and `deck.filterMine`.
@@ -491,7 +491,7 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
 
 - `pages/decks/create.vue`: options from the taxonomy. The default is the
   inferred suggestion (C1) until the user touches the picker. Languages come
-  from the taxonomy (29).
+  from the taxonomy (28).
 - `components/deck/Form.vue` and `pages/decks/[id]/edit.vue`: the same lists.
   Stop running `normCategory` on the stored value; the server value is already
   valid.
@@ -586,7 +586,7 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
 | Discover `lang` semantics change breaks a caller | Only caller is our FE (same release); contract updated; public SEO pages use the same param |
 | SEO: category URLs change | 301 legacy → new; sitemap updated; canonical on new URLs |
 | Classify endpoint abused as free AI | Output is one enum value; input capped (title ≤ 120, ≤ 20 words); 30/min rate limit; usage logged |
-| FE i18n missing a `lang.<code>` key | `langLabel` falls back to `displayLangCode(code)`; validate script checks both catalogs have all 29 + 12 keys |
+| FE i18n missing a `lang.<code>` key | `langLabel` falls back to `displayLangCode(code)`; validate script checks both catalogs have all 28 + 12 keys |
 
 ## Test plan
 
@@ -622,7 +622,7 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
 - `test/discover-categories.test.ts`: all 12 returned in order, including
   zeros. `languages` counts only public language decks. `lang` filter matches
   `targetLanguage` only.
-- `test/public-taxonomy.test.ts`: shape, 12 subjects, 29 languages, and a
+- `test/public-taxonomy.test.ts`: shape, 12 subjects, 28 languages, and a
   legacy map covering all 30 old slugs. Cache header set.
 - `test/subjects-classify.test.ts` (mock provider): an enum answer → `ai`. A
   provider error or timeout → `rules`. An off-list answer → normalized or
@@ -647,7 +647,7 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
    `UA`.
 2. `/decks/create`: change languages en→uk; the subject suggestion flips to
    Мови/Languages. Pick Science, save, and edit: Science is preselected. The
-   language picker lists 29 localized names.
+   language picker lists 28 localized names.
 3. Anki import with Auto-detect → the deck lands with a sensible subject. With
    an explicit Law → Law.
 4. AI import dialog (create mode) on Auto → subject set. Generate a deck from
@@ -707,7 +707,7 @@ Each task is independently committable and leaves both repos green.
    `--limit`, language pass, report). Run a dry-run against a prod snapshot
    and record the result in "Decisions made during build".
 10. **FE: taxonomy + subjects utils + i18n.** `api/taxonomy.ts`,
-    `useTaxonomy`, `utils/subjects.ts` (`displayLangCode`), the 12 + 29 + library
+    `useTaxonomy`, `utils/subjects.ts` (`displayLangCode`), the 12 + 28 + library
     keys in `en.json`/`uk.json`, remove `deckCategories.ts`. Fix all importers.
 11. **FE: "UA" display.** Replace the `toUpperCase()` call sites with
     `displayLangCode`, and localize the `deckVm` tag.
