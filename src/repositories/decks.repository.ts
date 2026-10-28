@@ -64,6 +64,16 @@ export const listDeckTitles = (ownerId: string, max = 500) =>
 // be the owner.
 export const findDeckByIdUnscoped = (id: string) => prisma.deck.findUnique({ where: { id } });
 
+// Of `ids`, the decks the user may study: their own, or anyone's public deck.
+// Missing and private-not-owned decks are simply absent from the result.
+export const findReadableDeckIds = async (userId: string, ids: string[]): Promise<string[]> => {
+    const rows = await prisma.deck.findMany({
+        where: { id: { in: ids }, OR: [{ authorId: userId }, { isPublic: true }] },
+        select: { id: true },
+    });
+    return rows.map((r) => r.id);
+};
+
 export type DeckCreateData = {
     title: string;
     description: string;

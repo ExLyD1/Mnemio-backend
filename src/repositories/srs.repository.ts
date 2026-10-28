@@ -1,21 +1,32 @@
 import { prisma } from '../db/prisma.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 
-const accessibleCardScope = (userId: string, deckId?: string): Prisma.CardWhereInput => ({
+// Which decks a queue covers: one deck (its new cards included), a set of decks
+// (due only), or every accessible deck the user has progress in.
+export type DeckScope = string | string[] | undefined;
+
+export const accessibleCardScope = (userId: string, scope: DeckScope): Prisma.CardWhereInput => ({
     deck: { OR: [{ authorId: userId }, { isPublic: true }] },
-    ...(deckId ? { deckId } : { cardProgresses: { some: { userId } } }),
+    ...(typeof scope === 'string'
+        ? { deckId: scope }
+        : {
+              ...(scope ? { deckId: { in: scope } } : {}),
+              cardProgresses: { some: { userId } },
+          }),
 });
 
 export const queueData = async (
     userId: string,
-    deckId: string | undefined,
+    scope: DeckScope,
     now: Date,
     ahead: Date,
     newLimit: number,
     reviewLimit: number,
 ) => {
-    const card = accessibleCardScope(userId, deckId);
+    const card = accessibleCardScope(userId, scope);
     const where = { userId, card };
+    // New cards only ever come from a single-deck scope.
+    const single = typeof scope === 'string';
     const learning = { state: { in: ['learning', 'relearning'] } };
     const orderBy = [{ nextReviewAt: 'asc' as const }, { cardId: 'asc' as const }];
     // Deck title rides along so the review page needs no per-deck fetches.
@@ -42,7 +53,7 @@ export const queueData = async (
             include,
             orderBy,
         }),
-        deckId
+        single
             ? prisma.card.findMany({
                   where: { ...card, cardProgresses: { none: { userId } } },
                   include: { deck: { select: { id: true, title: true } } },
@@ -50,27 +61,22 @@ export const queueData = async (
                   take: newLimit,
               })
             : [],
-        deckId
+        single
             ? prisma.card.count({ where: { ...card, cardProgresses: { none: { userId } } } })
             : 0,
     ]);
     return { dueLearning, reviews, learnAhead, newCards, newTotal };
 };
-export const newIntroducedToday = (userId: string, deckId: string | undefined, since: Date) =>
+export const newIntroducedToday = (userId: string, scope: DeckScope, since: Date) =>
     prisma.cardProgress.count({
-        where: { userId, card: accessibleCardScope(userId, deckId), createdAt: { gte: since } },
+        where: { userId, card: accessibleCardScope(userId, scope), createdAt: { gte: since } },
     });
 
-export const nextFutureDue = (
-    userId: string,
-    deckId: string | undefined,
-    now: Date,
-    returnedIds: string[],
-) =>
+export const nextFutureDue = (userId: string, scope: DeckScope, now: Date, returnedIds: string[]) =>
     prisma.cardProgress.findFirst({
         where: {
             userId,
-            card: accessibleCardScope(userId, deckId),
+            card: accessibleCardScope(userId, scope),
             nextReviewAt: { gt: now },
             cardId: { notIn: returnedIds },
         },

@@ -926,7 +926,10 @@ type Previews = Record<'again'|'hard'|'good'|'easy', { kind: 'secs' | 'days'; va
 The Anki-style study queue for "now", ready to render in one response (no
 client-side per-deck fan-out).
 ```ts
-// Query: ?deckId?=uuid &extraNew?=0..100 &limit?=number(<=2000, due reviews; default 200)
+// Query: ?deckId?=uuid
+//        &deckIds?=uuid,uuid,…   // 1–50, comma-separated, deduped; NOT with deckId
+//        &extraNew?=0..100       // only meaningful with deckId; ignored otherwise
+//        &limit?=number(<=2000, due reviews; default 200)
 // Timezone: X-Timezone header (else ?tz), as everywhere else
 // 200 Response
 {
@@ -944,10 +947,15 @@ client-side per-deck fan-out).
   newAvailable: number;          // new cards held back by the daily limit
   limits: { newPerDay: number; newIntroducedToday: number };
 }
-// Errors: 404 DECK_NOT_FOUND · 403 CARD_FORBIDDEN · 400 VALIDATION_ERROR
+// Errors: 404 DECK_NOT_FOUND · 403 CARD_FORBIDDEN (deckId only) · 400 VALIDATION_ERROR
 ```
 With `deckId`: due (re)learning + due reviews + new cards by `position`
-(20/day per deck, + `extraNew`). Without: due cards across all accessible
+(20/day per deck, + `extraNew`). With `deckIds`: the same due cards as the
+unscoped queue, narrowed to those decks (no new cards; `limit` caps reviews
+across the selection). If **any** id is missing or private-not-owned → `404
+DECK_NOT_FOUND` (not 403, so private decks can't be enumerated). `deckId` +
+`deckIds`, more than 50 ids, an empty list or a non-uuid → `400
+VALIDATION_ERROR`. Without either: due cards across all accessible
 decks, no new cards. Order: due learning, then reviews with new cards mixed in
 evenly, then learning cards due within 20 minutes (learn-ahead).
 
