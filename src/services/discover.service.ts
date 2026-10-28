@@ -78,10 +78,7 @@ export const featured = async (): Promise<{ items: PublicDeckWithAuthor[] }> => 
     return { items: await attachStats(null, rows) };
 };
 
-export const categories = async (): Promise<{ items: { subject: string; count: number }[] }> => {
-    const items = await discoverRepo.categories();
-    return { items };
-};
+export const categories = (): Promise<discoverRepo.DiscoverCategories> => discoverRepo.categories();
 
 export const copy = async (viewerId: string, sourceDeckId: string): Promise<PublicDeck> => {
     const source = await discoverRepo.findPublicDeckById(sourceDeckId);

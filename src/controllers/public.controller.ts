@@ -27,3 +27,9 @@ export const sitemapDecks = async (_request: FastifyRequest, reply: FastifyReply
     const result = await publicService.sitemapDecks();
     reply.send(result);
 };
+
+export const taxonomy = async (_request: FastifyRequest, reply: FastifyReply) => {
+    // Changes only on deploy; let browsers and the SSR layer reuse it.
+    reply.header('Cache-Control', 'public, max-age=3600');
+    reply.send(publicService.taxonomy());
+};

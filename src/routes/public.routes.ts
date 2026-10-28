@@ -27,6 +27,11 @@ const publicRoutes = async (fastify: FastifyInstance) => {
         publicController.discoverCategories,
     );
     fastify.get(
+        '/public/taxonomy',
+        { config: { rateLimit: browseLimit } },
+        publicController.taxonomy,
+    );
+    fastify.get(
         '/public/decks/:id',
         { config: { rateLimit: browseLimit } },
         publicController.deckById,

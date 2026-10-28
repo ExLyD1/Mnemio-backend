@@ -13,7 +13,7 @@ subscriptions via Paddle). **65 endpoints under `/api/v1`** + `GET /health` +
 `GET /ready` + static `/media/*`. Nothing in this document is "coming later"
 unless it says so explicitly.
 
-### Endpoint inventory (66 under `/api/v1`)
+### Endpoint inventory (67 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -30,7 +30,7 @@ unless it says so explicitly.
 | AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
-| Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
+| Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/taxonomy` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
 | Billing | `GET /billing/subscription` - `POST /billing/portal` - `POST /billing/cancel` - `POST /billing/pause` - `POST /billing/resume` - `POST /billing/change-plan/preview` - `POST /billing/change-plan` - `GET /billing/payment-method-transaction` - `GET /billing/invoices` - `GET /billing/invoices/:id/pdf` - `POST /billing/webhook` |
 | Ops | `GET /health` · `GET /ready` (both un-prefixed) |
@@ -1292,7 +1292,8 @@ Paginated public-deck catalog. Same opaque cursor model as `GET /decks`.
 ?cursor?=string
 &limit?=number(<=50)             // default 20
 &q?=string                       // case-insensitive search on title/description
-&lang?=string                    // ISO 639-1; matches sourceLanguage OR targetLanguage
+&lang?=string                    // ISO 639-1 (aliases normalize; unknown → 400); matches
+                                 // targetLanguage ONLY — the language being learned
 &subject?=Subject                // one of the 12 fixed subjects; anything else → 400
 &sort?='popular' | 'recent'      // default 'recent'
 
@@ -1310,10 +1311,15 @@ Curator-flagged decks (`featured = true`), max 12. Sorted by `updatedAt DESC`.
 ```
 
 #### `GET /discover/categories`  *(auth)*
-Distinct `subject` values across the public catalog, with deck counts. Top 50
-by count.
+Public-catalog deck counts per fixed subject, plus the language facet.
 ```ts
-// 200 Response: { items: { subject: string; count: number }[] }
+// 200 Response
+{
+  items: { subject: Subject; count: number }[];   // always all 12, taxonomy order,
+                                                  // zero counts included (FE hides empties)
+  languages: { lang: string; count: number }[];   // targetLanguage of public decks with
+                                                  // subject='languages', count > 0, by count DESC
+}
 ```
 
 #### `POST /decks/:id/copy`  *(auth)*
@@ -1975,7 +1981,7 @@ on the sitemap.
 ```ts
 // Same query string as authed GET /discover/decks:
 //   ?cursor?=string&limit?=number(<=50)&q?=string&lang?=string
-//   &subject?=string&sort?=popular|recent   (default 'recent')
+//   &subject?=Subject&sort?=popular|recent   (default 'recent')
 // 200 Response: PageWithTotal<DeckWithAuthor>
 ```
 
@@ -1984,10 +1990,23 @@ Per-user mastery is omitted (no viewer concept). `stats.mastered`,
 `stats.masteredPct` still come from the deck's own `cardCount`.
 
 #### `GET /public/discover/categories`  *(public)*
+Identical body to the authed `GET /discover/categories` (`{ items, languages }`).
+
+#### `GET /public/taxonomy`  *(public, `Cache-Control: public, max-age=3600`)*
+The single source of the fixed lists. Labels are the FE's job (`subject.<slug>`,
+`lang.<code>` in en + uk).
 ```ts
-// 200 Response: { items: { subject: string; count: number }[] }
+// 200 Response
+{
+  subjects: Subject[];                      // the 12, display order
+  languages: string[];                      // the 28 supported ISO 639-1 codes
+  legacySubjects: Record<string, Subject>;  // pre-002 category slug → new slug
+}
 ```
-Identical body to the authed variant.
+**SEO rule:** every legacy `/discover/<old-subject>` URL must answer an HTTP
+**301** to `/discover/<mapped slug>` (FE, server-side in the SSR pass; look the
+slug up, lower-cased, in `legacySubjects`). The sitemap is generated from
+`subjects` only — never from deck data or legacy keys.
 
 #### `GET /public/decks/:id`  *(public)*
 ```ts

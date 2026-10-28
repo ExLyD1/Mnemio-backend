@@ -74,9 +74,13 @@ describe('public.service / listPublicDecks', () => {
 
 describe('public.service / publicCategories', () => {
     it('passes the repo result through unchanged', async () => {
-        mDisc.categories.mockResolvedValue([{ subject: 'languages', count: 12 }]);
+        const result = {
+            items: [{ subject: 'languages' as const, count: 12 }],
+            languages: [{ lang: 'de', count: 12 }],
+        };
+        mDisc.categories.mockResolvedValue(result);
         const r = await publicCategories();
-        expect(r.items).toEqual([{ subject: 'languages', count: 12 }]);
+        expect(r).toEqual(result);
     });
 });
 
