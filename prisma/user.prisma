@@ -75,6 +75,9 @@ model StudySession {
   countsEasy      Int      @default(0)
   revisitCardIds  String[] @default([])
   durationMs      Int      @default(0)
+  // Groups the per-deck sessions written by one review run (client UUID). The
+  // +25 completion bonus is paid once per run; null for deck study.
+  runId           String?
   startedAt       DateTime @default(now())
   endedAt         DateTime?
   completedAt     DateTime @default(now())
@@ -85,5 +88,6 @@ model StudySession {
   deck Deck @relation(fields: [deckId], references: [id], onDelete: Cascade)
 
   @@index([userId, status])
+  @@index([userId, runId])
   @@map("study_sessions")
 }

@@ -134,6 +134,7 @@ type ApiError = {
 | `DECK_NOT_FOUND` / `CARD_NOT_FOUND` / `SESSION_NOT_FOUND` | resource routes | 404 page or toast |
 | `DECK_EMPTY` | `POST /sessions` | Disable "Study" CTA when `cardCount === 0` |
 | `SESSION_NOT_ACTIVE` | `POST /sessions/:id/complete` | Refetch session, sync FE state |
+| `SESSION_NO_CARDS` | `POST /sessions` | None of the `cardIds` belong to this deck — a client bug; show a generic error |
 | `AI_TOO_MANY_WORDS` | `POST /ai/enrich-words` | "Max {max} words per batch — got {got}." `details.{max,got}` |
 | `AI_BUDGET_EXCEEDED` | any `/ai/*` | "Daily AI quota reached." `details.kind`, `details.capPerDay` |
 | `AI_PROVIDER_ERROR` | any `/ai/*` | Generic "AI is having a moment — try again." `details.providerStatus` for logs |
@@ -339,6 +340,7 @@ type StudySession = {
   counts: SessionCounts;       // P1: per-grade tally
   revisitCardIds: string[];    // P1: cards the user flagged to revisit
   durationMs: number;          // P1: ms spent in this session
+  runId: string | null;        // groups the per-deck sessions of one review run
   startedAt: string;
   endedAt: string | null;
   completedAt: string;
@@ -820,11 +822,15 @@ session is flipped to `incomplete` before the new one becomes `active`.
 //   deckId: string;
 //   mode: 'flashcard' | 'multiple_choice' | 'srs';
 //   srsEnabled?: boolean;      // default true; false = "Just browse" (no SM-2 grading)
+//   cardIds?: string[];        // 1–1000 uuids: the cards this round will show, in order.
+//                              // Intersected with the deck's cards; none left → 400 SESSION_NO_CARDS.
+//                              // Absent = the whole deck.
+//   runId?: string;            // uuid; groups the sessions of one review run (see below)
 // }
 
-// 201 Response: StudySession  (status: 'active', cardIds: deck snapshot,
-//                              cardIndex: 0, correct: 0)
-// Errors: 404 DECK_NOT_FOUND · 400 DECK_EMPTY
+// 201 Response: StudySession  (status: 'active', cardIds: deck snapshot or the
+//                              requested subset, cardIndex: 0, correct: 0)
+// Errors: 404 DECK_NOT_FOUND · 400 DECK_EMPTY · 400 SESSION_NO_CARDS
 ```
 
 #### `PATCH /sessions/:id`  *(auth)*

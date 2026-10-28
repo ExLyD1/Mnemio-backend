@@ -23,6 +23,7 @@ export type PublicSession = {
     counts: SessionCounts;
     revisitCardIds: string[];
     durationMs: number;
+    runId: string | null;
     startedAt: string;
     endedAt: string | null;
     completedAt: string;
@@ -49,6 +50,7 @@ export const toPublicSession = (s: StudySessionModel): PublicSession => ({
     },
     revisitCardIds: s.revisitCardIds,
     durationMs: s.durationMs,
+    runId: s.runId,
     startedAt: s.startedAt.toISOString(),
     endedAt: s.endedAt ? s.endedAt.toISOString() : null,
     completedAt: s.completedAt.toISOString(),

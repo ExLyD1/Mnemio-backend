@@ -18,6 +18,9 @@ export const createSessionSchema = z.object({
     // rolled straight into DailyActivity and inflated streaks and stats.
     // Always intersected with the deck's real cards server-side.
     cardIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
+    // Client UUID shared by the per-deck sessions of one review run, so the +25
+    // completion bonus is paid once per run (see sessions.service.complete).
+    runId: z.string().uuid().optional(),
 });
 
 export const updateSessionSchema = z

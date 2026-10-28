@@ -16,6 +16,7 @@ export const startSession = (data: {
     mode: string;
     cardIds: string[];
     srsEnabled: boolean;
+    runId: string | null;
 }) =>
     prisma.$transaction(async (tx) => {
         await tx.studySession.updateMany({
@@ -30,6 +31,7 @@ export const startSession = (data: {
                 status: 'active',
                 cardIds: data.cardIds,
                 srsEnabled: data.srsEnabled,
+                runId: data.runId,
             },
         });
     });

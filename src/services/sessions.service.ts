@@ -59,6 +59,7 @@ export const start = async (ownerId: string, input: CreateSessionInput): Promise
         mode: input.mode,
         cardIds: sessionCardIds,
         srsEnabled: input.srsEnabled,
+        runId: input.runId ?? null,
     });
     return toPublicSession(session);
 };

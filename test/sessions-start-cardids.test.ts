@@ -31,6 +31,33 @@ const ids = [
 ];
 const FOREIGN = '33333333-3333-4333-8333-333333333333';
 
+const baseRow = {
+    id: 'sess-1',
+    userId: OWNER,
+    deckId: DECK,
+    mode: 'flashcard',
+    cardIds: [],
+    index: 0,
+    correct: 0,
+    status: 'active',
+    srsEnabled: false,
+    durationMs: 0,
+    countsAgain: 0,
+    countsHard: 0,
+    countsGood: 0,
+    countsEasy: 0,
+    revisitCardIds: [],
+    startedAt: new Date(),
+    endedAt: null,
+    completedAt: new Date(),
+    xpAwarded: 0,
+    cardsStudied: 0,
+    correctAnswers: 0,
+    runId: null,
+};
+
+const RUN = '44444444-4444-4444-8444-444444444444';
+
 const startedAs = () =>
     (mockedSessions.startSession.mock.calls[0]?.[0] as { cardIds: string[] }).cardIds;
 
@@ -43,29 +70,7 @@ describe('sessions.service / start — cardIds', () => {
             isPublic: false,
         } as never);
         mockedSessions.listDeckCardIds.mockResolvedValue(ids.map((id) => ({ id })) as never);
-        mockedSessions.startSession.mockResolvedValue({
-            id: 'sess-1',
-            userId: OWNER,
-            deckId: DECK,
-            mode: 'flashcard',
-            cardIds: [],
-            index: 0,
-            correct: 0,
-            status: 'active',
-            srsEnabled: false,
-            durationMs: 0,
-            countsAgain: 0,
-            countsHard: 0,
-            countsGood: 0,
-            countsEasy: 0,
-            revisitCardIds: [],
-            startedAt: new Date(),
-            endedAt: null,
-            completedAt: new Date(),
-            xpAwarded: 0,
-            cardsStudied: 0,
-            correctAnswers: 0,
-        } as never);
+        mockedSessions.startSession.mockResolvedValue(baseRow as never);
     });
 
     // The regression: a 3-card "study unknown" round recorded the whole deck as
@@ -105,6 +110,26 @@ describe('sessions.service / start — cardIds', () => {
         expect(startedAs()).toEqual([ids[1]]);
     });
 
+    it('stores the runId and returns it', async () => {
+        mockedSessions.startSession.mockImplementation(
+            async (data) => ({ ...baseRow, ...data, id: 'sess-run' }) as never,
+        );
+        const session = await start(OWNER, {
+            deckId: DECK,
+            mode: 'srs',
+            srsEnabled: true,
+            cardIds: [ids[0]!],
+            runId: RUN,
+        });
+        expect(mockedSessions.startSession.mock.calls[0]?.[0]).toMatchObject({ runId: RUN });
+        expect(session.runId).toBe(RUN);
+    });
+
+    it('stores a null runId for deck study', async () => {
+        await start(OWNER, { deckId: DECK, mode: 'flashcard', srsEnabled: true });
+        expect(mockedSessions.startSession.mock.calls[0]?.[0]).toMatchObject({ runId: null });
+    });
+
     it('rejects a request made entirely of foreign card ids', async () => {
         await expect(
             start(OWNER, {
@@ -132,6 +157,17 @@ describe('session.schema / createSessionSchema', () => {
             cardIds: [ids[0]!],
         });
         expect(parsed.cardIds).toEqual([ids[0]]);
+    });
+
+    it('accepts a uuid runId', () => {
+        const parsed = createSessionSchema.parse({ deckId: DECK, mode: 'srs', runId: RUN });
+        expect(parsed.runId).toBe(RUN);
+    });
+
+    it('rejects a non-uuid runId', () => {
+        expect(() =>
+            createSessionSchema.parse({ deckId: DECK, mode: 'srs', runId: 'run-1' }),
+        ).toThrow();
     });
 
     it('rejects non-uuid card ids', () => {
