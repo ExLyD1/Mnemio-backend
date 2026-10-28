@@ -3,13 +3,19 @@
 // script) gets one from a one-enum model call on the title and a few words.
 //
 // Never fails and never blocks: any provider error, timeout, or off-list
-// answer degrades to the keyword rules, then to the language heuristic. It is
+// answer degrades to the keyword rules, then to the language heuristic. The
+// model's answer itself is only accepted as an exact or legacy slug. It is
 // a system cost — no per-user budget reservation — so free and premium users
 // behave the same and the premium gate can never fire from here.
 import * as aiService from './ai.service.js';
 import { track } from './analytics.service.js';
 import type { ClassifySubjectInput } from './ai.provider.js';
-import { inferSubject, normalizeSubject, type Subject } from '../shared/subjects.js';
+import {
+    inferSubject,
+    matchSubjectKeywords,
+    normalizeSubject,
+    type Subject,
+} from '../shared/subjects.js';
 
 export const CLASSIFY_TIMEOUT_MS = 4000;
 // Words sent to the model; more adds cost, not signal.
@@ -18,7 +24,7 @@ export const CLASSIFY_MAX_WORDS = 10;
 export type Classification = { subject: Subject; source: 'ai' | 'rules' };
 
 export const classifyByRules = (input: ClassifySubjectInput): Subject =>
-    normalizeSubject(`${input.title} ${input.description ?? ''}`) ??
+    matchSubjectKeywords(`${input.title} ${input.description ?? ''}`) ??
     inferSubject(input.sourceLanguage, input.targetLanguage);
 
 const withTimeout = <T>(work: Promise<T>, ms: number): Promise<T> =>

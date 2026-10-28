@@ -23,8 +23,8 @@ export const SUBJECTS = [
 
 export type Subject = (typeof SUBJECTS)[number];
 
-// Where a deck's subject came from. 'pending' = the migration couldn't place
-// it; scripts/backfill-subjects.ts picks those up.
+// Where a deck's subject came from. 'pending' = the migration found no exact
+// or legacy-slug match; scripts/backfill-subjects.ts classifies those with AI.
 export const SUBJECT_SOURCES = ['user', 'rules', 'ai', 'pending'] as const;
 export type SubjectSource = (typeof SUBJECT_SOURCES)[number];
 
@@ -68,9 +68,11 @@ export const LEGACY_SUBJECT_MAP: Readonly<Record<string, Subject>> = {
 
 const has = (s: string, keys: string[]): boolean => keys.some((k) => s.includes(k));
 
-// Keyword rules for old free-text subjects — a 1:1 port of the FE's
-// normCategory() heuristics (same order, same substrings), each target mapped
-// onto the 12. First match wins. Keep in sync with the migration's CASE.
+// Keyword rules — a 1:1 port of the FE's normCategory() heuristics (same
+// order, same substrings), each target mapped onto the 12. First match wins.
+// They over-match ("Cardiology terms" → languages via 'term'), so they are
+// only a fallback when the AI gives nothing valid; the migration never uses
+// them.
 const KEYWORD_RULES: readonly [Subject, (s: string) => boolean][] = [
     [
         'languages',
@@ -120,23 +122,26 @@ const KEYWORD_RULES: readonly [Subject, (s: string) => boolean][] = [
     ['other', (s) => has(s, ['trivia', 'general', 'quiz'])],
 ];
 
-// Resolves any raw subject (a new slug, a legacy slug, old free text, model
-// output) to one of the 12, or null when nothing matches — callers then fall
-// back to inferSubject() (writes) or mark the deck 'pending' (migration).
+// Exact matches only: one of the 12 slugs or a pre-002 FE slug, ignoring case
+// and surrounding whitespace. Null otherwise — free text is never guessed here.
+// The migration's subject_map is the SQL twin of this.
 export const normalizeSubject = (raw: string | null | undefined): Subject | null => {
-    if (!raw) {
-        return null;
-    }
-    const s = raw.trim().toLowerCase();
-    if (s.length === 0) {
+    const s = raw?.trim().toLowerCase();
+    if (!s) {
         return null;
     }
     if (isSubject(s)) {
         return s;
     }
-    const legacy = LEGACY_SUBJECT_MAP[s];
-    if (legacy) {
-        return legacy;
+    return LEGACY_SUBJECT_MAP[s] ?? null;
+};
+
+// The keyword heuristics over free text (a title, an off-list model answer),
+// or null when nothing matches. Fallback only — see KEYWORD_RULES.
+export const matchSubjectKeywords = (text: string | null | undefined): Subject | null => {
+    const s = text?.trim().toLowerCase();
+    if (!s) {
+        return null;
     }
     for (const [subject, matches] of KEYWORD_RULES) {
         if (matches(s)) {
@@ -156,9 +161,13 @@ export const normalizeSubject = (raw: string | null | undefined): Subject | null
 export const inferSubject = (sourceLanguage: string, targetLanguage: string): Subject =>
     sourceLanguage !== targetLanguage ? 'languages' : 'other';
 
-// normalizeSubject, then the rule fallback — always yields a valid slug.
+// For a model's subject answer: exact/legacy, then the keyword fallback, then
+// the language heuristic — always yields a valid slug.
 export const resolveSubject = (
     raw: string | null | undefined,
     sourceLanguage: string,
     targetLanguage: string,
-): Subject => normalizeSubject(raw) ?? inferSubject(sourceLanguage, targetLanguage);
+): Subject =>
+    normalizeSubject(raw) ??
+    matchSubjectKeywords(raw) ??
+    inferSubject(sourceLanguage, targetLanguage);

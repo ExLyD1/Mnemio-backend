@@ -91,7 +91,9 @@ errors. Services translate "not found / not owned" into `AppError` subclasses.
 - **Deck `subject` is one of 12 fixed slugs** (`shared/subjects.ts`; never null,
   never free text) and language decks facet on `targetLanguage` (the 28 codes in
   `shared/lang.ts`). Every write path validates with `z.enum(SUBJECTS)`; model
-  output goes through `normalizeSubject` → `inferSubject`. Changing the list means
+  output goes through `normalizeSubject` (exact/legacy only) → `matchSubjectKeywords`
+  → `inferSubject`. Keyword rules over-match, so they are a fallback only — never
+  use them in a migration. Changing the list means
   `LEGACY_SUBJECT_MAP`, the FE labels, and `GET /public/taxonomy` consumers.
 - **`user_decks` is a best-effort side effect** (`services/user-decks.service.ts`):
   call `trackStudied` fire-and-forget, never await it on the XP/streak path, and

@@ -110,7 +110,8 @@ normalized server-side and never persisted raw. For chat, `subject` and
 `targetLanguage` are part of the `create_deck` tool input, constrained by
 `enum` to the fixed lists, so Mimi picks them in the same call. There is **no
 separate classification call**. If the model's value is missing or invalid,
-the rules mapping (`normalizeSubject` → `inferSubject`) decides.
+the rules mapping (`normalizeSubject` → `matchSubjectKeywords` →
+`inferSubject`) decides.
 
 **C3 — Language facet.** A deck with `subject = languages` is filterable by its
 `targetLanguage`. Every language picker offers the same 28 codes with localized
@@ -229,11 +230,10 @@ write.
    `technology` and `vocabulary` → `languages`.
 3. `UPDATE decks SET subject = m.slug, subjectSource = 'rules'` where
    `lower(trim(subject))` matches the map exactly.
-4. Keyword pass for remaining non-null values: an SQL `CASE` port of
-   `normCategory()`'s keyword rules (each rule's target mapped to the 12).
-   Matched rows get `subjectSource = 'rules'`.
-5. Everything left over, including `NULL`, gets `subject = 'other'` and
-   `subjectSource = 'pending'`.
+4. **No keyword pass.** The substring rules over-match ("Cardiology terms" →
+   languages via `term`), so the migration never guesses free text.
+5. Everything left over (free text and `NULL`) gets `subject = 'other'` and
+   `subjectSource = 'pending'`; the AI script below classifies it.
 6. `ALTER COLUMN subject SET NOT NULL, SET DEFAULT 'other'`.
 7. Create `user_decks` and its index.
 8. **Backfill `user_decks`** from the union of:
@@ -268,8 +268,10 @@ Old → new mapping (`src/shared/subjects.ts`, `LEGACY_SUBJECT_MAP`):
 - Selects `subjectSource = 'pending'` in batches of 50. For each deck it sends
   title, description, source/target language and the first 10 card words to
   `subjectsService.classify()` (the cheapest Claude model, `claude-haiku-5-5`,
-  with a strict enum tool schema). It writes `subject` and
-  `subjectSource = 'ai'`. On any AI failure it uses the rule fallback with
+  with a strict enum tool schema). The model's answer counts only as an exact or
+  legacy slug; it then writes `subject` and `subjectSource = 'ai'`. When the AI
+  returns nothing valid (error, timeout, off-list answer), and only then, the
+  keyword rules run on title + description (then the language heuristic), with
   `subjectSource = 'rules'`.
 - Second pass: decks whose `sourceLanguage`/`targetLanguage` is **not** in the
   28 (left untouched by `20260924…normalize_language_codes`). It asks the model
@@ -418,7 +420,7 @@ bump the endpoint inventory (+3: `/library`, `/public/taxonomy`,
 
 | Layer | File | Change |
 |---|---|---|
-| shared | `src/shared/subjects.ts` (new) | `SUBJECTS`, `LEGACY_SUBJECT_MAP`, `normalizeSubject(raw) → Subject \| null` (exact/legacy/keyword), `inferSubject(src, tgt)` rule fallback, `LEARNING_THRESHOLD = 5` |
+| shared | `src/shared/subjects.ts` (new) | `SUBJECTS`, `LEGACY_SUBJECT_MAP`, `normalizeSubject(raw) → Subject \| null` (exact/legacy only), `matchSubjectKeywords(text)` (keyword rules, AI fallback only), `inferSubject(src, tgt)` rule fallback, `LEARNING_THRESHOLD = 5` |
 | shared | `src/shared/lang.ts` | export `SUPPORTED_LANG_LIST` (ordered array) for taxonomy |
 | schema | `deck.schema.ts`, `discover.schema.ts`, `imports.schema.ts` | `subjectSchema = z.enum(SUBJECTS)`; PATCH non-nullable; discover `lang` via `langSchema` |
 | schema | `library.schema.ts` (new), `ai.schema.ts` | library query; classify body |
@@ -559,8 +561,8 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
   The facet still uses `targetLanguage`.
 - **Non-language deck**: still has source/target (required today). Its
   language facet is simply not shown unless `subject = languages`.
-- **AI returns a subject outside the enum**: `normalizeSubject`, then
-  `inferSubject`. A raw value is never persisted.
+- **AI returns a subject outside the enum**: `normalizeSubject` (exact/legacy),
+  then the keyword rules, then `inferSubject`. A raw value is never persisted.
 - **Classification timeout during Anki import of N decks**: classification
   runs in parallel (concurrency 4), each with a 4 s timeout and rule fallback.
   Import latency grows by at most about 4 s.
@@ -578,7 +580,7 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
 
 | Risk | Mitigation |
 |---|---|
-| Keyword SQL mis-maps a deck (e.g. "art" in "cartography" → arts) | Keyword pass runs only on values that aren't exact slugs; rules ported 1:1 from `normCategory` (already shipped); user can edit; dry-run report lists every non-exact mapping before deploy |
+| Keyword rules mis-map a deck (e.g. "art" in "cartography" → arts, "Cardiology terms" → languages) | The migration maps exact and legacy slugs only; everything else is `pending` and goes to the AI. Keyword rules run only when the AI returns nothing valid; the backfill dry run lists every proposed change; users can edit |
 | Backfill script cost / runaway | `--dry-run` with estimated cost; Haiku, ≤ 10 words per deck, batches of 50; `--limit`; idempotent |
 | Migration lock time on `decks` | Single-table UPDATEs on a small table; `user_decks` backfill is an INSERT…SELECT. Fine at current scale. If prod > 1 M sessions, split step 8 into the script |
 | `/library` query slow (CTE + facets) | `user_decks(userId, lastStudiedAt)` index plus existing `decks(authorId, updatedAt)`; facets only on page 1; `EXPLAIN` checked in test plan |
@@ -594,8 +596,11 @@ failure is logged and swallowed, the same as `activityRepo.recordReview` in
 
 - `test/subjects.test.ts`
   - `normalizeSubject`: each of the 12 slugs is the identity. Each of the 30
-    old slugs maps per the table. `tech` → technology, `Language` → languages,
-    `" Finance "` → business. Garbage → null.
+    old slugs maps per the table. `tech` → technology, `" Languages "` →
+    languages, `" Finance "` → business. Free text (`Language`, `Cardiology
+    terms`) and garbage → null. `matchSubjectKeywords` carries the heuristics.
+  - Both SQL files' `subject_map` equals `SUBJECTS` + `LEGACY_SUBJECT_MAP`, with
+    no `LIKE`.
   - `inferSubject('en','uk')` → languages. `inferSubject('en','en')` → other.
 - `test/deck-schema-subject.test.ts`: create without subject → inferred and
   `subjectSource='rules'`. Explicit slug → `'user'`. `'biology'` → 400.
@@ -725,8 +730,8 @@ Each task is independently committable and leaves both repos green.
 16. **Ops (in this order):**
     1. **Take a production DB backup** (Railway snapshot or `pg_dump -Fc`) and
        verify it lists `decks`, `study_sessions` and `card_progresses`.
-    2. Run `scripts/sql/check-subjects.sql` read-only against a prod snapshot
-       to preview the rule mapping.
+    2. Run `scripts/sql/preview-subject-mapping.sql` read-only against a prod
+       snapshot to preview the mapping (exact/legacy vs `pending`).
     3. Deploy the BE (the migration runs), then the FE.
     4. Run `scripts/backfill-subjects.ts --dry-run`. The owner reviews the
        printed proposed changes.
@@ -750,10 +755,10 @@ Backend (tasks 1–9):
    not Prisma `update`): a taxonomy repair is not a user edit and must not reorder
    anyone's deck list.
 5. **Keyword rules are a 1:1 port** of the FE `normCategory` (same order, same
-   substrings), in both TS and the migration's SQL. They over-match (`cartography`
-   → arts via `art`, `terms` → languages via `term`). Accepted: they only run on
-   non-exact legacy values and as the AI fallback; `preview-subject-mapping.sql`
-   lets you read every mapping before deploy.
+   substrings), in TS only. They over-match (`cartography` → arts via `art`,
+   `Cardiology terms` → languages via `term`), so they are **not** in the
+   migration (see 17) and run only as the fallback when the AI returns nothing
+   valid.
 6. **A bare language name** ("Deutsch", "日本語") resolves to `languages`, but 2–3
    letter strings ("it", "cs") do not, since they are more likely abbreviations.
 7. **Session status** is `'complete'` in this codebase (not `'completed'`), which the
@@ -786,3 +791,14 @@ Backend (tasks 1–9):
 16. **Gates.** `test/billing-management.test.ts` fails before and after these
     changes: it requires a dedicated `mnemio_qa_sub` database. Everything else
     passes.
+17. **Migration maps exact and legacy slugs only** (owner's call after review). The
+    keyword pass was removed from the migration and its preview SQL. Every
+    other deck (free text, `NULL`) becomes `pending`, and
+    `scripts/backfill-subjects.ts` classifies it with AI. `normalizeSubject` now
+    does exact/legacy only (the model's answer must pass it to count as `ai`); the
+    keyword heuristics moved to `matchSubjectKeywords`, used only by the AI
+    fallback (`classifyByRules`, chat `create_deck`, `resolveSubject` for generated
+    decks) and the mock provider. Side effect: near-miss free text such as
+    `Language` (singular) is no longer an exact match, so it becomes `pending` and
+    the AI classifies it. `test/subjects.test.ts` asserts that both SQL files' subject_map
+    equals `SUBJECTS` + `LEGACY_SUBJECT_MAP` and contains no `LIKE`.

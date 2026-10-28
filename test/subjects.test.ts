@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
     SUBJECTS,
     LEGACY_SUBJECT_MAP,
     normalizeSubject,
+    matchSubjectKeywords,
     inferSubject,
     resolveSubject,
     isSubject,
@@ -88,31 +90,44 @@ describe('shared/subjects', () => {
     });
 
     it('normalizes case and whitespace', () => {
-        expect(normalizeSubject('Language')).toBe('languages');
+        expect(normalizeSubject(' Languages ')).toBe('languages');
+        expect(normalizeSubject('Language')).toBeNull();
         expect(normalizeSubject(' Finance ')).toBe('business');
         expect(normalizeSubject('BIOLOGY')).toBe('science');
     });
 
-    it('applies the keyword heuristics to old free text', () => {
-        expect(normalizeSubject('English vocabulary')).toBe('languages');
-        expect(normalizeSubject('Українська мова')).toBe('languages');
-        expect(normalizeSubject('Clinical skills')).toBe('medicine');
-        expect(normalizeSubject('Organic Chemistry II')).toBe('science');
-        expect(normalizeSubject('Linear algebra')).toBe('math');
-        expect(normalizeSubject('Software interviews')).toBe('technology');
-        expect(normalizeSubject('World capitals')).toBe('humanities');
-        expect(normalizeSubject('Contract law')).toBe('law');
-        expect(normalizeSubject('Microeconomics')).toBe('business');
-        expect(normalizeSubject('Guitar chords')).toBe('arts');
-        expect(normalizeSubject('SAT prep')).toBe('test-prep');
-        expect(normalizeSubject('Cooking basics')).toBe('other');
+    it('never keyword-guesses free text', () => {
+        expect(normalizeSubject('Cardiology terms')).toBeNull();
+        expect(normalizeSubject('English vocabulary')).toBeNull();
+        expect(normalizeSubject('Contract law')).toBeNull();
+        expect(normalizeSubject('German')).toBeNull();
+        expect(normalizeSubject('cs')).toBeNull();
     });
 
-    it('treats a bare language name as a language deck, but not 2–3 letter codes', () => {
-        expect(normalizeSubject('Deutsch')).toBe('languages');
-        expect(normalizeSubject('日本語')).toBe('languages');
-        expect(normalizeSubject('it')).toBeNull();
-        expect(normalizeSubject('cs')).toBe('technology');
+    it('matchSubjectKeywords applies the heuristics to free text', () => {
+        expect(matchSubjectKeywords('English vocabulary')).toBe('languages');
+        expect(matchSubjectKeywords('Українська мова')).toBe('languages');
+        expect(matchSubjectKeywords('Clinical skills')).toBe('medicine');
+        expect(matchSubjectKeywords('Organic Chemistry II')).toBe('science');
+        expect(matchSubjectKeywords('Linear algebra')).toBe('math');
+        expect(matchSubjectKeywords('Software interviews')).toBe('technology');
+        expect(matchSubjectKeywords('World capitals')).toBe('humanities');
+        expect(matchSubjectKeywords('Contract law')).toBe('law');
+        expect(matchSubjectKeywords('Microeconomics')).toBe('business');
+        expect(matchSubjectKeywords('Guitar chords')).toBe('arts');
+        expect(matchSubjectKeywords('SAT prep')).toBe('test-prep');
+        expect(matchSubjectKeywords('Cooking basics')).toBe('other');
+        // The known over-match that keeps these rules out of the migration.
+        expect(matchSubjectKeywords('Cardiology terms')).toBe('languages');
+    });
+
+    it('matchSubjectKeywords treats a bare language name as a language deck, but not 2–3 letter codes', () => {
+        expect(matchSubjectKeywords('Deutsch')).toBe('languages');
+        expect(matchSubjectKeywords('日本語')).toBe('languages');
+        expect(matchSubjectKeywords('it')).toBeNull();
+        expect(matchSubjectKeywords('cs')).toBe('technology');
+        expect(matchSubjectKeywords(null)).toBeNull();
+        expect(matchSubjectKeywords('zzqx')).toBeNull();
     });
 
     it('returns null for empty or unmatchable input', () => {
@@ -129,9 +144,39 @@ describe('shared/subjects', () => {
 
     it('resolveSubject always yields a valid slug', () => {
         expect(resolveSubject('Biology', 'en', 'en')).toBe('science');
+        expect(resolveSubject('Contract law', 'en', 'en')).toBe('law');
         expect(resolveSubject('zzqx', 'en', 'de')).toBe('languages');
         expect(resolveSubject(null, 'en', 'en')).toBe('other');
     });
+});
+
+// The migration and its read-only preview map only exact / legacy-slug values;
+// their subject_map must be exactly SUBJECTS + LEGACY_SUBJECT_MAP.
+describe('fixed_subjects migration SQL', () => {
+    const files = [
+        'prisma/migrations/20261029000000_fixed_subjects/migration.sql',
+        'scripts/sql/preview-subject-mapping.sql',
+    ];
+    const expected = Object.fromEntries([
+        ...SUBJECTS.map((s) => [s, s]),
+        ...Object.entries(LEGACY_SUBJECT_MAP),
+    ]);
+
+    for (const file of files) {
+        const sql = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+        const code = sql.replace(/--.*$/gm, '');
+
+        it(`${file}: subject_map mirrors SUBJECTS + LEGACY_SUBJECT_MAP`, () => {
+            const pairs = [...code.matchAll(/\('([^']+)',\s*'([^']+)'\)/g)];
+            expect(Object.fromEntries(pairs.map((m) => [m[1], m[2]]))).toEqual(expected);
+            expect(pairs).toHaveLength(Object.keys(expected).length);
+        });
+
+        it(`${file}: has no keyword rules`, () => {
+            expect(code).not.toMatch(/\bLIKE\b/i);
+            expect(code).not.toMatch(/'keyword'/);
+        });
+    }
 });
 
 describe('shared/lang / SUPPORTED_LANG_LIST', () => {

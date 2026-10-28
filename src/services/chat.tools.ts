@@ -27,6 +27,7 @@ import { SUPPORTED_LANG_LIST, langDisplayName, normalizeLang } from '../shared/l
 import {
     SUBJECTS,
     inferSubject,
+    matchSubjectKeywords,
     normalizeSubject,
     type Subject,
     type SubjectSource,
@@ -312,7 +313,7 @@ const deckSubject = (
     }
     return {
         subject:
-            normalizeSubject(`${meta.title} ${meta.description ?? ''}`) ??
+            matchSubjectKeywords(`${meta.title} ${meta.description ?? ''}`) ??
             inferSubject(meta.sourceLanguage, meta.targetLanguage),
         subjectSource: 'rules',
     };

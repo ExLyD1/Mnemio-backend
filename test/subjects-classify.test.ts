@@ -35,6 +35,20 @@ describe('subjects.service / classify', () => {
         expect(await classify(input)).toEqual({ subject: 'science', source: 'ai' });
     });
 
+    it('accepts only an exact or legacy slug from the model', async () => {
+        classifyRaw.mockResolvedValue({ subject: 'medical terminology' });
+        expect((await classify(input)).source).toBe('rules');
+    });
+
+    it('keyword rules never override a valid AI answer', async () => {
+        classifyRaw.mockResolvedValue({ subject: 'medicine' });
+        // 'term' would send this to languages via the keyword rules.
+        expect(await classify({ ...input, title: 'Cardiology terms' })).toEqual({
+            subject: 'medicine',
+            source: 'ai',
+        });
+    });
+
     it('falls back to rules on a provider error', async () => {
         classifyRaw.mockRejectedValue(new Error('boom'));
         // "anatomy" → medicine via the keyword rules
