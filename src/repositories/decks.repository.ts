@@ -94,7 +94,7 @@ export type DeckUpdateData = Partial<{
     isPublic: boolean;
     coverColor: string | null;
     glyph: string | null;
-    subject: string | null;
+    subject: string;
 }>;
 
 export const createDeck = (ownerId: string, data: DeckCreateData) =>
@@ -108,7 +108,7 @@ export const createDeck = (ownerId: string, data: DeckCreateData) =>
             isPublic: data.isPublic ?? false,
             coverColor: data.coverColor ?? null,
             glyph: data.glyph ?? null,
-            subject: data.subject ?? null,
+            subject: data.subject ?? 'other',
             sourceDeckId: data.sourceDeckId ?? null,
         },
     });

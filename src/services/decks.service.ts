@@ -155,7 +155,7 @@ export const update = async (
         patch.glyph = input.glyph;
     }
     if (input.subject !== undefined) {
-        patch.subject = input.subject;
+        patch.subject = input.subject ?? 'other';
     }
 
     const { count } = await decksRepo.updateDeck(deckId, ownerId, patch);
