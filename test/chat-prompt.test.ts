@@ -31,29 +31,54 @@ describe('chat.prompt / CHAT_SYSTEM_PROMPT', () => {
 
 describe('chat.prompt / budget section', () => {
     const budget = {
-        wordListRemaining: 2,
-        wordListCap: 5,
-        topicRemaining: 20,
-        topicCap: 20,
+        decksRemaining: 1,
+        decksCap: 2,
+        actionsRemaining: 4,
+        actionsCap: 5,
         resetsAt: '2026-06-11T00:00:00.000Z',
         plan: 'free' as const,
     };
 
     it('states the real remaining counts so the model never invents a limit', () => {
         const prompt = buildChatSystemPrompt(undefined, 'en', false, undefined, budget);
-        expect(prompt).toContain('2 of 5 left today');
-        expect(prompt).toContain('20 of 20 left today');
+        expect(prompt).toContain('new decks: 1 of 2 left today');
+        expect(prompt).toContain('adding cards): 4 of 5 left today');
         expect(prompt).toContain('2026-06-11T00:00:00.000Z');
     });
 
-    it('tells the model not to call a tool once everything is used up', () => {
+    it('tells the model not to create a deck once decks are used up', () => {
         const prompt = buildChatSystemPrompt(undefined, 'en', false, undefined, {
             ...budget,
-            wordListRemaining: 0,
-            topicRemaining: 0,
+            decksRemaining: 0,
         });
-        expect(prompt).toContain('do NOT call a tool');
+        expect(prompt).toContain('do NOT call create_deck');
+        expect(prompt).not.toContain('do NOT call add_cards');
         expect(prompt).toContain('Never say "try again in a moment"');
+    });
+
+    it('tells the model not to add cards once actions are used up', () => {
+        const prompt = buildChatSystemPrompt(undefined, 'en', false, undefined, {
+            ...budget,
+            actionsRemaining: 0,
+        });
+        expect(prompt).toContain('do NOT call add_cards');
+        expect(prompt).not.toContain('do NOT call create_deck');
+    });
+});
+
+describe('chat.prompt / premium', () => {
+    it('never states a limit for a Premium user', () => {
+        const prompt = buildChatSystemPrompt(undefined, 'en', false, undefined, {
+            decksRemaining: 100,
+            decksCap: 100,
+            actionsRemaining: 200,
+            actionsCap: 200,
+            resetsAt: '2026-06-11T00:00:00.000Z',
+            plan: 'premium',
+        });
+        expect(prompt).toContain('no daily limit');
+        expect(prompt).not.toContain('of 100');
+        expect(prompt).not.toContain('of 200');
     });
 });
 

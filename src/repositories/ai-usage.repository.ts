@@ -17,12 +17,10 @@ export const nextResetAt = (d: Date = new Date()): Date => {
     return x;
 };
 
-// 'import' shares the same per-user-per-day rollup table as the AI kinds
-// (Quizlet / paste-text imports — see imports.service.ts). 'chat' tracks
-// real-time chat-message turns (see chat.service.ts). 'image' tracks vision
-// calls (deck-from-image endpoint + image-attached chat turns) — metered
-// separately since vision calls cost more than text-only ones.
-export type AiUsageKind = 'enrich' | 'generate' | 'suggest' | 'import' | 'chat' | 'image';
+// Counted by what the user sees, not by which AI call ran: a new deck is a
+// 'deck' whether it came from a topic, a word list or a photo. 'tip' is Mimi's
+// automatic suggestions; 'import' is the non-AI Quizlet / paste-text import.
+export type AiUsageKind = 'deck' | 'message' | 'action' | 'tip' | 'import';
 
 export const findTodayCount = async (userId: string, kind: AiUsageKind): Promise<number> => {
     const row = await prisma.aiUsage.findUnique({

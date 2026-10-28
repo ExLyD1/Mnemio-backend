@@ -54,7 +54,7 @@ export const billingEmail = (kind: BillingEmail, row: SubscriptionRow) => {
         path += '?action=update-card';
     } else {
         subject = 'Your subscription is cancelled';
-        body = `Premium stays on until ${date(row.currentPeriodEnd)}.\nAfter that, the free plan includes ${capFor('chat', 'free')} AI chat requests a day.\nYour decks stay.`;
+        body = `Premium stays on until ${date(row.currentPeriodEnd)}.\nAfter that, the free plan includes ${capFor('message', 'free')} AI chat requests a day.\nYour decks stay.`;
         cta = 'Resume subscription';
     }
     const url = new URL(path, env.APP_URL).toString();

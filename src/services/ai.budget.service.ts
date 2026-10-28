@@ -4,47 +4,30 @@ import * as entitlementService from './entitlement.service.js';
 import * as analytics from './analytics.service.js';
 import { AiBudgetExceededError, ImportBudgetExceededError } from '../shared/errors.js';
 
-// Map internal usage kinds to the frozen `ai_cap_reached` contract. Only these
-// three AI features fire the event; 'chat' and 'import' have separate quotas /
-// error codes and are intentionally absent from the analytics contract.
+// Map usage kinds to the frozen `ai_cap_reached` analytics contract (its
+// feature names predate the decks/messages/actions split). Messages and
+// imports are intentionally absent from that contract.
 const AI_FEATURE_BY_KIND: Partial<
     Record<aiUsageRepo.AiUsageKind, 'generate_deck' | 'enrich_words' | 'suggestion'>
 > = {
-    enrich: 'enrich_words',
-    generate: 'generate_deck',
-    suggest: 'suggestion',
+    deck: 'generate_deck',
+    action: 'enrich_words',
+    tip: 'suggestion',
 };
 
 export const capFor = (kind: aiUsageRepo.AiUsageKind, plan: 'free' | 'premium'): number => {
-    if (plan === 'premium') {
-        switch (kind) {
-            case 'enrich':
-                return env.AI_DAILY_ENRICH_CAP_PREMIUM_PER_USER;
-            case 'generate':
-                return env.AI_DAILY_GENERATE_CAP_PREMIUM_PER_USER;
-            case 'suggest':
-                return env.AI_DAILY_SUGGEST_CAP_PREMIUM_PER_USER;
-            case 'import':
-                return env.IMPORT_DAILY_CAP_PREMIUM_PER_USER;
-            case 'chat':
-                return env.AI_DAILY_CHAT_CAP_PREMIUM_PER_USER;
-            case 'image':
-                return env.AI_DAILY_IMAGE_CAP_PREMIUM_PER_USER;
-        }
-    }
+    const premium = plan === 'premium';
     switch (kind) {
-        case 'enrich':
-            return env.AI_DAILY_ENRICH_CAP_PER_USER;
-        case 'generate':
-            return env.AI_DAILY_GENERATE_CAP_PER_USER;
-        case 'suggest':
-            return env.AI_DAILY_SUGGEST_CAP_PER_USER;
+        case 'deck':
+            return premium ? env.MIMI_DECKS_PER_DAY_PREMIUM : env.MIMI_DECKS_PER_DAY_FREE;
+        case 'message':
+            return premium ? env.MIMI_MESSAGES_PER_DAY_PREMIUM : env.MIMI_MESSAGES_PER_DAY_FREE;
+        case 'action':
+            return premium ? env.MIMI_ACTIONS_PER_DAY_PREMIUM : env.MIMI_ACTIONS_PER_DAY_FREE;
+        case 'tip':
+            return env.MIMI_TIPS_PER_DAY;
         case 'import':
-            return env.IMPORT_DAILY_CAP_PER_USER;
-        case 'chat':
-            return env.AI_DAILY_CHAT_CAP_PER_USER;
-        case 'image':
-            return env.AI_DAILY_IMAGE_CAP_PER_USER;
+            return premium ? env.IMPORT_DAILY_CAP_PREMIUM_PER_USER : env.IMPORT_DAILY_CAP_PER_USER;
     }
 };
 
@@ -77,17 +60,15 @@ export type UsageSnapshot = {
     plan: 'free' | 'premium';
     resetsAt: string;
     freeCaps: Record<aiUsageRepo.AiUsageKind, number>;
-    kinds: Record<aiUsageRepo.AiUsageKind, { used: number; cap: number; remaining: number }>;
+    // `unlimited` = Premium: the cap is a hidden safety net, so the UI shows
+    // no counter for it.
+    kinds: Record<
+        aiUsageRepo.AiUsageKind,
+        { used: number; cap: number; remaining: number; unlimited: boolean }
+    >;
 };
 
-const ALL_KINDS: aiUsageRepo.AiUsageKind[] = [
-    'enrich',
-    'generate',
-    'suggest',
-    'import',
-    'chat',
-    'image',
-];
+const ALL_KINDS: aiUsageRepo.AiUsageKind[] = ['deck', 'message', 'action', 'tip', 'import'];
 
 /**
  * Today's usage for every kind — what GET /ai/usage returns, and what the chat
@@ -105,7 +86,12 @@ export const usageSnapshot = async (userId: string): Promise<UsageSnapshot> => {
         freeCaps[kind] = capFor(kind, 'free');
         const cap = capFor(kind, plan);
         const used = counts[kind] ?? 0;
-        kinds[kind] = { used, cap, remaining: Math.max(0, cap - used) };
+        kinds[kind] = {
+            used,
+            cap,
+            remaining: Math.max(0, cap - used),
+            unlimited: plan === 'premium' && kind !== 'import',
+        };
     }
     return { plan, resetsAt: aiUsageRepo.nextResetAt().toISOString(), kinds, freeCaps };
 };
@@ -113,5 +99,20 @@ export const usageSnapshot = async (userId: string): Promise<UsageSnapshot> => {
 /** Return the reservation when the operation fails or is cancelled. */
 export const release = (userId: string, kind: aiUsageRepo.AiUsageKind) =>
     aiUsageRepo.releaseUse(userId, kind);
+
+/** Reserve a slot, run `work`, and give the slot back if it fails. */
+export const metered = async <T>(
+    userId: string,
+    kind: aiUsageRepo.AiUsageKind,
+    work: () => Promise<T>,
+): Promise<T> => {
+    await reserve(userId, kind);
+    try {
+        return await work();
+    } catch (err) {
+        await release(userId, kind);
+        throw err;
+    }
+};
 
 export type { AiUsageKind } from '../repositories/ai-usage.repository.js';

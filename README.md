@@ -302,8 +302,10 @@ Catalog is code-defined ([`src/services/achievements.catalog.ts`](./src/services
 
 **Providers** (`AI_PROVIDER` env):
 - `mock` (default) — deterministic placeholders; no LLM cost.
-- `anthropic` — Claude Haiku 4.5 via `@anthropic-ai/sdk`. Requires
-  `ANTHROPIC_API_KEY`.
+- `anthropic` — Claude via `@anthropic-ai/sdk`. Requires
+  `ANTHROPIC_API_KEY`. The model and thinking effort are set per route (chat,
+  EN content, UK content, photo) — see `ANTHROPIC_*` in `.env.example` and
+  `src/services/ai.models.ts`.
 
 Response shapes are identical across providers — FE never branches on
 `provider`.

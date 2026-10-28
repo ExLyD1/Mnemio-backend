@@ -56,24 +56,25 @@ export const prepareWords = (input: EnrichWordsInput): EnrichWordsInput => {
     return { ...input, words: unique };
 };
 
-export const enrichWords = async (
-    userId: string,
+// Unmetered: callers charge the limit that matches what the user sees (a new
+// deck vs. cards added to an existing one).
+export const fillCards = async (
     input: EnrichWordsInput,
     opts?: { onCard?: (event: EnrichWordsEvent) => void },
 ): Promise<EnrichWordsResult> => {
     const prepared = prepareWords(input);
-    if (prepared.words.length > env.AI_MAX_WORDS_PER_ENRICH) {
-        throw new AiTooManyWordsError(env.AI_MAX_WORDS_PER_ENRICH, prepared.words.length);
+    if (prepared.words.length > env.MIMI_MAX_WORDS_PER_REQUEST) {
+        throw new AiTooManyWordsError(env.MIMI_MAX_WORDS_PER_REQUEST, prepared.words.length);
     }
-    await budget.reserve(userId, 'enrich');
-    try {
-        const result = await provider.enrichWords(prepared, opts);
-        return result;
-    } catch (err) {
-        await budget.release(userId, 'enrich');
-        throw err;
-    }
+    return provider.enrichWords(prepared, opts);
 };
+
+// The word-list import fills cards the user then saves into a deck — one action.
+export const enrichWords = (
+    userId: string,
+    input: EnrichWordsInput,
+    opts?: { onCard?: (event: EnrichWordsEvent) => void },
+): Promise<EnrichWordsResult> => budget.metered(userId, 'action', () => fillCards(input, opts));
 
 // Definitions default to the user's native language, never a hardcoded 'en'
 // they didn't choose (the image dialog never sends sourceLanguage, so every
@@ -113,37 +114,37 @@ const withResolvedHeader = (
                 : event,
         ));
 
-export const generateDeck = async (
+// Unmetered — see fillCards.
+export const draftDeck = async (
     userId: string,
     // `exclude` is internal-only (chat's add_cards passes the words already in
     // the deck); the HTTP schema never accepts it.
     input: GenerateDeckRequest & { exclude?: string[] },
     opts?: { onEvent?: (event: GenerateDeckEvent) => void },
 ): Promise<AiDeckDraft> => {
-    await budget.reserve(userId, 'generate');
-    try {
-        const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
-        const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
-        const draft = await provider.generateDeck(
-            { ...input, sourceLanguage },
-            onEvent ? { onEvent } : undefined,
-        );
-        return withResolvedLangs(draft, sourceLanguage, input.targetLanguage);
-    } catch (err) {
-        await budget.release(userId, 'generate');
-        throw err;
-    }
+    const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
+    const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
+    const draft = await provider.generateDeck(
+        { ...input, sourceLanguage },
+        onEvent ? { onEvent } : undefined,
+    );
+    return withResolvedLangs(draft, sourceLanguage, input.targetLanguage);
 };
+
+export const generateDeck = (
+    userId: string,
+    input: GenerateDeckRequest,
+    opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+): Promise<AiDeckDraft> => budget.metered(userId, 'deck', () => draftDeck(userId, input, opts));
 
 // Result carries an optional `note` when the image had no readable/learnable
 // text — this is a normal outcome, not an error (empty cards, not a throw).
-export const deckFromImage = async (
+export const deckFromImage = (
     userId: string,
     input: DeckFromImageRequest & { image: AiImageInput },
     opts?: { onEvent?: (event: GenerateDeckEvent) => void },
-): Promise<{ draft: AiDeckDraft; note?: 'no_text' }> => {
-    await budget.reserve(userId, 'image');
-    try {
+): Promise<{ draft: AiDeckDraft; note?: 'no_text' }> =>
+    budget.metered(userId, 'deck', async () => {
         const sourceLanguage = await resolveSourceLanguage(userId, input.sourceLanguage);
         const onEvent = withResolvedHeader(opts?.onEvent, sourceLanguage, input.targetLanguage);
         const raw = await provider.deckFromImage(
@@ -151,16 +152,11 @@ export const deckFromImage = async (
             onEvent ? { onEvent } : undefined,
         );
         const draft = withResolvedLangs(raw, sourceLanguage, input.targetLanguage);
-        return draft.cards.length === 0 ? { draft, note: 'no_text' } : { draft };
-    } catch (err) {
-        await budget.release(userId, 'image');
-        throw err;
-    }
-};
+        return draft.cards.length === 0 ? { draft, note: 'no_text' as const } : { draft };
+    });
 
-export const suggest = async (userId: string, input: SuggestInput, tz: string = DEFAULT_TZ) => {
-    await budget.reserve(userId, 'suggest');
-    try {
+export const suggest = (userId: string, input: SuggestInput, tz: string = DEFAULT_TZ) =>
+    budget.metered(userId, 'tip', async () => {
         const [dueCount, days] = await Promise.all([
             srsRepo.countDueCards(userId),
             activityRepo.allDays(userId),
@@ -180,12 +176,7 @@ export const suggest = async (userId: string, input: SuggestInput, tz: string = 
         if (input.deckId !== undefined) {
             args.deckId = input.deckId;
         }
-        const result = await provider.suggest(args);
-        return result;
-    } catch (err) {
-        await budget.release(userId, 'suggest');
-        throw err;
-    }
-};
+        return provider.suggest(args);
+    });
 
 export const providerName = (): string => provider.name;

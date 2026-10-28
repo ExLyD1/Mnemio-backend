@@ -1,7 +1,8 @@
 /**
- * Anthropic Claude adapter for AiProvider. Uses tool_choice to force the
- * model to emit structured JSON for each operation — more reliable than
- * "return JSON in prose" prompting.
+ * Anthropic Claude adapter for AiProvider. Each content operation ends in one
+ * `emit_*` tool call carrying structured JSON — forced via tool_choice where
+ * the model allows it, 'auto' + a strict tool where it doesn't (see
+ * modelCaps in ai.models.ts). More reliable than "return JSON in prose".
  *
  * Non-streaming implementations live here; SSE streaming is layered on top
  * via the streaming entry points in ai.service.ts.
@@ -33,8 +34,18 @@ import {
     buildEnrichWordsPrompt,
     buildGenerateDeckPrompt,
     buildSuggestPrompt,
+    type CacheableSystem,
 } from './ai.prompts.js';
-import { normalizeLang } from '../shared/lang.js';
+import { logAiCall } from './ai.usage-log.js';
+import {
+    chatRoute,
+    contentRoute,
+    effortParam,
+    modelCaps,
+    photoRoute,
+    scaledMaxTokens,
+    type RouteChoice,
+} from './ai.models.js';
 
 const cardItemSchema = {
     type: 'object',
@@ -136,67 +147,202 @@ const providerErrorStatus = (err: unknown): number | string => {
 };
 
 /**
- * Which model writes a deck's CARD CONTENT. Ukrainian gets the stronger model:
- * the fast one produced Russian loanwords and broken agreement on the very text
- * learners study. Everything else — chat replies, suggestions — stays on
- * ANTHROPIC_MODEL, where quality was fine and latency matters more.
+ * Which model writes a deck's CARD CONTENT (see contentRoute in ai.models.ts).
+ * Kept for callers and tests that only need the model id.
  */
 export const contentModel = (...langs: (string | undefined)[]): string =>
-    langs.some((l) => l && normalizeLang(l) === 'uk')
-        ? env.ANTHROPIC_CONTENT_MODEL_UK
-        : env.ANTHROPIC_MODEL;
+    contentRoute(...langs).model;
 
-/** Run an Anthropic call and pull the forced tool's input out of the response. */
-const callToolUse = async <T>(args: {
-    system: ReturnType<typeof buildEnrichWordsPrompt>['system'];
-    user: string;
-    toolName: string;
-    tool: typeof ENRICH_TOOL | typeof DECK_TOOL | typeof SUGGEST_TOOL;
+type ContentTool = typeof ENRICH_TOOL | typeof DECK_TOOL | typeof SUGGEST_TOOL;
+
+type ContentCallArgs = {
+    op: string;
+    choice: RouteChoice;
+    system: CacheableSystem;
+    // A bare string, or an image + text blocks for photo → deck.
+    content: string | Anthropic.ContentBlockParam[];
+    tool: ContentTool;
+    // From the op's own formula (tuned on Haiku 4.5 / Sonnet 5); scaled per
+    // model by scaledMaxTokens.
     maxTokens: number;
-    model?: string;
-}): Promise<{ data: T; tokensInput: number; tokensOutput: number }> => {
-    let response;
-    try {
-        response = await client().messages.create({
-            model: args.model ?? env.ANTHROPIC_MODEL,
-            max_tokens: args.maxTokens,
-            system: args.system,
-            messages: [{ role: 'user', content: args.user }],
-            tools: [args.tool],
-            tool_choice: { type: 'tool', name: args.toolName },
+    attempt?: number;
+    // Cumulative parsed tool input while it streams (SSE callers).
+    onSnapshot?: (snapshot: unknown) => void;
+};
+
+type ContentCallResult<T> = {
+    data: T | null;
+    stopReason: Anthropic.StopReason | null;
+    tokensInput: number;
+    tokensOutput: number;
+};
+
+// Time to the first visible output: text or tool-input JSON, not thinking.
+// Returns a 'streamEvent' listener.
+const ttftListener =
+    (started: number, set: (ms: number) => void) =>
+    (event: Anthropic.MessageStreamEvent): void => {
+        if (
+            event.type === 'content_block_delta' &&
+            (event.delta.type === 'text_delta' || event.delta.type === 'input_json_delta')
+        ) {
+            set(Date.now() - started);
+        }
+    };
+
+/**
+ * One Anthropic call that should end in a single `emit_*` tool call. Every
+ * call streams: that yields a time-to-first-token figure and keeps large
+ * max_tokens values clear of the SDK's non-streaming ceiling.
+ *
+ * Usage is logged exactly once per call, including a call that fails midway
+ * (with whatever usage the stream had reported by then).
+ */
+const runContentCall = async <T>(args: ContentCallArgs): Promise<ContentCallResult<T>> => {
+    const { route, model, effort } = args.choice;
+    const caps = modelCaps(model);
+    const started = Date.now();
+    let ttftMs: number | null = null;
+    const log = (message: Anthropic.Message | undefined, error?: string) =>
+        logAiCall({
+            op: args.op,
+            route,
+            model,
+            effort,
+            usage: message?.usage,
+            stopReason: message?.stop_reason,
+            attempt: args.attempt,
+            durationMs: Date.now() - started,
+            ttftMs,
+            stream: true,
+            ...(error ? { error } : {}),
         });
+
+    // What the stream had reported when it failed; unset until a request went out.
+    let partial: (() => Anthropic.Message | undefined) | null = null;
+    let finalMessage: Anthropic.Message;
+    try {
+        const stream = client().messages.stream({
+            model,
+            max_tokens: scaledMaxTokens(args.maxTokens, caps),
+            system: args.system,
+            messages: [{ role: 'user', content: args.content }],
+            ...effortParam(model, effort),
+            ...(caps.forcedToolChoice
+                ? {
+                      tools: [args.tool],
+                      tool_choice: { type: 'tool' as const, name: args.tool.name },
+                  }
+                : {
+                      // Forced tool_choice is a 400 on this model. Every
+                      // content prompt already says to call the tool exactly
+                      // once; strict keeps the input schema-valid, and a
+                      // missing call is caught by the caller.
+                      tools: [{ ...args.tool, strict: true }],
+                      tool_choice: { type: 'auto' as const, disable_parallel_tool_use: true },
+                  }),
+        });
+        partial = () => stream.currentMessage;
+        stream.on(
+            'streamEvent',
+            ttftListener(started, (ms) => {
+                ttftMs ??= ms;
+            }),
+        );
+        const onSnapshot = args.onSnapshot;
+        if (onSnapshot) {
+            stream.on('inputJson', (_delta, snapshot) => onSnapshot(snapshot));
+        }
+        finalMessage = await stream.finalMessage();
     } catch (err) {
+        if (partial) {
+            log(partial(), (err as Error).message);
+        }
         throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
+    log(finalMessage);
 
-    const toolBlock = response.content.find((b) => b.type === 'tool_use');
-    if (toolBlock?.type !== 'tool_use') {
-        throw new AiValidationFailedError('Provider returned no tool_use block');
-    }
+    // Read by block type: a response may open with thinking blocks.
+    const toolBlock = finalMessage.content.find(
+        (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === args.tool.name,
+    );
     return {
-        data: toolBlock.input as T,
-        tokensInput: response.usage.input_tokens,
-        tokensOutput: response.usage.output_tokens,
+        data: toolBlock ? (toolBlock.input as T) : null,
+        stopReason: finalMessage.stop_reason,
+        tokensInput: finalMessage.usage.input_tokens,
+        tokensOutput: finalMessage.usage.output_tokens,
     };
 };
 
-/** Run a tool-use call once; on validation failure, retry once with a clarifying prompt. */
-const callWithRetry = async <T>(
-    args: Parameters<typeof callToolUse>[0],
+const RETRY_NOTE =
+    'Retry: your previous output failed schema validation. Return only the tool call, fully populated.';
+const CUT_OFF = 'AI output was cut off before it finished (max_tokens)';
+// Ceiling for the doubled max_tokens on a retry after truncation.
+const MAX_RETRY_TOKENS = 32_000;
+
+const withRetryNote = (content: ContentCallArgs['content']): ContentCallArgs['content'] =>
+    typeof content === 'string'
+        ? `${content}\n\n${RETRY_NOTE}`
+        : [...content, { type: 'text', text: RETRY_NOTE }];
+
+// A refusal is final: the same request would be declined again, so it is
+// never retried (by us or by the chat tool's re-draft, which sees the throw).
+const assertNotRefused = (result: ContentCallResult<unknown>): void => {
+    if (result.stopReason === 'refusal') {
+        throw new AiProviderError('refusal', 'Model declined the request');
+    }
+};
+
+// Truncated tool JSON parses into a silently short deck, so it never counts
+// as usable even when what arrived happens to validate.
+const isUsable = <T>(result: ContentCallResult<T>, validate: (data: T) => boolean): boolean =>
+    result.stopReason !== 'max_tokens' && result.data !== null && validate(result.data);
+
+/**
+ * Non-streaming callers: at most two attempts. Invalid output or a missing
+ * tool call is retried with a clarifying note; truncation is retried with
+ * twice the max_tokens; a refusal is never retried. Tokens are summed over
+ * attempts.
+ */
+const callContent = async <T>(
+    args: ContentCallArgs,
     validate: (data: T) => boolean,
-) => {
-    const first = await callToolUse<T>(args);
-    if (validate(first.data)) {
-        return first;
+): Promise<{ data: T; tokensInput: number; tokensOutput: number }> => {
+    const first = await runContentCall<T>(args);
+    assertNotRefused(first);
+    if (isUsable(first, validate)) {
+        return {
+            data: first.data as T,
+            tokensInput: first.tokensInput,
+            tokensOutput: first.tokensOutput,
+        };
     }
-    const second = await callToolUse<T>({
+    const second = await runContentCall<T>({
         ...args,
-        user: `${args.user}\n\nRetry: your previous output failed schema validation. Return only the tool call, fully populated.`,
+        attempt: 2,
+        ...(first.stopReason === 'max_tokens'
+            ? { maxTokens: Math.min(MAX_RETRY_TOKENS, args.maxTokens * 2) }
+            : { content: withRetryNote(args.content) }),
     });
-    if (validate(second.data)) {
-        return second;
+    assertNotRefused(second);
+    if (!isUsable(second, validate)) {
+        throw new AiValidationFailedError(second.stopReason === 'max_tokens' ? CUT_OFF : undefined);
     }
-    throw new AiValidationFailedError();
+    return {
+        data: second.data as T,
+        tokensInput: first.tokensInput + second.tokensInput,
+        tokensOutput: first.tokensOutput + second.tokensOutput,
+    };
+};
+
+/**
+ * SSE callers: one attempt. Cards have already reached the client while it
+ * streamed, so a retry would send them twice.
+ */
+const streamContent = async <T>(args: ContentCallArgs): Promise<ContentCallResult<T>> => {
+    const result = await runContentCall<T>(args);
+    assertNotRefused(result);
+    return result;
 };
 
 // ---------- enrichWords ----------
@@ -240,30 +386,32 @@ const arrayFromSnapshot = <T>(snapshot: unknown, arrayKey: string): T[] | null =
     return Array.isArray(arr) ? (arr as T[]) : null;
 };
 
+const isCompleteCard = (c: unknown): c is AiCardDraft =>
+    typeof c === 'object' &&
+    c !== null &&
+    typeof (c as { word?: unknown }).word === 'string' &&
+    typeof (c as { definition?: unknown }).definition === 'string';
+
 const enrichWords = async (
     input: EnrichWordsInput,
     opts?: { onCard?: (event: EnrichWordsEvent) => void },
 ): Promise<EnrichWordsResult> => {
     const start = Date.now();
     const { system, user } = buildEnrichWordsPrompt(input);
-    const maxTokens = Math.min(8000, Math.max(1000, input.words.length * 200));
-    const model = contentModel(input.sourceLanguage, input.targetLanguage);
+    const call: ContentCallArgs = {
+        op: 'enrich',
+        choice: contentRoute(input.sourceLanguage, input.targetLanguage),
+        system,
+        content: user,
+        tool: ENRICH_TOOL,
+        maxTokens: Math.min(16000, Math.max(1000, input.words.length * 200)),
+    };
 
     // Non-streaming fast path: caller doesn't want incremental events.
     if (!opts?.onCard) {
-        const { data, tokensInput, tokensOutput } = await callWithRetry<{
+        const { data, tokensInput, tokensOutput } = await callContent<{
             cards: AiCardDraft[];
-        }>(
-            {
-                system,
-                user,
-                toolName: ENRICH_TOOL.name,
-                tool: ENRICH_TOOL,
-                maxTokens,
-                model,
-            },
-            isValidCardArray,
-        );
+        }>(call, isValidCardArray);
         const cards = alignByInputOrder(input.words, data.cards);
         const enriched = cards.filter((c) => c.definition !== '').length;
         return {
@@ -281,22 +429,10 @@ const enrichWords = async (
     // Streaming path. Capture the callback: the guard above narrows
     // `opts.onCard`, but that narrowing doesn't reach into the stream closure.
     const onCard = opts.onCard;
-    let received: AiCardDraft[] = [];
     let emittedCount = 0;
-    let tokensInput = 0;
-    let tokensOutput = 0;
-
-    try {
-        const stream = client().messages.stream({
-            model,
-            max_tokens: maxTokens,
-            system,
-            messages: [{ role: 'user', content: user }],
-            tools: [ENRICH_TOOL],
-            tool_choice: { type: 'tool', name: ENRICH_TOOL.name },
-        });
-
-        stream.on('inputJson', (_delta, snapshot) => {
+    const result = await streamContent<{ cards?: unknown }>({
+        ...call,
+        onSnapshot: (snapshot) => {
             const arr = arrayFromSnapshot<AiCardDraft>(snapshot, 'cards');
             if (!arr) {
                 return;
@@ -306,28 +442,19 @@ const enrichWords = async (
             const completeUpToExclusive = arr.length - 1;
             for (let i = emittedCount; i < completeUpToExclusive; i++) {
                 const card = arr[i];
-                if (card === undefined) {
-                    continue;
-                }
-                if (typeof card.word === 'string' && typeof card.definition === 'string') {
+                if (isCompleteCard(card)) {
                     onCard({ type: 'card', position: i, card });
                     emittedCount = i + 1;
                 }
             }
-        });
+        },
+    });
 
-        const finalMessage = await stream.finalMessage();
-        tokensInput = finalMessage.usage.input_tokens;
-        tokensOutput = finalMessage.usage.output_tokens;
-
-        const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
-        if (toolBlock?.type === 'tool_use') {
-            received = (toolBlock.input as { cards?: AiCardDraft[] }).cards ?? [];
-        }
-    } catch (err) {
-        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
-    }
-
+    // A cut-off list (max_tokens) keeps the cards that arrived whole; the
+    // words it never reached come back ai-unfilled below, so the gap shows.
+    const received = (Array.isArray(result.data?.cards) ? result.data.cards : []).filter(
+        isCompleteCard,
+    );
     // Emit any trailing card the snapshot parser hadn't confirmed.
     for (let i = emittedCount; i < received.length; i++) {
         const card = received[i];
@@ -342,66 +469,25 @@ const enrichWords = async (
         requested: input.words.length,
         enriched,
         durationMs: Date.now() - start,
-        tokensInput,
-        tokensOutput,
+        tokensInput: result.tokensInput,
+        tokensOutput: result.tokensOutput,
     };
     onCard({ type: 'done', meta });
     return { cards, meta };
 };
 
-// ---------- generateDeck ----------
+// ---------- generateDeck / deckFromImage (shared streaming) ----------
 
-const isValidDeckDraft = (data: Partial<AiDeckDraft>): boolean =>
-    typeof data.title === 'string' &&
-    typeof data.description === 'string' &&
-    typeof data.sourceLanguage === 'string' &&
-    typeof data.targetLanguage === 'string' &&
-    Array.isArray(data.cards) &&
-    data.cards.length > 0;
-
-const generateDeck = async (
-    input: GenerateDeckInput,
-    opts?: { onEvent?: (event: GenerateDeckEvent) => void },
-): Promise<AiDeckDraft> => {
-    const start = Date.now();
-    const { system, user } = buildGenerateDeckPrompt(input);
-    const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
-    const model = contentModel(input.sourceLanguage, input.targetLanguage);
-
-    if (!opts?.onEvent) {
-        const { data } = await callWithRetry<AiDeckDraft>(
-            {
-                system,
-                user,
-                toolName: DECK_TOOL.name,
-                tool: DECK_TOOL,
-                maxTokens,
-                model,
-            },
-            isValidDeckDraft,
-        );
-        return data;
-    }
-
-    // Captured so the narrowed callback is visible inside the stream closure.
-    const onEvent = opts.onEvent;
+/**
+ * Turns streamed tool-input snapshots into header + card events, emitting
+ * each card once and only after it fully arrived. Shared by topic and photo
+ * decks.
+ */
+const deckEmitter = (onEvent: (event: GenerateDeckEvent) => void) => {
     let emittedHeader = false;
     let emittedCardCount = 0;
-    let finalData: AiDeckDraft | null = null;
-    let tokensInput = 0;
-    let tokensOutput = 0;
-
-    try {
-        const stream = client().messages.stream({
-            model,
-            max_tokens: maxTokens,
-            system,
-            messages: [{ role: 'user', content: user }],
-            tools: [DECK_TOOL],
-            tool_choice: { type: 'tool', name: DECK_TOOL.name },
-        });
-
-        stream.on('inputJson', (_delta, snapshot) => {
+    return {
+        onSnapshot: (snapshot: unknown) => {
             if (!snapshot || typeof snapshot !== 'object') {
                 return;
             }
@@ -422,43 +508,78 @@ const generateDeck = async (
                 const complete = parsed.cards.length - 1;
                 for (let i = emittedCardCount; i < complete; i++) {
                     const c = parsed.cards[i];
-                    if (c === undefined) {
-                        continue;
-                    }
-                    if (typeof c.word === 'string' && typeof c.definition === 'string') {
+                    if (isCompleteCard(c)) {
                         onEvent({ type: 'card', position: i, card: c });
                         emittedCardCount = i + 1;
                     }
                 }
             }
-        });
+        },
+        // Emit any trailing cards the snapshots hadn't confirmed.
+        drain: (cards: AiCardDraft[]) => {
+            for (let i = emittedCardCount; i < cards.length; i++) {
+                const card = cards[i];
+                if (card !== undefined) {
+                    onEvent({ type: 'card', position: i, card });
+                }
+            }
+        },
+    };
+};
 
-        const finalMessage = await stream.finalMessage();
-        tokensInput = finalMessage.usage.input_tokens;
-        tokensOutput = finalMessage.usage.output_tokens;
-        const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
-        if (toolBlock?.type === 'tool_use') {
-            finalData = toolBlock.input as AiDeckDraft;
-        }
-    } catch (err) {
-        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
+const streamDeck = async (
+    call: ContentCallArgs,
+    validate: (data: Partial<AiDeckDraft>) => boolean,
+    onEvent: (event: GenerateDeckEvent) => void,
+    start: number,
+): Promise<AiDeckDraft> => {
+    const emitter = deckEmitter(onEvent);
+    const result = await streamContent<AiDeckDraft>({ ...call, onSnapshot: emitter.onSnapshot });
+    // A cut-off deck would otherwise validate with fewer cards than asked for.
+    if (result.stopReason === 'max_tokens') {
+        throw new AiValidationFailedError(CUT_OFF);
     }
-
-    if (!finalData || !isValidDeckDraft(finalData)) {
+    if (!result.data || !validate(result.data)) {
         throw new AiValidationFailedError();
     }
-    // Drain any trailing cards.
-    for (let i = emittedCardCount; i < finalData.cards.length; i++) {
-        const card = finalData.cards[i];
-        if (card !== undefined) {
-            onEvent({ type: 'card', position: i, card });
-        }
-    }
+    emitter.drain(result.data.cards);
     onEvent({
         type: 'done',
-        meta: { durationMs: Date.now() - start, tokensInput, tokensOutput },
+        meta: {
+            durationMs: Date.now() - start,
+            tokensInput: result.tokensInput,
+            tokensOutput: result.tokensOutput,
+        },
     });
-    return finalData;
+    return result.data;
+};
+
+const isValidDeckDraft = (data: Partial<AiDeckDraft>): boolean =>
+    typeof data.title === 'string' &&
+    typeof data.description === 'string' &&
+    typeof data.sourceLanguage === 'string' &&
+    typeof data.targetLanguage === 'string' &&
+    Array.isArray(data.cards) &&
+    data.cards.length > 0;
+
+const generateDeck = async (
+    input: GenerateDeckInput,
+    opts?: { onEvent?: (event: GenerateDeckEvent) => void },
+): Promise<AiDeckDraft> => {
+    const start = Date.now();
+    const { system, user } = buildGenerateDeckPrompt(input);
+    const call: ContentCallArgs = {
+        op: 'generate_deck',
+        choice: contentRoute(input.sourceLanguage, input.targetLanguage),
+        system,
+        content: user,
+        tool: DECK_TOOL,
+        maxTokens: Math.min(8000, 1500 + (input.count ?? 8) * 250),
+    };
+    if (!opts?.onEvent) {
+        return (await callContent<AiDeckDraft>(call, isValidDeckDraft)).data;
+    }
+    return streamDeck(call, isValidDeckDraft, opts.onEvent, start);
 };
 
 // ---------- deckFromImage ----------
@@ -481,151 +602,26 @@ const imageContentBlock = (image: AiImageInput): Anthropic.ImageBlockParam => ({
     },
 });
 
-/** Run one tool-use call with an image + text user message; on validation
- * failure, retry once with a clarifying text block appended (the image is
- * only sent once — Anthropic keeps it in context for the retry turn). */
-const callImageToolUse = async (args: {
-    system: ReturnType<typeof buildDeckFromImagePrompt>['system'];
-    content: Anthropic.ContentBlockParam[];
-    maxTokens: number;
-    model?: string;
-}): Promise<{ data: AiDeckDraft; tokensInput: number; tokensOutput: number }> => {
-    let response;
-    try {
-        response = await client().messages.create({
-            model: args.model ?? env.ANTHROPIC_MODEL,
-            max_tokens: args.maxTokens,
-            system: args.system,
-            messages: [{ role: 'user', content: args.content }],
-            tools: [DECK_TOOL],
-            tool_choice: { type: 'tool', name: DECK_TOOL.name },
-        });
-    } catch (err) {
-        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
-    }
-    const toolBlock = response.content.find((b) => b.type === 'tool_use');
-    if (toolBlock?.type !== 'tool_use') {
-        throw new AiValidationFailedError('Provider returned no tool_use block');
-    }
-    return {
-        data: toolBlock.input as AiDeckDraft,
-        tokensInput: response.usage.input_tokens,
-        tokensOutput: response.usage.output_tokens,
-    };
-};
-
 const deckFromImage = async (
     input: DeckFromImageProviderInput,
     opts?: { onEvent?: (event: GenerateDeckEvent) => void },
 ): Promise<AiDeckDraft> => {
     const start = Date.now();
     const { system, user } = buildDeckFromImagePrompt(input);
-    const baseContent: Anthropic.ContentBlockParam[] = [
-        imageContentBlock(input.image),
-        { type: 'text', text: user },
-    ];
-    const maxTokens = Math.min(8000, 1500 + (input.count ?? 8) * 250);
-    const model = contentModel(input.sourceLanguage, input.targetLanguage);
-
+    const call: ContentCallArgs = {
+        op: 'deck_from_image',
+        choice: photoRoute(input.sourceLanguage, input.targetLanguage),
+        system,
+        // A retry appends its note as a further text block; the image is
+        // sent again with it (each attempt is a fresh request).
+        content: [imageContentBlock(input.image), { type: 'text', text: user }],
+        tool: DECK_TOOL,
+        maxTokens: Math.min(8000, 1500 + (input.count ?? 8) * 250),
+    };
     if (!opts?.onEvent) {
-        let result = await callImageToolUse({ system, content: baseContent, maxTokens, model });
-        if (!isValidImageDeckDraft(result.data)) {
-            result = await callImageToolUse({
-                system,
-                content: [
-                    ...baseContent,
-                    {
-                        type: 'text',
-                        text: 'Retry: your previous output failed schema validation. Return only the tool call, fully populated.',
-                    },
-                ],
-                maxTokens,
-                model,
-            });
-            if (!isValidImageDeckDraft(result.data)) {
-                throw new AiValidationFailedError();
-            }
-        }
-        return result.data;
+        return (await callContent<AiDeckDraft>(call, isValidImageDeckDraft)).data;
     }
-
-    // Streaming path — mirrors generateDeck's inputJson snapshot parsing
-    // (including capturing the narrowed callback for the stream closure).
-    const onEvent = opts.onEvent;
-    let emittedHeader = false;
-    let emittedCardCount = 0;
-    let finalData: AiDeckDraft | null = null;
-    let tokensInput = 0;
-    let tokensOutput = 0;
-
-    try {
-        const stream = client().messages.stream({
-            model,
-            max_tokens: maxTokens,
-            system,
-            messages: [{ role: 'user', content: baseContent }],
-            tools: [DECK_TOOL],
-            tool_choice: { type: 'tool', name: DECK_TOOL.name },
-        });
-
-        stream.on('inputJson', (_delta, snapshot) => {
-            if (!snapshot || typeof snapshot !== 'object') {
-                return;
-            }
-            const parsed = snapshot as Partial<AiDeckDraft>;
-            if (
-                !emittedHeader &&
-                typeof parsed.title === 'string' &&
-                typeof parsed.description === 'string' &&
-                typeof parsed.sourceLanguage === 'string' &&
-                typeof parsed.targetLanguage === 'string'
-            ) {
-                const { cards: _ignored, ...header } = parsed as AiDeckDraft;
-                void _ignored;
-                onEvent({ type: 'header', deck: header });
-                emittedHeader = true;
-            }
-            if (Array.isArray(parsed.cards)) {
-                const complete = parsed.cards.length - 1;
-                for (let i = emittedCardCount; i < complete; i++) {
-                    const c = parsed.cards[i];
-                    if (c === undefined) {
-                        continue;
-                    }
-                    if (typeof c.word === 'string' && typeof c.definition === 'string') {
-                        onEvent({ type: 'card', position: i, card: c });
-                        emittedCardCount = i + 1;
-                    }
-                }
-            }
-        });
-
-        const finalMessage = await stream.finalMessage();
-        tokensInput = finalMessage.usage.input_tokens;
-        tokensOutput = finalMessage.usage.output_tokens;
-        const toolBlock = finalMessage.content.find((b) => b.type === 'tool_use');
-        if (toolBlock?.type === 'tool_use') {
-            finalData = toolBlock.input as AiDeckDraft;
-        }
-    } catch (err) {
-        throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
-    }
-
-    if (!finalData || !isValidImageDeckDraft(finalData)) {
-        throw new AiValidationFailedError();
-    }
-    // Drain any trailing cards (may be zero — the "no readable text" case).
-    for (let i = emittedCardCount; i < finalData.cards.length; i++) {
-        const card = finalData.cards[i];
-        if (card !== undefined) {
-            onEvent({ type: 'card', position: i, card });
-        }
-    }
-    onEvent({
-        type: 'done',
-        meta: { durationMs: Date.now() - start, tokensInput, tokensOutput },
-    });
-    return finalData;
+    return streamDeck(call, isValidImageDeckDraft, opts.onEvent, start);
 };
 
 // ---------- suggest ----------
@@ -642,11 +638,12 @@ const suggest = async (input: {
     streak: number;
 }): Promise<AiSuggestion> => {
     const { system, user } = buildSuggestPrompt(input);
-    const { data } = await callWithRetry<AiSuggestion>(
+    const { data } = await callContent<AiSuggestion>(
         {
+            op: 'suggest',
+            choice: chatRoute(),
             system,
-            user,
-            toolName: SUGGEST_TOOL.name,
+            content: user,
             tool: SUGGEST_TOOL,
             maxTokens: 400,
         },
@@ -673,8 +670,11 @@ const runChatRound = async (params: {
     system: string;
     maxOutputTokens: number;
     tools?: ChatToolsConfig;
+    // 'none' keeps the tools declared but forbids calling them (round 2).
+    toolChoice?: 'auto' | 'none';
     onEvent?: (event: ChatStreamEvent) => void;
     signal?: AbortSignal;
+    op: string;
 }): Promise<{
     content: string;
     tokensInput: number;
@@ -682,17 +682,34 @@ const runChatRound = async (params: {
     toolUse: ToolUseBlock | null;
     rawAssistantBlocks: Anthropic.ContentBlock[];
 }> => {
+    const { route, model, effort } = chatRoute();
+    const started = Date.now();
+    let ttftMs: number | null = null;
+    const log = (message: Anthropic.Message | undefined, error?: string) =>
+        logAiCall({
+            op: params.op,
+            route,
+            model,
+            effort,
+            usage: message?.usage,
+            stopReason: message?.stop_reason,
+            durationMs: Date.now() - started,
+            ttftMs,
+            stream: true,
+            ...(error ? { error } : {}),
+        });
     let buffer = '';
+    // What the stream had reported when it failed; unset until a request went out.
+    let partial: (() => Anthropic.Message | undefined) | null = null;
+    let finalMessage: Anthropic.Message;
     try {
         params.signal?.throwIfAborted();
         const stream = client().messages.stream({
-            model: env.ANTHROPIC_MODEL,
+            model,
             max_tokens: params.maxOutputTokens,
             system: params.system,
             messages: params.messages,
-            ...(env.ANTHROPIC_CHAT_EFFORT === 'off'
-                ? {}
-                : { output_config: { effort: env.ANTHROPIC_CHAT_EFFORT } }),
+            ...effortParam(model, effort),
             ...(params.tools
                 ? {
                       tools: params.tools.defs as unknown as Anthropic.Tool[],
@@ -701,53 +718,76 @@ const runChatRound = async (params: {
                       // off: only the first tool_use block is dispatched, and a
                       // second one leaves round 2 with an unanswered tool_use id
                       // (the API then rejects the whole turn).
-                      tool_choice: { type: 'auto' as const, disable_parallel_tool_use: true },
+                      tool_choice:
+                          params.toolChoice === 'none'
+                              ? { type: 'none' as const }
+                              : { type: 'auto' as const, disable_parallel_tool_use: true },
                   }
                 : {}),
         });
-
+        partial = () => stream.currentMessage;
         const onAbort = () => stream.abort();
         params.signal?.addEventListener('abort', onAbort, { once: true });
+        stream.on(
+            'streamEvent',
+            ttftListener(started, (ms) => {
+                ttftMs ??= ms;
+            }),
+        );
 
         stream.on('text', (delta) => {
             buffer += delta;
             params.onEvent?.({ type: 'token', delta } satisfies ChatStreamEvent);
         });
 
-        let finalMessage: Anthropic.Message;
         try {
             finalMessage = await stream.finalMessage();
         } finally {
             params.signal?.removeEventListener('abort', onAbort);
         }
-        // The model declined mid-reply: any streamed text is cut off, so fail
-        // the turn (nothing was written) instead of saving a partial answer.
-        if (finalMessage.stop_reason === 'refusal') {
-            throw new AiProviderError('refusal', 'Model declined to answer');
-        }
-        const toolBlock = finalMessage.content.find(
-            (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-        );
-        return {
-            content: buffer,
-            tokensInput: finalMessage.usage.input_tokens,
-            tokensOutput: finalMessage.usage.output_tokens,
-            toolUse: toolBlock
-                ? {
-                      type: 'tool_use',
-                      id: toolBlock.id,
-                      name: toolBlock.name,
-                      input: toolBlock.input as Record<string, unknown>,
-                  }
-                : null,
-            rawAssistantBlocks: finalMessage.content,
-        };
     } catch (err) {
-        if (err instanceof AiProviderError) {
-            throw err;
+        if (partial) {
+            log(partial(), (err as Error).message);
         }
         throw new AiProviderError(providerErrorStatus(err), (err as Error).message);
     }
+    log(finalMessage);
+
+    // The model declined mid-reply: any streamed text is cut off, so fail
+    // the turn (nothing was written) instead of saving a partial answer.
+    if (finalMessage.stop_reason === 'refusal') {
+        throw new AiProviderError('refusal', 'Model declined to answer');
+    }
+    // Read by block type: a reply may open with thinking blocks.
+    const toolBlock = finalMessage.content.find(
+        (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
+    );
+    // A turn that spent everything on thinking (or said nothing) would save
+    // an empty bubble. A reply cut off by max_tokens after real text is kept.
+    const hasText = finalMessage.content.some((b) => b.type === 'text' && b.text.trim() !== '');
+    if (!toolBlock && !hasText) {
+        throw new AiProviderError(
+            'empty',
+            finalMessage.stop_reason === 'max_tokens'
+                ? 'Reply ran out of tokens before any text'
+                : 'Model returned an empty reply',
+        );
+    }
+    return {
+        content: buffer,
+        tokensInput: finalMessage.usage.input_tokens,
+        tokensOutput: finalMessage.usage.output_tokens,
+        toolUse: toolBlock
+            ? {
+                  type: 'tool_use',
+                  id: toolBlock.id,
+                  name: toolBlock.name,
+                  input: toolBlock.input as Record<string, unknown>,
+              }
+            : null,
+        // Passed back unchanged in round 2, thinking blocks included.
+        rawAssistantBlocks: finalMessage.content,
+    };
 };
 
 /**
@@ -808,6 +848,7 @@ const chat = async (
     }));
 
     const round1 = await runChatRound({
+        op: 'chat_round1',
         messages: initialMessages,
         system: input.systemPrompt,
         maxOutputTokens: input.maxOutputTokens,
@@ -892,10 +933,16 @@ const chat = async (
     let round2: { content: string; tokensInput: number; tokensOutput: number };
     try {
         round2 = await runChatRound({
+            op: 'chat_round2',
             messages: round2Messages,
             system: input.systemPrompt,
             maxOutputTokens: input.maxOutputTokens,
-            // No tools on round 2 — keep it strictly the final text reply.
+            // Same tools as round 1 but none may be called: round 2 is
+            // strictly the final text reply. Dropping them instead would edit
+            // the request under round 1's thinking blocks, which newer models
+            // reject (or silently drop) as a history edit.
+            tools: input.tools,
+            toolChoice: 'none',
             ...(opts?.onEvent ? { onEvent: opts.onEvent } : {}),
             ...(opts?.signal ? { signal: opts.signal } : {}),
         });

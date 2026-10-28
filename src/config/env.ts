@@ -25,6 +25,14 @@ const parseCsvOrigins = (value: string | undefined, ctx: z.RefinementCtx): strin
     return origins;
 };
 
+// Thinking effort for one AI route. 'off' sends no effort parameter.
+const effort = z.enum(['off', 'low', 'medium', 'high']);
+// A model id that may be left blank (`KEY=` in .env counts as unset).
+const optionalModel = z
+    .string()
+    .optional()
+    .transform((v) => (v?.trim() ? v.trim() : undefined));
+
 const envSchema = z
     .object({
         NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -56,36 +64,56 @@ const envSchema = z
         //   'anthropic' → real LLM via @anthropic-ai/sdk (requires ANTHROPIC_API_KEY)
         AI_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
         ANTHROPIC_API_KEY: z.string().optional(),
+        // Model per route. Each route has its own effort; 'off' omits the
+        // parameter, and it is also dropped for models that reject it (e.g.
+        // claude-haiku-4-5). Unset routes fall back as noted — the defaults
+        // reproduce the routing that existed before these were split out.
+        //
+        // Chat replies and Mimi's tips.
         ANTHROPIC_MODEL: z.string().default('claude-haiku-5-5'),
-        // Thinking effort for chat replies. 'low' matched 'medium' on our chat
-        // eval at lower cost. 'off' omits the parameter — needed for models
-        // without effort support (e.g. claude-haiku-4-5), which reject it.
-        ANTHROPIC_CHAT_EFFORT: z.enum(['off', 'low', 'medium', 'high']).default('low'),
-        // Card CONTENT (enrich / generate / deck-from-image) for decks with a
-        // Ukrainian side. Haiku's Ukrainian came back with Russian words and
-        // broken agreement, and cards are the product — a stronger model is
-        // worth the extra cost on the few calls that write them. Chat replies
-        // stay on ANTHROPIC_MODEL.
+        // 'low' matched 'medium' on our chat eval at lower cost.
+        ANTHROPIC_CHAT_EFFORT: effort.default('low'),
+        // Card CONTENT (word lists, topic decks, chat create_deck / add_cards)
+        // when neither side is Ukrainian. Unset → ANTHROPIC_MODEL.
+        ANTHROPIC_CONTENT_MODEL_EN: optionalModel,
+        ANTHROPIC_CONTENT_EFFORT_EN: effort.default('off'),
+        // Card content for decks with a Ukrainian side. Haiku 4.5's Ukrainian
+        // came back with Russian words and broken agreement, and cards are the
+        // product — a stronger model is worth the extra cost here.
         ANTHROPIC_CONTENT_MODEL_UK: z.string().default('claude-sonnet-5'),
+        ANTHROPIC_CONTENT_EFFORT_UK: effort.default('off'),
+        // Photo → deck. Unset → the content route for the deck's languages
+        // (model AND effort); when set, ANTHROPIC_PHOTO_EFFORT applies.
+        ANTHROPIC_PHOTO_MODEL: optionalModel,
+        ANTHROPIC_PHOTO_EFFORT: effort.default('off'),
 
-        // Per-user daily caps on each AI operation.
-        AI_DAILY_ENRICH_CAP_PER_USER: z.coerce.number().int().positive().default(5),
-        AI_DAILY_GENERATE_CAP_PER_USER: z.coerce.number().int().positive().default(20),
-        AI_DAILY_SUGGEST_CAP_PER_USER: z.coerce.number().int().positive().default(60),
+        // What a user can ask Mimi for each day. Free users see these three
+        // ("2 decks · 50 messages · 5 card additions left today"), and only when
+        // they are running low.
+        //   DECKS    — Mimi makes a new deck (from a topic, a word list or a photo).
+        //   MESSAGES — the user sends Mimi a chat message (with or without a photo).
+        //   ACTIONS  — Mimi generates cards into an existing deck.
+        // Premium is UNLIMITED as far as users can tell: the *_PREMIUM values are
+        // hidden safety caps against abuse and are never shown to anyone.
+        MIMI_DECKS_PER_DAY_FREE: z.coerce.number().int().positive().default(2),
+        MIMI_DECKS_PER_DAY_PREMIUM: z.coerce.number().int().positive().default(100),
+        MIMI_MESSAGES_PER_DAY_FREE: z.coerce.number().int().positive().default(50),
+        MIMI_MESSAGES_PER_DAY_PREMIUM: z.coerce.number().int().positive().default(1000),
+        MIMI_ACTIONS_PER_DAY_FREE: z.coerce.number().int().positive().default(5),
+        MIMI_ACTIONS_PER_DAY_PREMIUM: z.coerce.number().int().positive().default(200),
 
-        // Hard ceiling on words per enrich call.
-        AI_MAX_WORDS_PER_ENRICH: z.coerce.number().int().positive().max(200).default(100),
+        // Mimi's automatic tips (dashboard / review). Users never ask for these,
+        // so they aren't shown as a limit — this only stops runaway clients.
+        MIMI_TIPS_PER_DAY: z.coerce.number().int().positive().default(100),
 
-        // Vision (deck-from-image + image-attached chat turns) — separate daily
-        // cap since vision calls cost more than text-only ones, and a hard byte
-        // ceiling on the uploaded image (images are never persisted).
-        AI_DAILY_IMAGE_CAP_PER_USER: z.coerce.number().int().positive().default(10),
+        // Most words Mimi fills in one go (one pasted word list).
+        MIMI_MAX_WORDS_PER_REQUEST: z.coerce.number().int().positive().max(200).default(100),
+
+        // Hard byte ceiling on an uploaded image (images are never persisted).
         AI_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(5_000_000),
 
-        // Real-time chat — daily per-user cap on user-message turns, context
-        // window size (turns sent to the model), and per-reply output ceiling.
+        // Chat — how many recent messages Mimi remembers, and the longest reply.
         // The ceiling includes thinking tokens, so it sits well above reply length.
-        AI_DAILY_CHAT_CAP_PER_USER: z.coerce.number().int().positive().default(50),
         AI_CHAT_CONTEXT_TURNS: z.coerce.number().int().positive().max(100).default(20),
         AI_CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().max(16000).default(8000),
 
@@ -137,13 +165,7 @@ const envSchema = z
         MIXPANEL_TOKEN: z.string().optional(),
         MIXPANEL_API_SECRET: z.string().optional(),
 
-        // Per-user daily caps for premium plan (defaults = 10× free)
-        AI_DAILY_ENRICH_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(50),
-        AI_DAILY_GENERATE_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),
-        AI_DAILY_SUGGEST_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(600),
-        AI_DAILY_CHAT_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(500),
         IMPORT_DAILY_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(200),
-        AI_DAILY_IMAGE_CAP_PREMIUM_PER_USER: z.coerce.number().int().positive().default(100),
     })
     .refine(
         (v) =>

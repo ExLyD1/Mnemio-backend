@@ -14,6 +14,7 @@ import * as writes from '../repositories/chat-tools.repository.js';
 import * as achievements from './achievements.service.js';
 import * as milestone from './milestone.service.js';
 import * as aiService from './ai.service.js';
+import * as budget from './ai.budget.service.js';
 import * as decksService from './decks.service.js';
 import * as cardsService from './cards.service.js';
 import * as decksRepo from '../repositories/decks.repository.js';
@@ -369,13 +370,14 @@ const isDraftAcceptable = (cards: AiCardDraft[], requestedCount?: number): boole
     return cards.length >= min;
 };
 
-// Wraps aiService.generateDeck with one deterministic retry if the draft
-// fails the sanity check above (e.g. the provider returned zero cards).
-const generateDeckWithRetry = async (
+// Wraps aiService.draftDeck with one deterministic retry if the draft fails the
+// sanity check above (e.g. the provider returned zero cards). Unmetered — the
+// tool charges once for what the user gets, however many drafts it took.
+export const generateDeckWithRetry = async (
     userId: string,
-    params: Parameters<typeof aiService.generateDeck>[1],
+    params: Parameters<typeof aiService.draftDeck>[1],
 ) => {
-    const first = await aiService.generateDeck(userId, params);
+    const first = await aiService.draftDeck(userId, params);
     if (isDraftAcceptable(first.cards, params.count)) {
         return first;
     }
@@ -385,8 +387,79 @@ const generateDeckWithRetry = async (
         requestedCount: params.count,
         got: first.cards.length,
     });
-    const retry = await aiService.generateDeck(userId, params);
+    const retry = await aiService.draftDeck(userId, params);
     return isDraftAcceptable(retry.cards, params.count) ? retry : first;
+};
+
+const buildDeck = async (
+    userId: string,
+    input: CreateDeckToolInput,
+    p: {
+        words: string[] | null;
+        topic: string | null;
+        sourceLanguage: string;
+        targetLanguage: string;
+    },
+    ctx: { userMessage?: string; signal?: AbortSignal; assistantMessageId?: string },
+): Promise<ToolResult> => {
+    const { words, topic, sourceLanguage, targetLanguage } = p;
+    if (words) {
+        const enriched = await aiService.fillCards({ words, sourceLanguage, targetLanguage });
+        const title = resolveTitle({
+            modelTitle: input.title,
+            userMessage: ctx.userMessage,
+            fallback: titleForWordList(input, targetLanguage),
+        });
+        ctx.signal?.throwIfAborted();
+        const persisted = await persistDeck(
+            userId,
+            { title, sourceLanguage, targetLanguage },
+            enriched.cards,
+            ctx.assistantMessageId,
+        );
+        // eslint-disable-next-line no-console
+        console.log('[chat.tools] create_deck persisted', {
+            deckId: persisted.attachment.deckId,
+            cardCount: persisted.words.length,
+            firstWords: persisted.words.slice(0, 10),
+        });
+        return { ok: true, ...persisted };
+    }
+
+    // topic branch — `words` is null here, so the caller's guard means topic is set
+    const draft = await generateDeckWithRetry(userId, {
+        topic: topic ?? '',
+        sourceLanguage,
+        targetLanguage,
+        ...(input.count ? { count: input.count } : {}),
+    });
+    ctx.signal?.throwIfAborted();
+    const persisted = await persistDeck(
+        userId,
+        {
+            title: resolveTitle({
+                modelTitle: input.title ?? draft.title,
+                userMessage: ctx.userMessage,
+                fallback: DEFAULT_TITLE_FALLBACK,
+            }),
+            description: draft.description,
+            // The resolved pair is authoritative — it is what the prompt
+            // told the model to write in. Don't let the model's own echo of
+            // the languages (draft.sourceLanguage/targetLanguage) override
+            // it: it can mislabel, e.g. read "uk" as UK English.
+            sourceLanguage,
+            targetLanguage,
+        },
+        draft.cards,
+        ctx.assistantMessageId,
+    );
+    // eslint-disable-next-line no-console
+    console.log('[chat.tools] create_deck persisted', {
+        deckId: persisted.attachment.deckId,
+        cardCount: persisted.words.length,
+        firstWords: persisted.words.slice(0, 10),
+    });
+    return { ok: true, ...persisted };
 };
 
 export const runCreateDeck = async (
@@ -433,67 +506,9 @@ export const runCreateDeck = async (
     const { sourceLanguage, targetLanguage } = langs;
 
     try {
-        if (words) {
-            const enriched = await aiService.enrichWords(userId, {
-                words,
-                sourceLanguage,
-                targetLanguage,
-            });
-            const title = resolveTitle({
-                modelTitle: input.title,
-                userMessage: ctx.userMessage,
-                fallback: titleForWordList(input, targetLanguage),
-            });
-            ctx.signal?.throwIfAborted();
-            const persisted = await persistDeck(
-                userId,
-                { title, sourceLanguage, targetLanguage },
-                enriched.cards,
-                ctx.assistantMessageId,
-            );
-            // eslint-disable-next-line no-console
-            console.log('[chat.tools] create_deck persisted', {
-                deckId: persisted.attachment.deckId,
-                cardCount: persisted.words.length,
-                firstWords: persisted.words.slice(0, 10),
-            });
-            return { ok: true, ...persisted };
-        }
-
-        // topic branch — `words` is null here, so the guard above means topic is set
-        const draft = await generateDeckWithRetry(userId, {
-            topic: topic ?? '',
-            sourceLanguage,
-            targetLanguage,
-            ...(input.count ? { count: input.count } : {}),
-        });
-        ctx.signal?.throwIfAborted();
-        const persisted = await persistDeck(
-            userId,
-            {
-                title: resolveTitle({
-                    modelTitle: input.title ?? draft.title,
-                    userMessage: ctx.userMessage,
-                    fallback: DEFAULT_TITLE_FALLBACK,
-                }),
-                description: draft.description,
-                // The resolved pair is authoritative — it is what the prompt
-                // told the model to write in. Don't let the model's own echo of
-                // the languages (draft.sourceLanguage/targetLanguage) override
-                // it: it can mislabel, e.g. read "uk" as UK English.
-                sourceLanguage,
-                targetLanguage,
-            },
-            draft.cards,
-            ctx.assistantMessageId,
+        return await budget.metered(userId, 'deck', () =>
+            buildDeck(userId, input, { words, topic, sourceLanguage, targetLanguage }, ctx),
         );
-        // eslint-disable-next-line no-console
-        console.log('[chat.tools] create_deck persisted', {
-            deckId: persisted.attachment.deckId,
-            cardCount: persisted.words.length,
-            firstWords: persisted.words.slice(0, 10),
-        });
-        return { ok: true, ...persisted };
     } catch (err) {
         return toFailure(err);
     }
@@ -604,98 +619,111 @@ export const runAddCards = async (
         let skipped: string[] = [];
         let drafts: AiCardDraft[];
 
-        if (words) {
-            const fresh = words.filter((w) => !existingKeys.has(compareKey(w)));
-            skipped = words.filter((w) => existingKeys.has(compareKey(w)));
-            if (fresh.length === 0) {
+        const fresh = words ? words.filter((w) => !existingKeys.has(compareKey(w))) : null;
+        if (words && fresh?.length === 0) {
+            return {
+                ok: false,
+                reason: 'ALL_DUPLICATES',
+                details: { deck: deck.title, skipped: words },
+            };
+        }
+
+        // Charged as one action — reserved before any AI spend, given back
+        // unless cards were actually added.
+        await budget.reserve(userId, 'action');
+        let added = false;
+        try {
+            if (words && fresh) {
+                skipped = words.filter((w) => existingKeys.has(compareKey(w)));
+                drafts = (
+                    await aiService.fillCards({
+                        words: fresh,
+                        sourceLanguage,
+                        targetLanguage,
+                    })
+                ).cards;
+            } else {
+                drafts = (
+                    await generateDeckWithRetry(userId, {
+                        topic: topic ?? '',
+                        sourceLanguage,
+                        targetLanguage,
+                        ...(input.count ? { count: input.count } : {}),
+                        // The model can't see the deck, so it happily re-generates
+                        // words that are already in it.
+                        exclude: existing.map((c) => c.word),
+                    })
+                ).cards;
+            }
+
+            // Final net: catches duplicates the generator produced anyway, and any
+            // the enrich step renamed.
+            const seen = new Set(existingKeys);
+            const cards: AiCardDraft[] = [];
+            for (const c of drafts) {
+                const key = compareKey(c.word);
+                if (seen.has(key)) {
+                    skipped.push(c.word);
+                    continue;
+                }
+                seen.add(key);
+                cards.push(c);
+            }
+            if (cards.length === 0) {
                 return {
                     ok: false,
                     reason: 'ALL_DUPLICATES',
                     details: { deck: deck.title, skipped },
                 };
             }
-            drafts = (
-                await aiService.enrichWords(userId, {
-                    words: fresh,
-                    sourceLanguage,
-                    targetLanguage,
-                })
-            ).cards;
-        } else {
-            drafts = (
-                await generateDeckWithRetry(userId, {
-                    topic: topic ?? '',
-                    sourceLanguage,
-                    targetLanguage,
-                    ...(input.count ? { count: input.count } : {}),
-                    // The model can't see the deck, so it happily re-generates
-                    // words that are already in it.
-                    exclude: existing.map((c) => c.word),
-                })
-            ).cards;
-        }
 
-        // Final net: catches duplicates the generator produced anyway, and any
-        // the enrich step renamed.
-        const seen = new Set(existingKeys);
-        const cards: AiCardDraft[] = [];
-        for (const c of drafts) {
-            const key = compareKey(c.word);
-            if (seen.has(key)) {
-                skipped.push(c.word);
-                continue;
+            ctx.signal?.throwIfAborted();
+            if (ctx.assistantMessageId) {
+                const attachment = await writes.writeDeck({
+                    userId,
+                    assistantMessageId: ctx.assistantMessageId,
+                    deckId,
+                    meta: { title: deck.title, sourceLanguage, targetLanguage },
+                    cards,
+                    skippedCount: skipped.length,
+                });
+                await achievements.evaluate(userId, 'card_create').catch(() => []);
+                added = true;
+                return {
+                    ok: true,
+                    attachment,
+                    words: cards.map((c) => c.word),
+                    ...(skipped.length > 0 ? { skipped } : {}),
+                };
             }
-            seen.add(key);
-            cards.push(c);
-        }
-        if (cards.length === 0) {
-            return {
-                ok: false,
-                reason: 'ALL_DUPLICATES',
-                details: { deck: deck.title, skipped },
-            };
-        }
-
-        ctx.signal?.throwIfAborted();
-        if (ctx.assistantMessageId) {
-            const attachment = await writes.writeDeck({
-                userId,
-                assistantMessageId: ctx.assistantMessageId,
-                deckId,
-                meta: { title: deck.title, sourceLanguage, targetLanguage },
-                cards,
-                skippedCount: skipped.length,
+            await cardsService.bulkCreate(userId, deckId, {
+                cards: cards.map(cardFromDraft),
             });
-            await achievements.evaluate(userId, 'card_create').catch(() => []);
+
+            added = true;
+            // Re-read for the deck's new total (bulkCreate recomputes cardCount).
+            const updated = await decksRepo.findDeckById(deckId, userId);
             return {
                 ok: true,
-                attachment,
+                attachment: {
+                    type: 'deck',
+                    deckId,
+                    title: deck.title,
+                    cardCount: updated?.cardCount ?? cards.length,
+                    action: 'appended',
+                    addedCount: cards.length,
+                    ...(skipped.length > 0 ? { skippedCount: skipped.length } : {}),
+                    sourceLanguage,
+                    targetLanguage,
+                },
                 words: cards.map((c) => c.word),
                 ...(skipped.length > 0 ? { skipped } : {}),
             };
+        } finally {
+            if (!added) {
+                await budget.release(userId, 'action');
+            }
         }
-        await cardsService.bulkCreate(userId, deckId, {
-            cards: cards.map(cardFromDraft),
-        });
-
-        // Re-read for the deck's new total (bulkCreate recomputes cardCount).
-        const fresh = await decksRepo.findDeckById(deckId, userId);
-        return {
-            ok: true,
-            attachment: {
-                type: 'deck',
-                deckId,
-                title: deck.title,
-                cardCount: fresh?.cardCount ?? cards.length,
-                action: 'appended',
-                addedCount: cards.length,
-                ...(skipped.length > 0 ? { skippedCount: skipped.length } : {}),
-                sourceLanguage,
-                targetLanguage,
-            },
-            words: cards.map((c) => c.word),
-            ...(skipped.length > 0 ? { skipped } : {}),
-        };
     } catch (err) {
         return toFailure(err);
     }

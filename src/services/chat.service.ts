@@ -329,10 +329,9 @@ export const sendMessage = async (
         throw new ChatNotFoundError();
     }
 
-    // Image-attached turns are metered under the 'image' cap (vision calls
-    // cost more) instead of 'chat' — one consistent cap across both the
-    // standalone deck-from-image endpoint and this attachment path.
-    const budgetKind = opts.image ? 'image' : 'chat';
+    // Every user turn is one message, photo or not. A deck or card change the
+    // turn makes is charged separately by the tool that makes it.
+    const budgetKind = 'message';
 
     // Budget check BEFORE we persist anything. We don't charge for messages
     // that 429.
@@ -369,15 +368,14 @@ export const sendMessage = async (
 
         const userLangs = await loadUserLanguages(userId);
 
-        // Real remaining deck-building allowance, so the reply can state it instead
-        // of inventing one (and so an exhausted budget costs a sentence, not a
-        // doomed tool call).
+        // Real remaining allowance, so the reply can state it instead of inventing
+        // one (and so an exhausted budget costs a sentence, not a doomed tool call).
         const usage = await budget.usageSnapshot(userId);
         const budgetCtx = {
-            wordListRemaining: usage.kinds.enrich.remaining,
-            wordListCap: usage.kinds.enrich.cap,
-            topicRemaining: usage.kinds.generate.remaining,
-            topicCap: usage.kinds.generate.cap,
+            decksRemaining: usage.kinds.deck.remaining,
+            decksCap: usage.kinds.deck.cap,
+            actionsRemaining: usage.kinds.action.remaining,
+            actionsCap: usage.kinds.action.cap,
             resetsAt: usage.resetsAt,
             plan: usage.plan,
         };

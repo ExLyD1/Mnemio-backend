@@ -91,12 +91,11 @@ const usage = (overrides: Record<string, { used: number; cap: number; remaining:
         plan: 'free',
         resetsAt: '2026-06-09T00:00:00.000Z',
         kinds: {
-            enrich: { used: 0, cap: 5, remaining: 5 },
-            generate: { used: 0, cap: 20, remaining: 20 },
-            suggest: { used: 0, cap: 60, remaining: 60 },
+            deck: { used: 0, cap: 2, remaining: 2 },
+            message: { used: 0, cap: 50, remaining: 50 },
+            action: { used: 0, cap: 5, remaining: 5 },
+            tip: { used: 0, cap: 100, remaining: 100 },
             import: { used: 0, cap: 20, remaining: 20 },
-            chat: { used: 0, cap: 50, remaining: 50 },
-            image: { used: 0, cap: 10, remaining: 10 },
             ...overrides,
         },
     } as never);
@@ -127,7 +126,7 @@ describe('chat.service / sendMessage', () => {
             })),
         );
         await sendMessage('u', 'c', 'create', () => undefined);
-        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'chat');
+        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'message');
         expect(mockedBudget.release).not.toHaveBeenCalled();
     });
     it('throws CHAT_NOT_FOUND when the caller does not own the conversation', async () => {
@@ -197,7 +196,7 @@ describe('chat.service / sendMessage', () => {
         expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
         expect(mockedBudget.release).not.toHaveBeenCalled();
         // reservation remains charged on success
-        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'chat');
+        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'message');
     });
 
     it.each([502, 'refusal'])(
@@ -226,7 +225,7 @@ describe('chat.service / sendMessage', () => {
                 status: 'partial',
             });
             // We didn't charge the user for the partial.
-            expect(mockedBudget.release).toHaveBeenCalledWith('u', 'chat');
+            expect(mockedBudget.release).toHaveBeenCalledWith('u', 'message');
             // And we didn't bump the conversation order — partial replies don't
             // jump to the top of the sidebar.
             expect(mockedRepo.touchLastMessageAt).not.toHaveBeenCalled();
@@ -434,7 +433,7 @@ describe('chat.service / sendMessage', () => {
         await expect(sendMessage('u', 'c', 'second', () => undefined)).rejects.toBeInstanceOf(
             ChatBusyError,
         );
-        expect(mockedBudget.release).toHaveBeenCalledWith('u', 'chat');
+        expect(mockedBudget.release).toHaveBeenCalledWith('u', 'message');
     });
 
     // History is read AFTER the user row is saved, so without an explicit
@@ -505,7 +504,7 @@ describe('chat.service / sendMessage', () => {
         );
     });
 
-    it('with an attached image: meters under "image" (not "chat"), adds the image clause to the prompt, and attaches the image to only the newest turn', async () => {
+    it('with an attached image: counts as one message, adds the image clause to the prompt, and attaches the image to only the newest turn', async () => {
         mockedRepo.findConversation.mockResolvedValue(conversationRow() as never);
         mockedRepo.countUserMessages.mockResolvedValue(1);
         mockedRepo.lastTurnsForModel.mockResolvedValue([
@@ -527,9 +526,8 @@ describe('chat.service / sendMessage', () => {
 
         await sendMessage('u', 'c', '', () => undefined, { image });
 
-        // Metered as 'image', not 'chat'.
-        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'image');
-        expect(mockedBudget.reserve).toHaveBeenCalledWith('u', 'image');
+        // A photo is just part of the message — no separate limit.
+        expect(mockedBudget.reserve).toHaveBeenCalledExactlyOnceWith('u', 'message');
         // System prompt gets the image-handling clause.
         expect(seenPrompt).toContain('attached an image');
         // Only the newest (last) turn carries the image; the prior DB turn doesn't.
@@ -575,7 +573,7 @@ describe('chat turn recovery', () => {
         expect(mockedRepo.finalizeAssistantMessage).toHaveBeenCalledWith(
             expect.objectContaining({ content: 'half', status: 'partial' }),
         );
-        expect(mockedBudget.release).toHaveBeenCalledWith('u', 'chat');
+        expect(mockedBudget.release).toHaveBeenCalledWith('u', 'message');
     });
 });
 
@@ -603,7 +601,7 @@ describe('explicit chat cancellation', () => {
         finish({ nativeLanguage: 'uk', learningLanguages: ['en'] } as never);
         await rejected;
         expect(chat).not.toHaveBeenCalled();
-        expect(mockedBudget.release).toHaveBeenCalledExactlyOnceWith('u', 'chat');
+        expect(mockedBudget.release).toHaveBeenCalledExactlyOnceWith('u', 'message');
     });
     it('requires conversation ownership', async () => {
         mockedRepo.findConversation.mockResolvedValue(null);

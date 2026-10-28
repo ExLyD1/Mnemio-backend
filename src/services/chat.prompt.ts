@@ -95,41 +95,40 @@ Language rules:
 // the user's profile languages, optionally the open deck (so the model knows it
 // can append to it), and an image-handling clause when the current turn has an
 // attached image.
-// What's left of today's deck-building budget, and when it resets. Without
-// this the model had no idea a limit existed: it improvised "I hit a temporary
-// limit, try again in a moment" (nothing is retried) and even invented caps
-// ("the app's limit is 20 cards per deck"). Both counts are real, so it can
-// spend a turn explaining instead of a wasted tool call.
+// What's left of today's allowance, and when it resets. Without this the model
+// had no idea a limit existed: it improvised "I hit a temporary limit, try again
+// in a moment" (nothing is retried) and even invented caps. The counts are real,
+// so it can spend a turn explaining instead of a wasted tool call.
 export type ChatBudgetContext = {
-    // Word-list decks (the user supplies the words).
-    wordListRemaining: number;
-    wordListCap: number;
-    // Topic decks (the model picks the words).
-    topicRemaining: number;
-    topicCap: number;
+    // New decks (create_deck).
+    decksRemaining: number;
+    decksCap: number;
+    // Changes to an existing deck (add_cards).
+    actionsRemaining: number;
+    actionsCap: number;
     resetsAt: string;
     plan: 'free' | 'premium';
 };
 
 const budgetSection = (b: ChatBudgetContext): string => {
+    if (b.plan === 'premium') {
+        return '\n\nThis user is on Premium: they have no daily limit on decks, messages or card additions. Never state or imply a limit.';
+    }
     const reset = `${b.resetsAt} (UTC)`;
     const lines = [
-        `\n\nToday's deck-building allowance for this user (${b.plan} plan), resetting at ${reset}:`,
-        `- decks/appends from a list of words the user gives: ${b.wordListRemaining} of ${b.wordListCap} left today`,
-        `- decks/appends you generate from a topic: ${b.topicRemaining} of ${b.topicCap} left today`,
-        'These are the real numbers — quote them if the user asks, and never state any other limit.',
+        `\n\nToday's allowance for this user (${b.plan} plan), resetting at ${reset}:`,
+        `- new decks: ${b.decksRemaining} of ${b.decksCap} left today`,
+        `- actions on an existing deck (adding cards): ${b.actionsRemaining} of ${b.actionsCap} left today`,
+        'Answering questions, examples, synonyms and translations in chat never uses these. These are the real numbers — quote them if the user asks, and never state any other limit.',
     ];
-    if (b.wordListRemaining === 0 && b.topicRemaining === 0) {
+    if (b.decksRemaining === 0) {
         lines.push(
-            'Both are exhausted: do NOT call a tool. Say the daily limit is reached, give the reset time in the user\'s own words (e.g. "tomorrow"), and offer to help without creating cards. Never say "try again in a moment".',
+            'New decks are used up for today: do NOT call create_deck. Say so, give the reset time in the user\'s own words (e.g. "tomorrow"), and offer to help in chat instead (e.g. list the words so they can add them later). Never say "try again in a moment".',
         );
-    } else if (b.wordListRemaining === 0) {
+    }
+    if (b.actionsRemaining === 0) {
         lines.push(
-            'The word-list allowance is exhausted: a deck built from words the user lists will fail. Say so before trying, and offer a topic-based deck instead.',
-        );
-    } else if (b.topicRemaining === 0) {
-        lines.push(
-            'The topic allowance is exhausted: a deck you generate from a topic will fail. Say so before trying, and offer to build one from words the user lists instead.',
+            "Actions are used up for today: do NOT call add_cards. Say so, give the reset time in the user's own words, and offer to help in chat instead.",
         );
     }
     return lines.join('\n');

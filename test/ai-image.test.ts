@@ -10,6 +10,7 @@ vi.mock('../src/repositories/preferences.repository.js', () => ({
 vi.mock('../src/services/ai.budget.service.js', () => ({
     reserve: vi.fn().mockResolvedValue(undefined),
     release: vi.fn().mockResolvedValue(undefined),
+    metered: (_userId: string, _kind: string, work: () => Promise<unknown>) => work(),
 }));
 
 // ai.service.ts picks its provider from env.AI_PROVIDER at import time. Force

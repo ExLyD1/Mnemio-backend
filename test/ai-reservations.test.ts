@@ -3,8 +3,33 @@ import * as budget from '../src/services/ai.budget.service.js';
 import * as ai from '../src/services/ai.service.js';
 import { mockProvider } from '../src/services/ai.provider.mock.js';
 import { importByText } from '../src/services/imports.service.js';
+import type * as EnvModule from '../src/config/env.js';
 
-vi.mock('../src/services/ai.budget.service.js', () => ({ reserve: vi.fn(), release: vi.fn() }));
+vi.mock('../src/services/ai.budget.service.js', () => {
+    const reserve = vi.fn();
+    const release = vi.fn();
+    // Same contract as the real `metered`, wired to the spies above.
+    const metered = async (userId: string, kind: string, work: () => Promise<unknown>) => {
+        await reserve(userId, kind);
+        try {
+            return await work();
+        } catch (err) {
+            await release(userId, kind);
+            throw err;
+        }
+    };
+    return { reserve, release, metered };
+});
+// ai.service.ts picks its provider from env.AI_PROVIDER at import time. Pin
+// 'mock' so a local .env with AI_PROVIDER=anthropic never makes this suite
+// fire real, billed API calls.
+vi.mock('../src/config/env.js', async () => {
+    const actual = await vi.importActual<typeof EnvModule>('../src/config/env.js');
+    return { ...actual, env: { ...actual.env, AI_PROVIDER: 'mock' } };
+});
+vi.mock('../src/repositories/preferences.repository.js', () => ({
+    findOrCreate: vi.fn().mockResolvedValue({ nativeLanguage: 'uk', learningLanguages: ['en'] }),
+}));
 vi.mock('../src/repositories/srs.repository.js', () => ({ countDueCards: async () => 0 }));
 vi.mock('../src/repositories/activity.repository.js', () => ({ allDays: async () => [] }));
 
@@ -14,12 +39,12 @@ beforeEach(() => {
 });
 const calls = [
     [
-        'enrich',
+        'action',
         'enrichWords',
         () => ai.enrichWords('u', { words: ['apple'], sourceLanguage: 'uk', targetLanguage: 'en' }),
     ],
     [
-        'generate',
+        'deck',
         'generateDeck',
         () =>
             ai.generateDeck('u', {
@@ -30,7 +55,7 @@ const calls = [
             }),
     ],
     [
-        'image',
+        'deck',
         'deckFromImage',
         () =>
             ai.deckFromImage('u', {
@@ -39,10 +64,10 @@ const calls = [
                 targetLanguage: 'en',
             }),
     ],
-    ['suggest', 'suggest', () => ai.suggest('u', { context: 'dashboard' })],
+    ['tip', 'suggest', () => ai.suggest('u', { context: 'dashboard' })],
 ] as const;
 
-it.each(calls)('%s stays charged on success', async (kind, method, run) => {
+it.each(calls)('%s stays charged on success (%s)', async (kind, method, run) => {
     vi.spyOn(mockProvider, method).mockImplementation((async () => {
         expect(budget.reserve).toHaveBeenCalledWith('u', kind);
         return method === 'enrichWords'
@@ -52,7 +77,7 @@ it.each(calls)('%s stays charged on success', async (kind, method, run) => {
     await run();
     expect(budget.release).not.toHaveBeenCalled();
 });
-it.each(calls)('%s releases provider failures', async (kind, method, run) => {
+it.each(calls)('%s releases provider failures (%s)', async (kind, method, run) => {
     const error = new Error('provider failed');
     vi.spyOn(mockProvider, method).mockRejectedValue(error);
     await expect(run()).rejects.toBe(error);
