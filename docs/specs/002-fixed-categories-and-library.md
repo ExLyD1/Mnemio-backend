@@ -1,6 +1,6 @@
 # 002 — Fixed categories + learning library
 
-> Status: **Approved (rev 2)** · Date: 2026-10-28
+> Status: **Backend implemented (tasks 1–9); frontend pending** · Date: 2026-10-28
 >
 > **Rev 2 (approval changes):**
 > (1) chat `create_deck` takes `subject` + `targetLanguage` as enum-constrained
@@ -735,4 +735,54 @@ Each task is independently committable and leaves both repos green.
 
 ## Decisions made during build
 
-_(empty)_
+Backend (tasks 1–9):
+
+1. **Branches.** `feat/fixed-categories-library` in both repos, cut from
+   `feat/deck-scoped-review` (29 commits ahead of `main`; this spec builds on its
+   session code), not from `main`.
+2. **28 languages, not 29.** `chinese` and `mandarin` both map to `zh`; the spec's
+   count was wrong.
+3. **`deck_subject_backfill` audit table** (not in the spec): one row per deck the
+   migration changed, with its raw old value and the rule used. It gives the AI
+   script the original label as context and lets ops revert a bad mapping. Drop it
+   once the backfill is verified in production.
+4. **`updatedAt` is never bumped** by the migration or the backfill script (raw SQL,
+   not Prisma `update`): a taxonomy repair is not a user edit and must not reorder
+   anyone's deck list.
+5. **Keyword rules are a 1:1 port** of the FE `normCategory` (same order, same
+   substrings), in both TS and the migration's SQL. They over-match (`cartography`
+   → arts via `art`, `terms` → languages via `term`). Accepted: they only run on
+   non-exact legacy values and as the AI fallback; `preview-subject-mapping.sql`
+   lets you read every mapping before deploy.
+6. **A bare language name** ("Deutsch", "日本語") resolves to `languages`, but 2–3
+   letter strings ("it", "cs") do not, since they are more likely abbreviations.
+7. **Session status** is `'complete'` in this codebase (not `'completed'`), which the
+   `user_decks` backfill uses.
+8. **`user_decks` writes** are fire-and-forget through
+   `services/user-decks.service.ts#trackStudied` (never awaited, errors swallowed) —
+   outside the XP / activity path, as the spec requires. Existing tests that call
+   `rate` / `complete` mock that helper so they never touch a database.
+9. **Classification model.** `classifySubject` uses the existing chat route
+   (`ANTHROPIC_MODEL`, Haiku 5.5 by default) so no new env var was needed; it is not
+   tied to the content-language routes, so the Ukrainian-quality model is never paid
+   for a one-word answer.
+10. **Chat `create_deck`.** The model's `subject` is stored as `subjectSource 'ai'`;
+    the topic branch ignores the generator's own `draft.subject` (the chat model
+    already chose in the same call). `targetLanguage` is preferred over
+    `wordsLanguage`; when only one of them is readable, that one is used.
+11. **`POST /ai/classify-subject`** shares the AI routes' 30/min limit.
+12. **Anki import** classifies before inserting (concurrency 4, 4 s timeout each,
+    rules fallback), so latency grows by at most ~4 s and the import never fails on
+    classification.
+13. **Discover `lang`** is now validated with `langSchema` (aliases normalize,
+    unknown → 400) and matches `targetLanguage` only.
+14. **Bad library cursor** returns the existing `400 INVALID_CURSOR`, not
+    `VALIDATION_ERROR`.
+15. **Backfill script safety.** It is a dry run unless `--apply` is passed
+    (`--dry-run` is accepted; both together is an error), it prints the DB host
+    first, and every write is guarded (`subjectSource = 'pending'`, unchanged
+    language values). The language pass needed a small provider capability
+    (`detectLanguages`) the spec implied but did not list.
+16. **Gates.** `test/billing-management.test.ts` fails before and after these
+    changes: it requires a dedicated `mnemio_qa_sub` database. Everything else
+    passes.
