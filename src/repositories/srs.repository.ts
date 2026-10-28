@@ -84,6 +84,47 @@ export const nextFutureDue = (userId: string, scope: DeckScope, now: Date, retur
         select: { nextReviewAt: true },
     });
 
+export type DeckDueRow = {
+    deckId: string;
+    deckTitle: string;
+    coverColor: string | null;
+    glyph: string | null;
+    due: number;
+};
+
+// Per-deck count of the cards queueData would return as due, ignoring its review
+// cap: due reviews and (re)learning, plus intraday learning inside the learn-ahead
+// window. New cards never count. Same access rule as accessibleCardScope.
+export const dueByDeck = (
+    userId: string,
+    scope: DeckScope,
+    now: Date,
+    ahead: Date,
+): Promise<DeckDueRow[]> => {
+    const deckIds = scope === undefined ? null : typeof scope === 'string' ? [scope] : scope;
+    return prisma.$queryRaw<DeckDueRow[]>`
+        SELECT d.id            AS "deckId",
+               d.title         AS "deckTitle",
+               d."coverColor"  AS "coverColor",
+               d.glyph         AS "glyph",
+               COUNT(*)::int   AS "due"
+          FROM card_progresses cp
+          JOIN cards c ON c.id = cp."cardId"
+          JOIN decks d ON d.id = c."deckId"
+         WHERE cp."userId" = ${userId}
+           AND (d."authorId" = ${userId} OR d."isPublic" = true)
+           AND (${deckIds}::text[] IS NULL OR c."deckId" = ANY(${deckIds}::text[]))
+           AND (
+                (cp.state = 'review' AND cp."nextReviewAt" <= ${now})
+             OR (cp.state IN ('learning', 'relearning')
+                 AND (cp."nextReviewAt" <= ${now}
+                      OR (cp."learningStepSecs" < 86400 AND cp."nextReviewAt" <= ${ahead})))
+           )
+         GROUP BY d.id
+         ORDER BY "due" DESC, d.title ASC, d.id ASC
+    `;
+};
+
 export const findProgress = (userId: string, cardId: string) =>
     prisma.cardProgress.findUnique({ where: { userId_cardId: { userId, cardId } } });
 

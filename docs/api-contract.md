@@ -946,6 +946,13 @@ client-side per-deck fan-out).
   nextDueAt: string | null;      // earliest future due beyond the returned items
   newAvailable: number;          // new cards held back by the daily limit
   limits: { newPerDay: number; newIntroducedToday: number };
+  byDeck: {
+    deckId: string;
+    deckTitle: string;
+    coverColor: string | null;
+    glyph: string | null;
+    due: number;                 // ≥ 1
+  }[];
 }
 // Errors: 404 DECK_NOT_FOUND · 403 CARD_FORBIDDEN (deckId only) · 400 VALIDATION_ERROR
 ```
@@ -958,6 +965,12 @@ DECK_NOT_FOUND` (not 403, so private decks can't be enumerated). `deckId` +
 VALIDATION_ERROR`. Without either: due cards across all accessible
 decks, no new cards. Order: due learning, then reviews with new cards mixed in
 evenly, then learning cards due within 20 minutes (learn-ahead).
+
+`byDeck` is always present (may be `[]`): per deck in the request's scope, the
+due cards the query would return **ignoring `limit`** (`nextReviewAt ≤ now`,
+plus intraday learning/relearning within the learn-ahead window). New cards are
+never counted; only decks with `due ≥ 1`. Order: `due DESC, deckTitle ASC,
+deckId ASC`. Powers the `/review` hub.
 
 #### `GET /srs/due`  *(auth)*
 ```ts

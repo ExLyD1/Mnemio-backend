@@ -13,6 +13,7 @@ import { SRS_DEFAULTS } from './srs-engine.js';
 import { dayNumber, rollover } from './srs-clock.js';
 import { DEFAULT_TZ } from './tz.js';
 import {
+    toPublicDeckDue,
     toPublicProgress,
     type PublicCardProgress,
     type Previews,
@@ -154,14 +155,18 @@ export const queue = async (userId: string, query: QueueQuery, tz: string = DEFA
     const scope: DeckScope = deckIds ?? deckId;
     const introduced = await srsRepo.newIntroducedToday(userId, scope, today);
     const newLimit = Math.max(0, SRS_DEFAULTS.newPerDay - introduced + extraNew);
-    const data = await srsRepo.queueData(
-        userId,
-        scope,
-        now,
-        new Date(now.getTime() + SRS_DEFAULTS.learnAheadMinutes * 60_000),
-        newLimit,
-        query.limit ?? SRS_DEFAULTS.reviewsPerDay,
-    );
+    const ahead = new Date(now.getTime() + SRS_DEFAULTS.learnAheadMinutes * 60_000);
+    const [data, byDeck] = await Promise.all([
+        srsRepo.queueData(
+            userId,
+            scope,
+            now,
+            ahead,
+            newLimit,
+            query.limit ?? SRS_DEFAULTS.reviewsPerDay,
+        ),
+        srsRepo.dueByDeck(userId, scope, now, ahead),
+    ]);
     const mapProgress = (p: (typeof data.reviews)[number]): QueueItem => ({
         card: toPublicCard(p.card),
         state: p.state as SrsState,
@@ -201,6 +206,8 @@ export const queue = async (userId: string, query: QueueQuery, tz: string = DEFA
         nextDueAt: future?.nextReviewAt.toISOString() ?? null,
         newAvailable: Math.max(0, data.newTotal - fresh.length),
         limits: { newPerDay: SRS_DEFAULTS.newPerDay, newIntroducedToday: introduced },
+        // Uncapped per-deck due counts for the review hub (sorted by the query).
+        byDeck: byDeck.map(toPublicDeckDue),
     };
 };
 

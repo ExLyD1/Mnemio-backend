@@ -12,6 +12,7 @@ vi.mock('../src/repositories/srs.repository.js', async () => {
         queueData: vi.fn(),
         newIntroducedToday: vi.fn(),
         nextFutureDue: vi.fn(),
+        dueByDeck: vi.fn(),
     };
 });
 vi.mock('../src/repositories/decks.repository.js', async () => {
@@ -77,6 +78,7 @@ describe('srs.service / queue with deckIds', () => {
         vi.resetAllMocks();
         mockedSrs.newIntroducedToday.mockResolvedValue(4);
         mockedSrs.nextFutureDue.mockResolvedValue(null);
+        mockedSrs.dueByDeck.mockResolvedValue([]);
         mockedSrs.queueData.mockResolvedValue({
             dueLearning: [],
             reviews: [progress('c1', A), progress('c2', B)],
@@ -139,6 +141,69 @@ describe('srs.service / queue with deckIds', () => {
         await queue('u1', parse({}));
         expect(mockedSrs.queueData.mock.calls[0]![1]).toBeUndefined();
         expect(mockedDecks.findReadableDeckIds).not.toHaveBeenCalled();
+    });
+});
+
+describe('srs.service / queue byDeck', () => {
+    beforeEach(() => {
+        vi.resetAllMocks();
+        mockedSrs.newIntroducedToday.mockResolvedValue(0);
+        mockedSrs.nextFutureDue.mockResolvedValue(null);
+        mockedSrs.queueData.mockResolvedValue({
+            dueLearning: [],
+            reviews: [],
+            learnAhead: [],
+            newCards: [],
+            newTotal: 0,
+        } as never);
+    });
+
+    it('is always present, even when nothing is due', async () => {
+        mockedSrs.dueByDeck.mockResolvedValue([]);
+        expect((await queue('u1', parse({}))).byDeck).toEqual([]);
+    });
+
+    it('maps rows in the order the query sorted them (due DESC, title, id)', async () => {
+        mockedSrs.dueByDeck.mockResolvedValue([
+            { deckId: B, deckTitle: 'Beta', coverColor: 'teal', glyph: '🐝', due: 7 },
+            { deckId: A, deckTitle: 'Alpha', coverColor: null, glyph: null, due: 2 },
+        ]);
+        expect((await queue('u1', parse({}))).byDeck).toEqual([
+            { deckId: B, deckTitle: 'Beta', coverColor: 'teal', glyph: '🐝', due: 7 },
+            { deckId: A, deckTitle: 'Alpha', coverColor: null, glyph: null, due: 2 },
+        ]);
+    });
+
+    it('coerces a driver bigint count to a number', async () => {
+        mockedSrs.dueByDeck.mockResolvedValue([
+            { deckId: A, deckTitle: 'Alpha', coverColor: null, glyph: null, due: 3n as never },
+        ]);
+        expect((await queue('u1', parse({}))).byDeck[0]!.due).toBe(3);
+    });
+
+    it('counts over the same scope and learn-ahead window as the queue, ignoring limit', async () => {
+        mockedDecks.findReadableDeckIds.mockResolvedValue([A, B]);
+        mockedSrs.dueByDeck.mockResolvedValue([]);
+        await queue('u1', parse({ deckIds: `${A},${B}`, limit: '1' }));
+        const [user, scope, now, ahead] = mockedSrs.dueByDeck.mock.calls[0]!;
+        expect(user).toBe('u1');
+        expect(scope).toEqual([A, B]);
+        expect(ahead.getTime() - now.getTime()).toBe(SRS_DEFAULTS.learnAheadMinutes * 60_000);
+        expect(mockedSrs.dueByDeck.mock.calls[0]).toHaveLength(4);
+    });
+
+    it.each([
+        ['unscoped', {}, undefined],
+        ['single deck', { deckId: A }, A],
+    ])('%s: same scope as the queue', async (_label, q, expected) => {
+        mockedDecks.findDeckByIdUnscoped.mockResolvedValue({
+            id: A,
+            authorId: 'u1',
+            isPublic: false,
+        } as never);
+        mockedSrs.dueByDeck.mockResolvedValue([]);
+        await queue('u1', parse(q));
+        expect(mockedSrs.dueByDeck.mock.calls[0]![1]).toEqual(expected);
     });
 });
 
