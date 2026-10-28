@@ -24,6 +24,7 @@ import type { ChatAttachment } from '../shared/mappers.chat.js';
 import { AppError } from '../shared/errors.js';
 import type { CreateCardInput } from '../schemas/card.schema.js';
 import { langDisplayName, normalizeLang } from '../shared/lang.js';
+import { inferSubject } from '../shared/subjects.js';
 
 // ---------- Public types ----------
 
@@ -277,7 +278,16 @@ const persistDeck = async (
     assistantMessageId?: string,
 ): Promise<{ attachment: ChatAttachment; words: string[] }> => {
     if (assistantMessageId) {
-        const attachment = await writes.writeDeck({ userId, assistantMessageId, meta, cards });
+        const attachment = await writes.writeDeck({
+            userId,
+            assistantMessageId,
+            meta: {
+                ...meta,
+                subject: inferSubject(meta.sourceLanguage, meta.targetLanguage),
+                subjectSource: 'rules',
+            },
+            cards,
+        });
         void milestone.checkFirstDeck(userId);
         await achievements.evaluate(userId, 'card_create').catch(() => []);
         return { attachment, words: cards.map((c) => c.word) };

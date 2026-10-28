@@ -102,6 +102,7 @@ export const copy = async (viewerId: string, sourceDeckId: string): Promise<Publ
                 coverColor: source.coverColor,
                 glyph: source.glyph,
                 subject: source.subject,
+                subjectSource: source.subjectSource,
                 sourceDeckId: source.id,
                 cardCount: source.cardCount,
             },

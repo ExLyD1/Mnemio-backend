@@ -1,5 +1,6 @@
 import type { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
+import type { Subject, SubjectSource } from '../shared/subjects.js';
 
 export type ListDecksParams = {
     ownerId: string;
@@ -82,7 +83,8 @@ export type DeckCreateData = {
     isPublic?: boolean;
     coverColor?: string | null;
     glyph?: string | null;
-    subject?: string | null;
+    subject: Subject;
+    subjectSource: SubjectSource;
     sourceDeckId?: string | null;
 };
 
@@ -94,7 +96,8 @@ export type DeckUpdateData = Partial<{
     isPublic: boolean;
     coverColor: string | null;
     glyph: string | null;
-    subject: string;
+    subject: Subject;
+    subjectSource: SubjectSource;
 }>;
 
 export const createDeck = (ownerId: string, data: DeckCreateData) =>
@@ -108,7 +111,8 @@ export const createDeck = (ownerId: string, data: DeckCreateData) =>
             isPublic: data.isPublic ?? false,
             coverColor: data.coverColor ?? null,
             glyph: data.glyph ?? null,
-            subject: data.subject ?? 'other',
+            subject: data.subject,
+            subjectSource: data.subjectSource,
             sourceDeckId: data.sourceDeckId ?? null,
         },
     });

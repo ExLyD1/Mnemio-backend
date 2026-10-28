@@ -9,6 +9,7 @@ import {
     type PageWithTotal,
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
+import { inferSubject, type SubjectSource } from '../shared/subjects.js';
 import {
     toPublicDeck,
     toPublicCard,
@@ -71,7 +72,14 @@ export const list = async (
     };
 };
 
-export const create = async (ownerId: string, input: CreateDeckInput): Promise<PublicDeck> => {
+// `subjectSource` labels an explicit subject's origin: 'user' for API callers,
+// 'ai' when a model picked it (chat). An omitted subject is always inferred
+// from the languages ('rules').
+export const create = async (
+    ownerId: string,
+    input: CreateDeckInput,
+    opts: { subjectSource?: SubjectSource } = {},
+): Promise<PublicDeck> => {
     const deck = await decksRepo.createDeck(ownerId, {
         title: input.title,
         description: input.description,
@@ -80,7 +88,8 @@ export const create = async (ownerId: string, input: CreateDeckInput): Promise<P
         isPublic: input.isPublic ?? false,
         coverColor: input.coverColor ?? null,
         glyph: input.glyph ?? null,
-        subject: input.subject ?? null,
+        subject: input.subject ?? inferSubject(input.sourceLanguage, input.targetLanguage),
+        subjectSource: input.subject ? (opts.subjectSource ?? 'user') : 'rules',
     });
     void milestone.checkFirstDeck(ownerId);
     return toPublicDeck(deck);
@@ -155,7 +164,8 @@ export const update = async (
         patch.glyph = input.glyph;
     }
     if (input.subject !== undefined) {
-        patch.subject = input.subject ?? 'other';
+        patch.subject = input.subject;
+        patch.subjectSource = 'user';
     }
 
     const { count } = await decksRepo.updateDeck(deckId, ownerId, patch);

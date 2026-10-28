@@ -1,5 +1,6 @@
 import type { DeckModel } from '../../generated/prisma/models/Deck.js';
 import type { CardModel } from '../../generated/prisma/models/Card.js';
+import { isSubject, type Subject } from './subjects.js';
 
 export type DeckStats = {
     total: number; // = cardCount
@@ -21,7 +22,7 @@ export type PublicDeck = {
     cardCount: number;
     coverColor: string | null;
     glyph: string | null;
-    subject: string | null;
+    subject: Subject;
     featured: boolean;
     copyCount: number;
     sourceDeckId: string | null;
@@ -102,7 +103,9 @@ export const toPublicDeck = (deck: DeckModel, stats?: DeckStats): PublicDeck => 
     cardCount: deck.cardCount,
     coverColor: deck.coverColor,
     glyph: deck.glyph,
-    subject: deck.subject,
+    // Every write path validates; the guard only covers a row a hand-run SQL
+    // edit left invalid — never leak a non-taxonomy value.
+    subject: isSubject(deck.subject) ? deck.subject : 'other',
     featured: deck.featured,
     copyCount: deck.copyCount,
     sourceDeckId: deck.sourceDeckId,

@@ -9,6 +9,7 @@ import * as budget from './ai.budget.service.js';
 import * as media from './media.service.js';
 import * as repo from '../repositories/imports.repository.js';
 import * as achievements from './achievements.service.js';
+import { inferSubject } from '../shared/subjects.js';
 import * as milestone from './milestone.service.js';
 
 export const importApkg = async (userId: string, bytes: Buffer, languages: ImportApkgInput) => {
@@ -70,6 +71,8 @@ export const importApkg = async (userId: string, bytes: Buffer, languages: Impor
             parsed.decks.map((deck) => ({
                 title: deck.title,
                 description: deck.description,
+                subject: inferSubject(languages.sourceLanguage, languages.targetLanguage),
+                subjectSource: 'rules' as const,
                 sourceData: deck.sourceData,
                 cards: deck.cards.map((card) => ({
                     word: card.word,

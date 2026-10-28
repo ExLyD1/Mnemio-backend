@@ -53,6 +53,7 @@ unless it says so explicitly.
 | 12 | `/imports/*` and `/ai/*` share a per-user daily-cap rollup in `ai_usage`. A user can hit the import cap without affecting AI calls and vice versa — distinct error codes (`IMPORT_BUDGET_EXCEEDED` vs `AI_BUDGET_EXCEEDED`). |
 | 13 | `/chat/conversations/:id/messages` is the only endpoint where partial-success matters: a streamed assistant reply that gets cut mid-flight is persisted with `status: 'partial'` and the user is NOT charged a daily-cap unit. The FE can render the half-reply and offer "retry." |
 | 14 | `GET /auth/me` (and every token-issuing auth response) now returns `plan: 'free' \| 'premium'` at the top level. Store it in auth state alongside `user` — the FE uses it to show/hide premium UI and to optimistically gate features before the server enforces them. On `403 PREMIUM_REQUIRED` from any endpoint, show the paywall modal (the server enforces even if the FE shows the feature). |
+| 15 | `deck.subject` is always one of the 12 `Subject` slugs (never null, never free text); a deck created without one gets `languages` (source ≠ target) or `other`. Discover's `subject` filter takes the same slugs. |
 
 ### Demo data
 `npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
@@ -257,6 +258,11 @@ type DeckStats = {
   masteredPct: number;    // 0..100, rounded
 };
 
+// The fixed deck taxonomy (spec 002). Labels are the FE's job (en + uk).
+type Subject =
+  | 'languages' | 'medicine' | 'science' | 'math' | 'technology' | 'humanities'
+  | 'social' | 'business' | 'law' | 'arts' | 'test-prep' | 'other';
+
 type Deck = {
   id: string;
   ownerId: string;
@@ -268,7 +274,7 @@ type Deck = {
   cardCount: number;
   coverColor: string | null;   // P2: '#RRGGBB' hex
   glyph: string | null;        // P2: short symbol/emoji, ≤ 8 chars
-  subject: string | null;      // P2: e.g. 'languages', 'science'
+  subject: Subject;            // always one of the 12 fixed subjects (spec 002)
   featured: boolean;           // P2: curator-flagged for Discover home
   copyCount: number;           // P2: # of times this deck has been cloned
   sourceDeckId: string | null; // P2: id of the public deck this was copied from
@@ -664,7 +670,8 @@ Example (after `npm run seed`):
   isPublic?: boolean;         // privacy toggle; **default false** (private)
   coverColor?: string | null; // P2: '#RRGGBB' hex
   glyph?: string | null;      // P2: 1–8 chars (emoji ok)
-  subject?: string | null;    // P2: 1–40 chars
+  subject?: Subject;          // fixed list; omitted → 'languages' if source ≠ target, else 'other'.
+                              // Anything else (legacy slug, free text, null) → 400 VALIDATION_ERROR.
 }
 // 201 Response: Deck
 ```
@@ -716,7 +723,8 @@ Example:
 #### `PATCH /decks/:id`  *(auth)*
 ```ts
 // Request: any subset of the POST /decks body, including isPublic /
-//          coverColor / glyph / subject. null clears the optional fields.
+//          coverColor / glyph / subject. null clears coverColor / glyph;
+//          `subject` is never null (400) — it must be one of the 12.
 // 200 Response: Deck
 ```
 
@@ -1285,7 +1293,7 @@ Paginated public-deck catalog. Same opaque cursor model as `GET /decks`.
 &limit?=number(<=50)             // default 20
 &q?=string                       // case-insensitive search on title/description
 &lang?=string                    // ISO 639-1; matches sourceLanguage OR targetLanguage
-&subject?=string                 // e.g. 'languages', 'science'
+&subject?=Subject                // one of the 12 fixed subjects; anything else → 400
 &sort?='popular' | 'recent'      // default 'recent'
 
 // 200 Response: PageWithTotal<DeckWithAuthor>
