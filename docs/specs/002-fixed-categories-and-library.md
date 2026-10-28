@@ -1,6 +1,6 @@
 # 002 — Fixed categories + learning library
 
-> Status: **Backend implemented (tasks 1–9); frontend pending** · Date: 2026-10-28
+> Status: **Implemented (tasks 1–15); ops (16) pending** · Date: 2026-10-28
 >
 > **Rev 2 (approval changes):**
 > (1) chat `create_deck` takes `subject` + `targetLanguage` as enum-constrained
@@ -802,3 +802,48 @@ Backend (tasks 1–9):
     `Language` (singular) is no longer an exact match, so it becomes `pending` and
     the AI classifies it. `test/subjects.test.ts` asserts that both SQL files' subject_map
     equals `SUBJECTS` + `LEGACY_SUBJECT_MAP` and contains no `LIKE`.
+
+Frontend (tasks 10–15):
+
+18. **`languages.<code>`, not `lang.<code>`.** The catalog already had a
+    `languages` namespace (used by `useLanguageName`), so it was extended to the 28
+    codes rather than adding a parallel `lang.*`.
+19. **Library i18n keys were added in task 14**, where they are used. Besides the
+    spec's list: `library.title`, `bySomeone`, `emptyFilteredMsg`, and aria labels
+    for the chip rows. `rail.decks` now reads "Library" / "Бібліотека".
+20. **The deck form validates against the compiled `SUPPORTED_LANGS`** (a mirror of
+    the backend list), not a schema built at runtime; the pickers offer the
+    taxonomy's list. The lexicon Nitro routes accept the same 28 codes.
+21. **`deckVm.tag` falls back to `displayLangCode()`.** `SharedDeckCard` already
+    shows the localized name from `lang`. `studyCard.lang/region` also use
+    `displayLangCode()`; neither field is rendered anywhere today.
+22. **The deck page eyebrow** shows the localized subject instead of the raw slug.
+23. **AI import on Auto** classifies at commit time from the title and the enriched
+    words. If that call fails, `subject` is omitted and the server infers one. The
+    create never fails because of classification.
+24. **No `deck_imported` event exists**, so only `deck_created` gained `subject`
+    (the value the server stored).
+25. **Discover index:** the chip row is All plus the subjects that have decks, and
+    it filters the list. Under Languages, a second row filters by
+    `targetLanguage`. Tiles link to the SEO pages. The 7 hard-coded language chips
+    are gone, and the unused `useDiscover` composable was deleted.
+26. **Sitemap:** taxonomy subjects (fallback: compiled list), minus subjects with 0
+    public decks when the counts are available. No legacy or DB-derived slugs.
+27. **`/discover/<slug>`:** odd casing (`/discover/Science`) also 301s to the
+    lowercase slug, and an unknown slug stays a 404 (existing behaviour) rather
+    than an empty page. Verified over HTTP against the dev server: `biology` →
+    301 `science`, `tech` → 301 `technology`, `nonsense` → 404.
+28. **The library store has two views:** the page's filtered, paged list, and
+    `allDecks` (scope=all, limit 50, cached 30 s) for the dashboard and Topbar.
+    Deck create/update/delete, Anki import and session complete call
+    `invalidate()`. A copy from Discover isn't explicitly invalidated: the
+    library page always refetches on mount, and elsewhere the 30 s cache expires.
+29. **The favorites filter ("Mine") is gone**; the heart stays. The library card
+    variant never had Practice/Add-cards buttons, so a non-owner card only adds
+    "by @author" ("by someone" when the author has no name).
+30. **`SharedFilterChips`** gained `scroll` (one sideways-scrolling row, used by the
+    library on mobile) and `label` (group aria-label).
+31. **Verification:** the FE gates are green after every task. `GET /library` was
+    smoke-tested through the FE proxy against a migrated scratch copy of the local
+    DB (tabs, facets, subject/lang filters, 400 on a bad subject). The UI was
+    **not** click-tested in a browser.
