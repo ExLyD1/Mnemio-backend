@@ -13,7 +13,7 @@ subscriptions via Paddle). **65 endpoints under `/api/v1`** + `GET /health` +
 `GET /ready` + static `/media/*`. Nothing in this document is "coming later"
 unless it says so explicitly.
 
-### Endpoint inventory (67 under `/api/v1`)
+### Endpoint inventory (68 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -27,7 +27,7 @@ unless it says so explicitly.
 | Achievements | `GET /achievements` · `GET /achievements/unseen` · `POST /achievements/ack` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
-| AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
+| AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/classify-subject` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
 | Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/taxonomy` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
@@ -1449,7 +1449,7 @@ not persist** — the FE shows the draft and the user accepts via
     description: string;
     sourceLanguage: string;
     targetLanguage: string;
-    subject?: string;
+    subject?: Subject;             // always one of the 12 (server-normalized; never free text)
     glyph?: string;
     cards: AiCardDraft[];
   };
@@ -1494,7 +1494,7 @@ Request is `multipart/form-data` (not JSON):
     description: string;
     sourceLanguage: string;
     targetLanguage: string;
-    subject?: string;
+    subject?: Subject;             // always one of the 12 (server-normalized; never free text)
     glyph?: string;
     cards: AiCardDraft[];        // may be empty — see `note` below
   };
@@ -1544,6 +1544,30 @@ data: { "meta": { "durationMs": 1200, "tokensInput": 900, "tokensOutput": 300 } 
 A `no_text` result streams `start` → `header` (explaining there's nothing to
 learn) → `done` with `note: 'no_text'` and zero `card` events — the FE can
 treat "no cards arrived" and `note` as the same signal.
+
+#### `POST /ai/classify-subject`  *(auth)*
+Files a deck under one of the 12 fixed subjects. Used by the AI-import dialog
+when its category picker is left on **Auto-detect**. One enum answer from the
+cheapest model on ≤ 20 words.
+
+**Not budgeted:** no `ai_usage` reservation, no cap, never `403
+PREMIUM_REQUIRED` / `AI_BUDGET_EXCEEDED` — a system cost, identical for free and
+premium. Only the 30/min per-user rate limit applies. **Never fails on an AI
+problem:** a provider error, a 4 s timeout or an off-list answer returns the
+keyword rules' answer (then the language heuristic) with `source: 'rules'`.
+```ts
+// Request
+{
+  title: string;              // 1–120
+  description?: string;       // ≤ 500
+  sourceLanguage: string;     // as POST /decks (aliases normalize; unknown → 400)
+  targetLanguage: string;
+  words?: string[];           // ≤ 20 entries, ≤ 80 chars each; default []
+}
+// 200 Response
+{ subject: Subject; source: 'ai' | 'rules' }
+// Errors: 400 VALIDATION_ERROR · 429 RATE_LIMITED
+```
 
 #### `POST /ai/suggest`  *(auth)*
 Contextual Mimi nudge for the dashboard / deck detail / review screens.
@@ -1623,6 +1647,9 @@ example/part of speech by field name); everything else is kept in
 `Card.sourceData` / `Deck.sourceData` (never returned by the API).
 ```ts
 // Fields: file (the .apkg) · sourceLanguage · targetLanguage (as in POST /decks)
+//         · subject? (one of the 12). Present → applied to every deck created.
+//           Absent → each deck is classified from its title + first 10 card words
+//           (system cost; falls back to rules, never fails the import).
 // 201 Response
 {
   decks: { id: string; title: string; cardCount: number }[];
@@ -1878,6 +1905,14 @@ includes the first ~10 persisted `words`, so the model's post-tool reply is
 grounded in what was actually saved rather than re-deriving it from memory.
 The `topic` branch (`generateDeck`) additionally gets one deterministic retry
 if the draft comes back empty or well short of the requested `count`.
+
+**Subject:** `create_deck` also takes `subject` (enum = the 12) and
+`targetLanguage` (enum = the 28 codes; the preferred spelling of
+`wordsLanguage`, which stays accepted), so the model picks both in the **same
+call** — there is no separate classification request. A missing or invalid
+`subject` falls back to the keyword rules on the title, then to `languages`
+(source ≠ target) / `other`. The deck is stored with `subjectSource 'ai'` or
+`'rules'` accordingly.
 
 **Language:** `add_cards` always uses the open deck's own pair. For
 `create_deck` the model sees `wordsLanguage` (the language being learned →

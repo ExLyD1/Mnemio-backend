@@ -13,6 +13,7 @@ import type {
 } from '../schemas/ai.schema.js';
 import type { SuggestContext } from './ai.provider.js';
 import { langDisplayName, normalizeLang } from '../shared/lang.js';
+import { SUBJECTS } from '../shared/subjects.js';
 
 // Bare ISO codes are ambiguous to the model — "uk" in particular reads as
 // "United Kingdom" (i.e. English), which produced English definitions on
@@ -144,13 +145,17 @@ export const buildEnrichWordsPrompt = (input: EnrichWordsInput) => {
     return { system, user };
 };
 
+// Deck subjects are a fixed list (src/shared/subjects.ts). Vocabulary and
+// phrase decks are "languages"; everything else is the closest field.
+export const SUBJECT_RULE = `exactly one of: ${SUBJECTS.join(', ')} — "languages" for vocabulary/phrases of a language, otherwise the closest field, "other" if none fits`;
+
 const generateDeckSystem = (rawSource: string, rawTarget: string): string =>
     `
 You are a vocabulary-deck designer for Mnemio.
 
 Your job: given a topic + a source language and target language, output a
-study-ready deck with title, description, subject ("languages" if vocab,
-else the field), an optional 1-glyph emoji, and N high-quality cards.
+study-ready deck with title, description, subject (${SUBJECT_RULE}), an
+optional 1-glyph emoji, and N high-quality cards.
 
 Each card has the same fields as enrich (definition is required;
 phonetic / partOfSpeech / tags / difficulty optional). Give every card an
@@ -234,7 +239,7 @@ CRITICAL rules:
   set title/description to explain that plainly and return an EMPTY cards
   array. Do not fabricate cards to fill the deck.
 
-Also produce: title, description, subject ("languages"), and an optional
+Also produce: title, description, subject (${SUBJECT_RULE}), and an optional
 1-glyph emoji. Set targetLanguage to the ISO 639-1 code of the words' language
 (e.g. "de", not "German") and sourceLanguage to the ISO 639-1 code of the
 definitions' language.
@@ -288,5 +293,45 @@ export const buildSuggestPrompt = (input: {
     ];
     const user = `Context: ${input.context}
 User state: ${input.dueCount} cards due, ${input.streak}-day streak.${input.deckId ? `\nDeck in focus: ${input.deckId}` : ''}`;
+    return { system, user };
+};
+
+const classifySubjectSystem = `
+You file flashcard decks into a fixed list of subjects for Mnemio.
+
+Pick exactly one subject for the deck described by the user:
+${SUBJECTS.map((s) => `- ${s}`).join('\n')}
+
+Rules:
+- "languages": the deck teaches words, phrases or grammar of a human language
+  (the cards pair a word with its translation/definition in another language).
+- Any other subject: the deck is about that field of knowledge (e.g. anatomy →
+  medicine, biology/chemistry/physics → science, history/geography/literature →
+  humanities, programming → technology).
+- "test-prep": exam preparation decks (SAT, IELTS, bar exam) when the exam is
+  the point rather than the field.
+- "other": nothing above fits. Prefer a specific subject when one clearly fits.
+
+Call the emit_subject tool exactly once.
+`.trim();
+
+export const buildClassifySubjectPrompt = (input: {
+    title: string;
+    description?: string | undefined;
+    sourceLanguage: string;
+    targetLanguage: string;
+    words: string[];
+}) => {
+    const system: CacheableSystem = [
+        { type: 'text', text: classifySubjectSystem, cache_control: CACHEABLE },
+    ];
+    const user = [
+        `Title: ${input.title}`,
+        input.description ? `Description: ${input.description}` : '',
+        `Card words are in: ${promptLang(input.targetLanguage)}; definitions are in: ${promptLang(input.sourceLanguage)}`,
+        input.words.length > 0 ? `Sample words: ${input.words.join(', ')}` : '',
+    ]
+        .filter(Boolean)
+        .join('\n');
     return { system, user };
 };

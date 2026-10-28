@@ -9,6 +9,7 @@ import type {
     AiDeckDraft,
     AiImageInput,
     AiProvider,
+    ClassifySubjectInput,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -22,6 +23,7 @@ import type {
 import { AiTooManyWordsError } from '../shared/errors.js';
 import { DEFAULT_TZ, computeStreak, tzDayKey } from './tz.js';
 import { normalizeLang } from '../shared/lang.js';
+import { resolveSubject } from '../shared/subjects.js';
 
 const selectProvider = (): AiProvider => {
     if (env.AI_PROVIDER === 'anthropic') {
@@ -91,15 +93,23 @@ const resolveSourceLanguage = async (userId: string, requested?: string): Promis
 // mislabel (e.g. read "uk" as UK English) or name a detected language in full
 // ("German"). Only a detected target (image, no target requested) comes from
 // the model, normalized to a code.
-const withResolvedLangs = <T extends { sourceLanguage: string; targetLanguage: string }>(
+const withResolvedLangs = <
+    T extends { sourceLanguage: string; targetLanguage: string; subject?: string },
+>(
     deck: T,
     sourceLanguage: string,
     requestedTarget: string | undefined,
-): T => ({
-    ...deck,
-    sourceLanguage,
-    targetLanguage: requestedTarget ?? normalizeLang(deck.targetLanguage) ?? deck.targetLanguage,
-});
+): T => {
+    const targetLanguage =
+        requestedTarget ?? normalizeLang(deck.targetLanguage) ?? deck.targetLanguage;
+    return {
+        ...deck,
+        sourceLanguage,
+        targetLanguage,
+        // Always one of the fixed subjects, whatever the model returned.
+        subject: resolveSubject(deck.subject, sourceLanguage, targetLanguage),
+    };
+};
 
 const withResolvedHeader = (
     onEvent: ((event: GenerateDeckEvent) => void) | undefined,
@@ -178,5 +188,9 @@ export const suggest = (userId: string, input: SuggestInput, tz: string = DEFAUL
         }
         return provider.suggest(args);
     });
+
+// Unmetered and unbudgeted (spec 002): a one-enum answer from the cheapest
+// model, so the premium gate and the daily caps never see it.
+export const classifySubject = (input: ClassifySubjectInput) => provider.classifySubject(input);
 
 export const providerName = (): string => provider.name;

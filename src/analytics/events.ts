@@ -27,6 +27,16 @@ export type AnalyticsEvent =
           };
       }
     | {
+          // A deck's subject was picked by the classifier (import, the
+          // classify endpoint, or the backfill script) — not by the user.
+          name: 'deck_subject_classified';
+          props: {
+              source: 'import' | 'classify_endpoint' | 'backfill';
+              result: 'ai' | 'rules';
+              ms: number;
+          };
+      }
+    | {
           name: 'subscription_started';
           props: { billing_plan: BillingPlan; status: 'trialing' | 'active'; price: number };
       }

@@ -11,6 +11,7 @@ import type {
     GenerateDeckEvent,
     SuggestContext,
 } from './ai.provider.js';
+import { normalizeSubject } from '../shared/subjects.js';
 
 const titleCase = (s: string) => s.replace(/\b([a-z])/g, (m) => m.toUpperCase());
 
@@ -228,6 +229,11 @@ export const mockProvider: AiProvider = {
             tokensInput: meta.tokensInput,
             tokensOutput: meta.tokensOutput,
         };
+    },
+
+    async classifySubject(input) {
+        // Deterministic: the same keyword rules production falls back to.
+        return { subject: normalizeSubject(`${input.title} ${input.description ?? ''}`) };
     },
 
     async suggest(input) {

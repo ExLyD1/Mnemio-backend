@@ -53,6 +53,17 @@ export const suggestSchema = z.object({
     deckId: z.string().uuid().optional(),
 });
 
+// POST /ai/classify-subject — files a deck under one of the fixed subjects.
+// Tiny on purpose: it is unbudgeted, so the inputs are capped to what a
+// one-word answer needs.
+export const classifySubjectSchema = z.object({
+    title: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(500).optional(),
+    sourceLanguage: langSchema,
+    targetLanguage: langSchema,
+    words: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
+});
+
 export type EnrichWordsInput = z.infer<typeof enrichWordsSchema>;
 export type GenerateDeckRequest = z.infer<typeof generateDeckSchema>;
 export type DeckFromImageRequest = z.infer<typeof deckFromImageSchema>;
@@ -64,5 +75,6 @@ export type GenerateDeckInput = GenerateDeckRequest & {
     exclude?: string[];
 };
 export type DeckFromImageInput = DeckFromImageRequest & { sourceLanguage: string };
+export type ClassifySubjectRequest = z.infer<typeof classifySubjectSchema>;
 export type SuggestInput = z.infer<typeof suggestSchema>;
 export type EnrichField = (typeof ENRICH_FIELDS)[number];

@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { deckBaseSchema } from './deck.schema.js';
 
-export const importApkgSchema = deckBaseSchema.pick({ sourceLanguage: true, targetLanguage: true });
+// `subject` is optional: absent → each imported deck is classified server-side.
+export const importApkgSchema = deckBaseSchema.pick({
+    sourceLanguage: true,
+    targetLanguage: true,
+    subject: true,
+});
 export type ImportApkgInput = z.infer<typeof importApkgSchema>;
 
 export const importQuizletSchema = z.object({

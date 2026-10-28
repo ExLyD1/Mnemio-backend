@@ -22,6 +22,12 @@ const aiRoutes = async (fastify: FastifyInstance) => {
         { config: { rateLimit: aiLimit } },
         aiController.deckFromImage,
     );
+    // Not budgeted (no ai_usage reservation) — only this rate limit applies.
+    fastify.post(
+        '/ai/classify-subject',
+        { config: { rateLimit: aiLimit } },
+        aiController.classifySubject,
+    );
     fastify.post('/ai/suggest', { config: { rateLimit: aiLimit } }, aiController.suggest);
 };
 

@@ -99,6 +99,17 @@ export type AiSuggestion = {
 
 export type SuggestContext = SuggestInput['context'];
 
+// ---------- Classify ----------
+
+export type ClassifySubjectInput = {
+    title: string;
+    description?: string | undefined;
+    sourceLanguage: string;
+    targetLanguage: string;
+    // A handful of the deck's card words (≤ 10): enough signal, tiny prompt.
+    words: string[];
+};
+
 // ---------- Chat ----------
 
 export type ChatRole = 'user' | 'assistant';
@@ -198,6 +209,13 @@ export type AiProvider = {
         dueCount: number;
         streak: number;
     }) => Promise<AiSuggestion>;
+
+    /**
+     * File a deck under one of the fixed subjects. `subject` is the model's
+     * raw pick (null when it made none); the service normalizes it and falls
+     * back to rules, so a provider never has to be right, only cheap.
+     */
+    classifySubject: (input: ClassifySubjectInput) => Promise<{ subject: string | null }>;
 
     /**
      * Stream a multi-turn chat reply. `messages` is the full conversation in
