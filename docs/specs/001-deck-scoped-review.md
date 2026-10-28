@@ -1,6 +1,6 @@
 # 001 — Deck-scoped Review
 
-> Status: **Approved (rev 3)** · Date: 2026-10-28
+> Status: **Implemented (rev 3)** · Date: 2026-10-28
 > Repos: `mnemio-backend` (API) + `mnemio-frontend` (UI)
 >
 > **Rev 3** (replaces rev 2's per-segment sessions): no session is open during a
@@ -492,4 +492,70 @@ working. Task 9 needs tasks 4–6.
 
 ## Decisions made during build
 
-_(empty)_
+**Process**
+1. **Test gate.** `npm test` has one suite that already fails before this work:
+   `test/billing-management.test.ts` throws unless `DATABASE_URL` is the dedicated
+   `mnemio_qa_sub` database. The backend gate was run as
+   `vitest run --exclude test/billing-management.test.ts`. All other suites pass.
+2. **Contract commits.** The build rules ask for the contract change in the same
+   commit as the API change, so tasks 2–6 each carry their part of
+   `docs/api-contract.md`. There is no separate task-7 commit. Task 1 only parses
+   `deckIds` and changes no behaviour, so its contract text lands with task 2.
+3. **Migration.** The SQL was generated with `prisma migrate dev --create-only`
+   against a throwaway, fully migrated scratch database, then renamed to the
+   spec's timestamp. The local dev database (`localhost:5433/mnemio`) is several
+   migrations behind: it has no `card_progresses.state` from `20261018220000_anki_srs`.
+   Nothing was applied to it. The scratch database was dropped afterwards.
+
+**Backend**
+4. `accessibleCardScope(userId, scope)` takes `DeckScope = string | string[] | undefined`
+   (one deck / a set / everything). It is exported so the unit tests can check
+   the `where` shape directly.
+5. `byDeck` is sorted in SQL (`due DESC, title ASC, id ASC`, using the database
+   collation). The service keeps that order.
+6. The once-per-run bonus check (`hasCompletedInRun`) runs just before the
+   status-guarded completion, not inside one database transaction. Only the
+   single active session can complete, and a run's sessions are written one after
+   another. The worst case is concurrent misuse of the API, which costs one extra +25.
+
+**Frontend: run recording**
+7. A deck's `cardIds` / `cardsStudied` = the distinct cards **answered** from it.
+   A card on screen but unanswered when the user leaves doesn't count.
+8. A deck's `activeMs` = the time since the previous answer (or since the run or
+   round started), credited to the deck of the card just answered.
+9. Flush resilience:
+   - A session that was started but not completed is completed on retry, rather
+     than opening a second one. A second one would leave the first `incomplete`,
+     visible in "Continue studying".
+   - `SESSION_NOT_ACTIVE` on complete counts as written (a lost response).
+   - `DECK_NOT_FOUND`, `DECK_EMPTY` and `SESSION_NO_CARDS` skip that deck.
+10. The 429 retry reads @fastify/rate-limit's human `retryAfter` ("38 seconds",
+    "1 minute"), capped at 60 s, with a 2 s fallback.
+11. Leaving waits at most 3 s for the flush. The writes carry on in the background.
+    Finishing shows results at once and flushes behind them, without awaiting.
+12. Toasts have no actions, so Retry is an inline notice on the session screen.
+    If the user has already left, only the toast shows.
+13. A re-`initialize()` (the error-state Retry) first flushes the previous tallies,
+    then starts a new `runId`.
+
+**Frontend: UI and routing**
+14. In review, "End session" (and the Know-mode end) returns to the hub. The
+    review results show primary "Back to review" and ghost "Back to dashboard".
+    "+20 new" and "Browse my decks" were dropped there, since review is due-only.
+15. The layout switches via an inline route middleware (`setPageLayout`). It runs
+    before render and on query-only navigations, so nothing flashes.
+16. When a scoped URL has no `mode`, the page resolves it (hydrating preferences
+    if needed) and `replace`s the URL with an explicit `mode`. The deck-page
+    shortcut relies on this.
+17. Starting a multi-select review uses hub order (most due first), not tick
+    order, so deck-by-deck order is predictable.
+18. `StudyModePicker` is no longer used on `/review`. Deck study still uses it.
+19. Extra i18n keys beyond the spec's list: `hubHint`, `orderLabel`, `modeLabel`,
+    `loadFailed`, `perDeckRow`, `retrySave`, `reviewDueHint`. The uk
+    `review.dueCount` is count-invariant ("До повторення: {n}").
+
+**Analytics**
+20. `practice_decks_selected.order` is sent only for `multi`.
+    `review_due_cleared.deck_count` = decks touched. Its `scope` comes from the
+    URL, so one ticked deck reports `single` there, while
+    `practice_decks_selected` reports `multi`.
