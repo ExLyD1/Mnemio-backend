@@ -23,22 +23,28 @@ export const createSessionSchema = z.object({
     runId: z.string().uuid().optional(),
 });
 
+// The tally fields a client reports, shared by PATCH (incremental) and
+// complete (final snapshot) so both validate identically.
+const sessionTallyShape = {
+    correct: z.number().int().nonnegative().optional(),
+    // Server-backed Session Summary fields. All optional; FE patches
+    // incrementally as it ticks through cards.
+    counts: z
+        .object({
+            again: z.number().int().nonnegative(),
+            hard: z.number().int().nonnegative(),
+            good: z.number().int().nonnegative(),
+            easy: z.number().int().nonnegative(),
+        })
+        .optional(),
+    revisitCardIds: z.array(z.string().uuid()).max(1000).optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+};
+
 export const updateSessionSchema = z
     .object({
         cardIndex: z.number().int().nonnegative().optional(),
-        correct: z.number().int().nonnegative().optional(),
-        // Server-backed Session Summary fields. All optional; FE patches
-        // incrementally as it ticks through cards.
-        counts: z
-            .object({
-                again: z.number().int().nonnegative(),
-                hard: z.number().int().nonnegative(),
-                good: z.number().int().nonnegative(),
-                easy: z.number().int().nonnegative(),
-            })
-            .optional(),
-        revisitCardIds: z.array(z.string().uuid()).max(1000).optional(),
-        durationMs: z.number().int().nonnegative().optional(),
+        ...sessionTallyShape,
     })
     .refine(
         (v) =>
@@ -50,5 +56,11 @@ export const updateSessionSchema = z
         { message: 'At least one updatable field is required' },
     );
 
+// Optional final snapshot on POST /sessions/:id/complete, applied in the same
+// write that completes the session. An empty body completes with whatever was
+// PATCHed. Review runs use it to write a whole deck's tally in one request.
+export const completeSessionSchema = z.object(sessionTallyShape);
+
 export type CreateSessionInput = z.infer<typeof createSessionSchema>;
 export type UpdateSessionInput = z.infer<typeof updateSessionSchema>;
+export type CompleteSessionInput = z.infer<typeof completeSessionSchema>;

@@ -59,7 +59,7 @@ export const updateProgress = (id: string, userId: string, patch: SessionProgres
 export const completeSession = (
     id: string,
     userId: string,
-    data: {
+    data: SessionProgressPatch & {
         xpAwarded: number;
         cardsStudied: number;
         correctAnswers: number;
@@ -71,13 +71,8 @@ export const completeSession = (
     prisma.studySession.updateMany({
         where: { id, userId, status: 'active' },
         data: {
+            ...data,
             status: 'complete',
-            xpAwarded: data.xpAwarded,
-            cardsStudied: data.cardsStudied,
-            correctAnswers: data.correctAnswers,
-            cardIndex: data.cardIndex,
-            correct: data.correct,
-            durationMs: data.durationMs,
             endedAt: new Date(),
             completedAt: new Date(),
         },

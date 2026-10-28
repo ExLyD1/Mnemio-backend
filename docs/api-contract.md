@@ -853,7 +853,15 @@ required; FE patches incrementally.
 Close session. **XP is server-computed**: `correct * 10 + 25`. User's total XP
 incremented atomically.
 ```ts
-// Request: (empty body)
+// Request: optional; an empty body behaves exactly as before.
+// {
+//   correct?: number;
+//   counts?: { again, hard, good, easy };
+//   revisitCardIds?: string[];                // ≤ 1000 ids
+//   durationMs?: number;
+// }
+// Same field rules as PATCH /sessions/:id. Applied and completed in a single
+// write, so XP uses the snapshot's `correct`.
 // 200 Response: StudySession & { newAchievements: Achievement[] }
 //   (status: 'complete', xpAwarded set)
 // Errors: 400 SESSION_NOT_ACTIVE · 404 SESSION_NOT_FOUND
