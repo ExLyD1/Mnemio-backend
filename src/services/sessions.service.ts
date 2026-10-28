@@ -14,9 +14,10 @@ import type {
 } from '../schemas/session.schema.js';
 
 // XP formula (locked by frontend plan): correct * 10 + (completed ? 25 : 0).
-// Server is authoritative — clients cannot supply xp.
-export const computeXp = (correct: number, completed: boolean): number =>
-    correct * 10 + (completed ? 25 : 0);
+// Server is authoritative — clients cannot supply xp. The +25 is withheld when
+// another session of the same review run already took it (bonusEligible false).
+export const computeXp = (correct: number, completed: boolean, bonusEligible = true): number =>
+    correct * 10 + (completed && bonusEligible ? 25 : 0);
 
 // Session duration persisted on completion (powers /stats/study-time). Prefer a
 // duration the client already reported via PATCH /sessions/:id (it reflects real
@@ -126,7 +127,14 @@ export const complete = async (
     // write as the completion, so XP is computed from the snapshot's `correct`.
     const patch = toProgressPatch(snapshot);
     const correctAnswers = patch.correct ?? session.correct;
-    const xp = computeXp(correctAnswers, true);
+    // A review run writes one session per deck it touched; only the first of
+    // them to complete earns the +25, so N decks never out-earn one session.
+    // No race: only the single active session can complete, and a run's
+    // sessions are started one after another.
+    const bonusEligible =
+        !session.runId ||
+        !(await sessionsRepo.hasCompletedInRun(ownerId, session.runId, sessionId));
+    const xp = computeXp(correctAnswers, true, bonusEligible);
     const cardsStudied = session.cardIds.length;
     const durationMs = resolveDurationMs(
         patch.durationMs ?? session.durationMs,

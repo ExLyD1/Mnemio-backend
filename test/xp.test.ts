@@ -35,4 +35,11 @@ describe('Session XP formula (server-authoritative)', () => {
             expect(computeXp(n, false)).toBe(n * 10);
         }
     });
+
+    it('withholds only the +25 when the run already paid it', () => {
+        expect(computeXp(4, true, false)).toBe(40);
+        expect(computeXp(0, true, false)).toBe(0);
+        expect(computeXp(4, true, true)).toBe(65);
+        expect(computeXp(4, false, true)).toBe(40);
+    });
 });

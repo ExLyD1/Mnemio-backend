@@ -78,6 +78,17 @@ export const completeSession = (
         },
     });
 
+// Whether another session of this review run already completed (and so took
+// the run's one +25 bonus).
+export const hasCompletedInRun = async (
+    userId: string,
+    runId: string,
+    excludeId: string,
+): Promise<boolean> =>
+    (await prisma.studySession.count({
+        where: { userId, runId, status: 'complete', NOT: { id: excludeId } },
+    })) > 0;
+
 export const findLatestIncomplete = (userId: string) =>
     prisma.studySession.findFirst({
         where: { userId, status: 'incomplete' },

@@ -43,7 +43,7 @@ unless it says so explicitly.
 | 2 | Access token in `localStorage`, sent as `Authorization: Bearer …`. |
 | 3 | On `{ code: 'AUTH_INVALID_TOKEN' }` → `POST /auth/refresh` (no body), retry once; on `{ code: 'AUTH_INVALID_REFRESH' }` → hard logout, never retry. |
 | 4 | `POST /srs/rate` body is `{ cardId, rating, tz? }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
-| 5 | Session XP is **server-computed** `correct*10 + 25`. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
+| 5 | Session XP is **server-computed** `correct*10 + 25`. The +25 is awarded **at most once per `runId`**, to the first session of the run that completes; sessions without `runId` always get it. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
 | 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
@@ -832,6 +832,13 @@ session is flipped to `incomplete` before the new one becomes `active`.
 //                              requested subset, cardIndex: 0, correct: 0)
 // Errors: 404 DECK_NOT_FOUND · 400 DECK_EMPTY · 400 SESSION_NO_CARDS
 ```
+> **Review runs.** `/review` keeps no session open while reviewing. When the run
+> ends (or the user leaves) the client writes one session per deck it touched —
+> `POST /sessions { deckId, mode, srsEnabled, runId, cardIds }` then
+> `POST /sessions/:id/complete { correct, counts, revisitCardIds, durationMs }` —
+> sequentially, all with the same client-generated `runId`. Only the first of
+> them to complete gets the +25 (invariant #5), so a run over N decks earns
+> exactly `10 × Σcorrect + 25`.
 
 #### `PATCH /sessions/:id`  *(auth)*
 Append progress and Session Summary state mid-session. **At least one** field
@@ -850,8 +857,9 @@ required; FE patches incrementally.
 ```
 
 #### `POST /sessions/:id/complete`  *(auth)*
-Close session. **XP is server-computed**: `correct * 10 + 25`. User's total XP
-incremented atomically.
+Close session. **XP is server-computed**: `correct * 10 + 25`, where the +25 is
+skipped if another session with the same `runId` already completed. User's total
+XP incremented atomically.
 ```ts
 // Request: optional; an empty body behaves exactly as before.
 // {
@@ -2414,6 +2422,8 @@ return this error; if it did, hide all upgrade/subscription UI silently.
 - Exit button → `POST /sessions/:id/exit`.
 - "Continue studying" → `POST /sessions/:id/resume` then route into the study page.
 - Don't send `xp` to `/complete`; read it back from the response.
+- Review runs (`/review`) open no session while reviewing; they write one
+  completed session per deck touched at the end, sharing a `runId`.
 
 ### Pagination wiring
 Stash `nextCursor` per list view. "Load more" passes `?cursor=<nextCursor>`.
