@@ -33,6 +33,7 @@ model Deck {
   copies        Deck[]             @relation("DeckCopies")
   source        Deck?              @relation("DeckCopies", fields: [sourceDeckId], references: [id], onDelete: SetNull)
   subjectBackfill DeckSubjectBackfill?
+  learners        UserDeck[]
 
   @@index([authorId, updatedAt])
   @@index([isPublic, updatedAt])

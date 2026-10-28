@@ -6,6 +6,9 @@ import * as achievementsService from '../src/services/achievements.service.js';
 import * as milestone from '../src/services/milestone.service.js';
 import { complete, start } from '../src/services/sessions.service.js';
 
+// Library tracking is a side effect with its own tests (user-decks-record.test.ts).
+vi.mock('../src/services/user-decks.service.js', () => ({ trackStudied: vi.fn() }));
+
 // An in-memory sessions repository, so the once-per-run bonus check reads the
 // real state the earlier completions left behind (not a canned mock answer).
 type Row = {

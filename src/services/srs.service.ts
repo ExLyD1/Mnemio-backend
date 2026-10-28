@@ -20,6 +20,7 @@ import {
     type SrsState,
 } from '../shared/mappers.srs.js';
 import type { QueueQuery, Rating } from '../schemas/srs.schema.js';
+import { trackStudied } from './user-decks.service.js';
 
 export type { PublicCardProgress } from '../shared/mappers.srs.js';
 
@@ -67,6 +68,10 @@ export const rate = async (
         ...next,
         masteredAt: resolveMasteredAt(existing?.masteredAt ?? null, next.repetitions, now),
     });
+
+    // The deck now counts as one the rater is learning (library). Side effect
+    // only — see user-decks.service.
+    trackStudied(ownerId, card.deckId, [input.cardId]);
 
     // Roll the day's activity counters. Hard is a passing answer in Anki.
     activityRepo
