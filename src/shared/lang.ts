@@ -46,6 +46,10 @@ const NAME_TO_CODE: Record<string, string> = {
 // adding its English name to NAME_TO_CODE above.
 export const SUPPORTED_LANGS: ReadonlySet<string> = new Set(Object.values(NAME_TO_CODE));
 
+// The same list as an ordered array (NAME_TO_CODE order) — served by
+// GET /public/taxonomy and used as the enum in AI tool schemas.
+export const SUPPORTED_LANG_LIST: readonly string[] = [...SUPPORTED_LANGS];
+
 // Common wrong codes the model (or a user) reaches for: country codes that
 // aren't language codes, and ISO 639-2 three-letter codes. Every target must
 // be in SUPPORTED_LANGS.
