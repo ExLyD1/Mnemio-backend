@@ -11,7 +11,7 @@ import type {
     EnrichWordsInput,
     GenerateDeckInput,
 } from '../schemas/ai.schema.js';
-import type { SuggestContext } from './ai.provider.js';
+import type { DetectLanguagesInput, SuggestContext } from './ai.provider.js';
 import { langDisplayName, normalizeLang } from '../shared/lang.js';
 import { SUBJECTS } from '../shared/subjects.js';
 
@@ -333,5 +333,25 @@ export const buildClassifySubjectPrompt = (input: {
     ]
         .filter(Boolean)
         .join('\n');
+    return { system, user };
+};
+
+const detectLanguagesSystem = `
+You identify the languages used on flashcards for Mnemio.
+
+Each card has a front (the word being learned) and a back (its definition or
+translation). Name the language of the fronts and the language of the backs
+using ISO 639-1 codes. Answer "unknown" for a side whose language you are not
+confident about, whose text is mixed, or that is not a natural language — do
+not guess.
+
+Call the emit_languages tool exactly once.
+`.trim();
+
+export const buildDetectLanguagesPrompt = (input: DetectLanguagesInput) => {
+    const system: CacheableSystem = [
+        { type: 'text', text: detectLanguagesSystem, cache_control: CACHEABLE },
+    ];
+    const user = `Fronts: ${input.words.join(' | ')}\nBacks: ${input.definitions.join(' | ')}`;
     return { system, user };
 };

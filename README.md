@@ -150,6 +150,21 @@ npm run seed
 
 Idempotent — re-running is safe.
 
+### Subject / language cleanup (spec 002, one-off)
+
+After the `20261029000000_fixed_subjects` migration, decks it couldn't place are
+`subjectSource = 'pending'`. Back up the database first, then:
+
+```bash
+psql "$SNAPSHOT_URL" -f scripts/sql/preview-subject-mapping.sql   # read-only: what the migration will do
+npx tsx scripts/backfill-subjects.ts --dry-run                    # AI calls, prints every change, WRITES NOTHING
+npx tsx scripts/backfill-subjects.ts --apply                      # writes (only still-pending decks; idempotent)
+psql "$DATABASE_URL" -f scripts/sql/check-subjects.sql            # expect 0 invalid, 0 pending
+```
+
+Without `--apply` the script is always a dry run, and it prints the database
+host before doing anything. The AI calls are a system cost (no user budget).
+
 ### Dev server
 
 ```bash

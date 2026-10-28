@@ -110,6 +110,20 @@ export type ClassifySubjectInput = {
     words: string[];
 };
 
+// ---------- Detect languages (backfill only) ----------
+
+export type DetectLanguagesInput = {
+    // Card fronts and backs, a handful each (≤ 10 cards).
+    words: string[];
+    definitions: string[];
+};
+
+// null = the model said "unknown" or named something outside the supported list.
+export type DetectedLanguages = {
+    wordsLanguage: string | null;
+    definitionsLanguage: string | null;
+};
+
 // ---------- Chat ----------
 
 export type ChatRole = 'user' | 'assistant';
@@ -216,6 +230,13 @@ export type AiProvider = {
      * back to rules, so a provider never has to be right, only cheap.
      */
     classifySubject: (input: ClassifySubjectInput) => Promise<{ subject: string | null }>;
+
+    /**
+     * Name the languages of a deck's card fronts and backs. Used only by
+     * scripts/backfill-subjects.ts to repair decks whose stored language is
+     * outside the supported list; the caller accepts only codes it recognizes.
+     */
+    detectLanguages: (input: DetectLanguagesInput) => Promise<DetectedLanguages>;
 
     /**
      * Stream a multi-turn chat reply. `messages` is the full conversation in

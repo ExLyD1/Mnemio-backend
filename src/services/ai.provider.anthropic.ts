@@ -22,6 +22,8 @@ import type {
     ChatTurn,
     ClassifySubjectInput,
     DeckFromImageProviderInput,
+    DetectedLanguages,
+    DetectLanguagesInput,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -30,10 +32,12 @@ import type {
 import type { EnrichWordsInput, GenerateDeckInput } from '../schemas/ai.schema.js';
 import { env } from '../config/env.js';
 import { SUBJECTS } from '../shared/subjects.js';
+import { SUPPORTED_LANG_LIST, normalizeLang } from '../shared/lang.js';
 import { AiProviderError, AiValidationFailedError } from '../shared/errors.js';
 import {
     buildClassifySubjectPrompt,
     buildDeckFromImagePrompt,
+    buildDetectLanguagesPrompt,
     buildEnrichWordsPrompt,
     buildGenerateDeckPrompt,
     buildSuggestPrompt,
@@ -135,6 +139,20 @@ const CLASSIFY_TOOL = {
     },
 } as const;
 
+const DETECT_LANGUAGES_TOOL = {
+    name: 'emit_languages',
+    description: 'Emit the language of the card fronts and of the card backs.',
+    input_schema: {
+        type: 'object' as const,
+        properties: {
+            wordsLanguage: { type: 'string', enum: [...SUPPORTED_LANG_LIST, 'unknown'] },
+            definitionsLanguage: { type: 'string', enum: [...SUPPORTED_LANG_LIST, 'unknown'] },
+        },
+        required: ['wordsLanguage', 'definitionsLanguage'] as string[],
+        additionalProperties: false,
+    },
+} as const;
+
 const client = (() => {
     let cached: Anthropic | null = null;
     return () => {
@@ -171,7 +189,8 @@ type ContentTool =
     | typeof ENRICH_TOOL
     | typeof DECK_TOOL
     | typeof SUGGEST_TOOL
-    | typeof CLASSIFY_TOOL;
+    | typeof CLASSIFY_TOOL
+    | typeof DETECT_LANGUAGES_TOOL;
 
 type ContentCallArgs = {
     op: string;
@@ -693,6 +712,29 @@ const classifySubject = async (
     return { subject: typeof data.subject === 'string' ? data.subject : null };
 };
 
+// ---------- detectLanguages ----------
+
+const detectLanguages = async (input: DetectLanguagesInput): Promise<DetectedLanguages> => {
+    const { system, user } = buildDetectLanguagesPrompt(input);
+    const { data } = await callContent<{ wordsLanguage?: unknown; definitionsLanguage?: unknown }>(
+        {
+            op: 'detect_languages',
+            choice: chatRoute(),
+            system,
+            content: user,
+            tool: DETECT_LANGUAGES_TOOL,
+            maxTokens: 60,
+        },
+        (d) => typeof d.wordsLanguage === 'string' && typeof d.definitionsLanguage === 'string',
+    );
+    // "unknown" and anything unsupported normalize to null.
+    const code = (v: unknown) => (typeof v === 'string' ? normalizeLang(v) : null);
+    return {
+        wordsLanguage: code(data.wordsLanguage),
+        definitionsLanguage: code(data.definitionsLanguage),
+    };
+};
+
 // ---------- chat ----------
 
 // Shape Anthropic returns inside content blocks for a tool call.
@@ -1020,5 +1062,6 @@ export const anthropicProvider: AiProvider = {
     deckFromImage,
     suggest,
     classifySubject,
+    detectLanguages,
     chat,
 };

@@ -10,6 +10,7 @@ import type {
     AiImageInput,
     AiProvider,
     ClassifySubjectInput,
+    DetectLanguagesInput,
     EnrichWordsEvent,
     EnrichWordsResult,
     GenerateDeckEvent,
@@ -192,5 +193,8 @@ export const suggest = (userId: string, input: SuggestInput, tz: string = DEFAUL
 // Unmetered and unbudgeted (spec 002): a one-enum answer from the cheapest
 // model, so the premium gate and the daily caps never see it.
 export const classifySubject = (input: ClassifySubjectInput) => provider.classifySubject(input);
+
+// Backfill script only — unmetered, like classifySubject.
+export const detectLanguages = (input: DetectLanguagesInput) => provider.detectLanguages(input);
 
 export const providerName = (): string => provider.name;

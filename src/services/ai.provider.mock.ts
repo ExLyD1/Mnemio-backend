@@ -236,6 +236,11 @@ export const mockProvider: AiProvider = {
         return { subject: normalizeSubject(`${input.title} ${input.description ?? ''}`) };
     },
 
+    async detectLanguages() {
+        // The mock can't read a language; the backfill reports such decks.
+        return { wordsLanguage: null, definitionsLanguage: null };
+    },
+
     async suggest(input) {
         const { context, dueCount, streak } = input;
         const out = ((): AiSuggestion => {
