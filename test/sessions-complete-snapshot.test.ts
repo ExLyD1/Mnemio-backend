@@ -7,6 +7,9 @@ import * as milestone from '../src/services/milestone.service.js';
 import { complete } from '../src/services/sessions.service.js';
 import { completeSessionSchema } from '../src/schemas/session.schema.js';
 
+// Library tracking is a side effect with its own tests (user-decks-record.test.ts).
+vi.mock('../src/services/user-decks.service.js', () => ({ trackStudied: vi.fn() }));
+
 vi.mock('../src/repositories/sessions.repository.js', async () => {
     const actual = await vi.importActual<typeof sessionsRepo>(
         '../src/repositories/sessions.repository.js',

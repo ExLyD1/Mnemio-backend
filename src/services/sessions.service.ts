@@ -4,6 +4,7 @@ import * as activityRepo from '../repositories/activity.repository.js';
 import * as achievementsService from './achievements.service.js';
 import type { PublicAchievement } from './achievements.service.js';
 import * as milestone from './milestone.service.js';
+import { trackStudied } from './user-decks.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import { toPublicSession, type PublicSession } from '../shared/mappers.session.js';
 import { DEFAULT_TZ } from './tz.js';
@@ -106,6 +107,12 @@ export const updateProgress = async (
     if (!fresh) {
         throw new NotFoundError('SESSION_NOT_FOUND', 'Session not found');
     }
+    // Progress through the round: the cards before `cardIndex` have been seen.
+    // Covers every mode (flashcard / multiple choice, SRS on or off) and rounds
+    // the user leaves unfinished. Side effect only (library).
+    if (input.cardIndex !== undefined) {
+        trackStudied(ownerId, fresh.deckId, fresh.cardIds.slice(0, fresh.cardIndex));
+    }
     return toPublicSession(fresh);
 };
 
@@ -155,6 +162,10 @@ export const complete = async (
         throw new BadRequestError('SESSION_NOT_ACTIVE', 'Session was no longer active');
     }
     await sessionsRepo.incrementUserXp(ownerId, xp);
+
+    // A completed round studied every card it listed (library). Side effect
+    // only — placed after XP is paid and never awaited.
+    trackStudied(ownerId, session.deckId, session.cardIds);
 
     // Browse-mode sessions (SRS off) never call POST /srs/rate per-card, so
     // they never touch dailyActivity either — leaving streaks, the weekly

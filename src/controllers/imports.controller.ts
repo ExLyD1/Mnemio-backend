@@ -18,8 +18,8 @@ export const importApkg = async (request: FastifyRequest, reply: FastifyReply) =
             limits: {
                 fileSize: env.IMPORT_APKG_MAX_BYTES,
                 files: 1,
-                fields: 2,
-                parts: 3,
+                fields: 3,
+                parts: 4,
                 fieldSize: 100,
             },
         })) {
@@ -36,7 +36,7 @@ export const importApkg = async (request: FastifyRequest, reply: FastifyReply) =
                 }
             } else {
                 if (
-                    !['sourceLanguage', 'targetLanguage'].includes(part.fieldname) ||
+                    !['sourceLanguage', 'targetLanguage', 'subject'].includes(part.fieldname) ||
                     part.fieldname in fields ||
                     part.valueTruncated ||
                     typeof part.value !== 'string'

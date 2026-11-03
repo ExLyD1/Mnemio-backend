@@ -9,7 +9,50 @@ import * as budget from './ai.budget.service.js';
 import * as media from './media.service.js';
 import * as repo from '../repositories/imports.repository.js';
 import * as achievements from './achievements.service.js';
+import type { Subject, SubjectSource } from '../shared/subjects.js';
+import * as subjects from './subjects.service.js';
 import * as milestone from './milestone.service.js';
+
+const CLASSIFY_CONCURRENCY = 4;
+
+// One subject per imported deck. The user's pick (when they made one) applies
+// to every deck in the package; otherwise each is classified from its title
+// and first card words. Classification can't fail (it degrades to rules), runs
+// a few at a time, and is bounded by its own per-call timeout.
+const classifyDecks = async (
+    userId: string,
+    decks: { title: string; description: string; cards: { word: string }[] }[],
+    langs: { sourceLanguage: string; targetLanguage: string },
+    chosen: Subject | undefined,
+): Promise<{ subject: Subject; subjectSource: SubjectSource }[]> => {
+    if (chosen) {
+        return decks.map(() => ({ subject: chosen, subjectSource: 'user' as const }));
+    }
+    type Picked = { subject: Subject; subjectSource: SubjectSource };
+    const fallback: Picked = { subject: 'other', subjectSource: 'rules' };
+    const out: Picked[] = decks.map(() => fallback);
+    let next = 0;
+    const worker = async () => {
+        for (let i = next++; i < decks.length; i = next++) {
+            const deck = decks[i];
+            if (!deck) {
+                continue;
+            }
+            const result = await subjects.classify(
+                {
+                    title: deck.title,
+                    description: deck.description,
+                    ...langs,
+                    words: deck.cards.slice(0, subjects.CLASSIFY_MAX_WORDS).map((c) => c.word),
+                },
+                { userId, origin: 'import' },
+            );
+            out[i] = { subject: result.subject, subjectSource: result.source };
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(CLASSIFY_CONCURRENCY, decks.length) }, worker));
+    return out;
+};
 
 export const importApkg = async (userId: string, bytes: Buffer, languages: ImportApkgInput) => {
     if (bytes.length > env.IMPORT_APKG_MAX_BYTES) {
@@ -64,12 +107,18 @@ export const importApkg = async (userId: string, bytes: Buffer, languages: Impor
                 }
             }
         }
+        const { subject: chosenSubject, ...langs } = languages;
+        const subjectFor = await classifyDecks(userId, parsed.decks, langs, chosenSubject);
         const decks = await repo.createApkgDecks(
             userId,
-            languages,
-            parsed.decks.map((deck) => ({
+            langs,
+            parsed.decks.map((deck, i) => ({
                 title: deck.title,
                 description: deck.description,
+                ...(subjectFor[i] ?? {
+                    subject: 'other' as const,
+                    subjectSource: 'rules' as const,
+                }),
                 sourceData: deck.sourceData,
                 cards: deck.cards.map((card) => ({
                     word: card.word,

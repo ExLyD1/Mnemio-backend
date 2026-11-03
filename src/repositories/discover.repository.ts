@@ -1,5 +1,6 @@
 import type { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
+import { SUBJECTS, type Subject } from '../shared/subjects.js';
 
 const AUTHOR_SELECT = { select: { id: true, username: true, fullName: true } } as const;
 
@@ -31,9 +32,9 @@ const baseWhere = (
         ];
     }
     if (params.lang) {
-        // Match either source or target language — FE filter is "language",
-        // not a directional pair.
-        where.AND = [{ OR: [{ sourceLanguage: params.lang }, { targetLanguage: params.lang }] }];
+        // The language being learned (spec 002). Used to match either side,
+        // which surfaced a deck under its definitions' language too.
+        where.targetLanguage = params.lang;
     }
     if (params.subject) {
         where.subject = params.subject;
@@ -88,16 +89,35 @@ export const listFeatured = (limit: number) =>
         include: { author: AUTHOR_SELECT },
     });
 
-export const categories = async (): Promise<{ subject: string; count: number }[]> => {
-    const rows = await prisma.$queryRaw<{ subject: string; count: bigint }[]>`
-        SELECT "subject", COUNT(*) AS count
-          FROM "decks"
-         WHERE "isPublic" = true AND "subject" IS NOT NULL
-         GROUP BY "subject"
-         ORDER BY count DESC, "subject" ASC
-         LIMIT 50
-    `;
-    return rows.map((r) => ({ subject: r.subject, count: Number(r.count) }));
+export type DiscoverCategories = {
+    // All 12 subjects in taxonomy order, zero counts included — the FE hides
+    // empty tiles itself.
+    items: { subject: Subject; count: number }[];
+    // Languages of public `languages` decks (by targetLanguage), count > 0.
+    languages: { lang: string; count: number }[];
+};
+
+export const categories = async (): Promise<DiscoverCategories> => {
+    const [subjectRows, langRows] = await Promise.all([
+        prisma.$queryRaw<{ subject: string; count: bigint }[]>`
+            SELECT "subject", COUNT(*) AS count
+              FROM "decks"
+             WHERE "isPublic" = true
+             GROUP BY "subject"
+        `,
+        prisma.$queryRaw<{ lang: string; count: bigint }[]>`
+            SELECT "targetLanguage" AS lang, COUNT(*) AS count
+              FROM "decks"
+             WHERE "isPublic" = true AND "subject" = 'languages'
+             GROUP BY "targetLanguage"
+             ORDER BY count DESC, "targetLanguage" ASC
+        `,
+    ]);
+    const counts = new Map(subjectRows.map((r) => [r.subject, Number(r.count)]));
+    return {
+        items: SUBJECTS.map((subject) => ({ subject, count: counts.get(subject) ?? 0 })),
+        languages: langRows.map((r) => ({ lang: r.lang, count: Number(r.count) })),
+    };
 };
 
 export const findPublicDeckById = (deckId: string) =>

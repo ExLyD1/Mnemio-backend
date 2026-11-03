@@ -13,7 +13,7 @@ subscriptions via Paddle). **65 endpoints under `/api/v1`** + `GET /health` +
 `GET /ready` + static `/media/*`. Nothing in this document is "coming later"
 unless it says so explicitly.
 
-### Endpoint inventory (66 under `/api/v1`)
+### Endpoint inventory (69 under `/api/v1`)
 
 | Domain | Endpoints |
 |---|---|
@@ -26,11 +26,12 @@ unless it says so explicitly.
 | Dashboard | `GET /dashboard` |
 | Achievements | `GET /achievements` · `GET /achievements/unseen` · `POST /achievements/ack` |
 | Stats | `GET /stats/overview` · `GET /stats/series` · `GET /stats/activity` · `GET /stats/decks` · `GET /stats/study-time` · `GET /stats/decks-studied` · `GET /stats/card-series` |
+| Library | `GET /library` |
 | Discover | `GET /discover/decks` · `GET /discover/featured` · `GET /discover/categories` · `POST /decks/:id/copy` |
-| AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/suggest` |
+| AI | `GET /ai/usage` · `POST /ai/enrich-words` · `POST /ai/generate-deck` · `POST /ai/deck-from-image` · `POST /ai/classify-subject` · `POST /ai/suggest` |
 | Imports | `POST /imports/quizlet` · `POST /imports/text` |
 | Chat | `GET /chat/conversations` · `POST /chat/conversations` · `GET /chat/conversations/:id` · `PATCH /chat/conversations/:id` · `DELETE /chat/conversations/:id` · `POST /chat/conversations/:id/messages` |
-| Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
+| Public (SEO) | `GET /public/discover/decks` · `GET /public/discover/categories` · `GET /public/taxonomy` · `GET /public/decks/:id` · `GET /public/sitemap/decks` |
 | Media | `POST /media/uploads` (+ static serve at `GET /media/<userId>/<file>`) |
 | Billing | `GET /billing/subscription` - `POST /billing/portal` - `POST /billing/cancel` - `POST /billing/pause` - `POST /billing/resume` - `POST /billing/change-plan/preview` - `POST /billing/change-plan` - `GET /billing/payment-method-transaction` - `GET /billing/invoices` - `GET /billing/invoices/:id/pdf` - `POST /billing/webhook` |
 | Ops | `GET /health` · `GET /ready` (both un-prefixed) |
@@ -46,13 +47,14 @@ unless it says so explicitly.
 | 5 | Session XP is **server-computed** `correct*10 + 25`. The +25 is awarded **at most once per `runId`**, to the first session of the run that completes; sessions without `runId` always get it. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
-| 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
+| 8 | Every list response is `{ items, nextCursor }`; the paged ones (`GET /decks`, `GET /library`, Discover) add `total`. Cursor is opaque. |
 | 9 | Ownership is checked at the repo layer — listing/**modifying** someone else's deck/card/session always returns `404 *_NOT_FOUND` or `403 *_FORBIDDEN`. **Exception (public decks):** an authenticated non-owner may **read, study, and rate** a deck with `isPublic = true` — `GET /decks/:id`, `POST /sessions`, and `POST /srs/rate` succeed. SRS is keyed by `(requesterId, cardId)`, so each studier has fully independent progress and a viewer never touches the owner's. **Writes stay owner-only** (`PATCH`/`DELETE` deck, all card create/update/delete). Flipping `isPublic = false` re-locks read/study/rate immediately (back to `404`); previously-written viewer SRS rows persist but become unreachable. |
 | 10 | Only one `active` session per user. Both `POST /sessions` and `POST /sessions/:id/resume` flip a pre-existing active session to `incomplete` atomically. |
 | 11 | Every auth response (`login`, `verify-email`, `refresh`, `me`) now carries `welcome: { hasDeck, hasSession, hasReviewed }` — use it for dashboard variant selection instead of fanning out three count probes from the FE. |
 | 12 | `/imports/*` and `/ai/*` share a per-user daily-cap rollup in `ai_usage`. A user can hit the import cap without affecting AI calls and vice versa — distinct error codes (`IMPORT_BUDGET_EXCEEDED` vs `AI_BUDGET_EXCEEDED`). |
 | 13 | `/chat/conversations/:id/messages` is the only endpoint where partial-success matters: a streamed assistant reply that gets cut mid-flight is persisted with `status: 'partial'` and the user is NOT charged a daily-cap unit. The FE can render the half-reply and offer "retry." |
 | 14 | `GET /auth/me` (and every token-issuing auth response) now returns `plan: 'free' \| 'premium'` at the top level. Store it in auth state alongside `user` — the FE uses it to show/hide premium UI and to optimistically gate features before the server enforces them. On `403 PREMIUM_REQUIRED` from any endpoint, show the paywall modal (the server enforces even if the FE shows the feature). |
+| 15 | `deck.subject` is always one of the 12 `Subject` slugs (never null, never free text); a deck created without one gets `languages` (source ≠ target) or `other`. Discover's `subject` filter takes the same slugs. |
 
 ### Demo data
 `npm run seed` creates `demo@mnemio.local` / `demo-password-123` (pre-verified,
@@ -257,6 +259,11 @@ type DeckStats = {
   masteredPct: number;    // 0..100, rounded
 };
 
+// The fixed deck taxonomy (spec 002). Labels are the FE's job (en + uk).
+type Subject =
+  | 'languages' | 'medicine' | 'science' | 'math' | 'technology' | 'humanities'
+  | 'social' | 'business' | 'law' | 'arts' | 'test-prep' | 'other';
+
 type Deck = {
   id: string;
   ownerId: string;
@@ -268,7 +275,7 @@ type Deck = {
   cardCount: number;
   coverColor: string | null;   // P2: '#RRGGBB' hex
   glyph: string | null;        // P2: short symbol/emoji, ≤ 8 chars
-  subject: string | null;      // P2: e.g. 'languages', 'science'
+  subject: Subject;            // always one of the 12 fixed subjects (spec 002)
   featured: boolean;           // P2: curator-flagged for Discover home
   copyCount: number;           // P2: # of times this deck has been cloned
   sourceDeckId: string | null; // P2: id of the public deck this was copied from
@@ -664,7 +671,8 @@ Example (after `npm run seed`):
   isPublic?: boolean;         // privacy toggle; **default false** (private)
   coverColor?: string | null; // P2: '#RRGGBB' hex
   glyph?: string | null;      // P2: 1–8 chars (emoji ok)
-  subject?: string | null;    // P2: 1–40 chars
+  subject?: Subject;          // fixed list; omitted → 'languages' if source ≠ target, else 'other'.
+                              // Anything else (legacy slug, free text, null) → 400 VALIDATION_ERROR.
 }
 // 201 Response: Deck
 ```
@@ -716,7 +724,8 @@ Example:
 #### `PATCH /decks/:id`  *(auth)*
 ```ts
 // Request: any subset of the POST /decks body, including isPublic /
-//          coverColor / glyph / subject. null clears the optional fields.
+//          coverColor / glyph / subject. null clears coverColor / glyph;
+//          `subject` is never null (400) — it must be one of the 12.
 // 200 Response: Deck
 ```
 
@@ -1273,6 +1282,60 @@ never restarts at 0 for a user who already had mastered cards.
 > cards have lapsed — intended. Historical `masteredAt` (backfilled) is
 > approximate; masteries recorded from the migration onward are exact.
 
+### Library
+
+#### `GET /library`  *(auth)*
+Every deck the requester is **learning or owns**: the decks they authored, plus
+any deck — theirs or someone else's public one — they have studied enough of.
+`GET /decks` is unchanged and stays "decks I authored".
+```ts
+// Query
+?scope?='all' | 'my' | 'learning'     // default 'all'
+&subject?=Subject                     // one of the 12
+&lang?=string                         // ISO 639-1 (aliases normalize); matches targetLanguage
+&cursor?=string&limit?=number(<=50)   // default 24
+
+// 200 Response
+{
+  items: LibraryDeck[];
+  nextCursor: string | null;
+  total: number;                      // matches scope + subject + lang
+  facets?: LibraryFacets;             // FIRST PAGE ONLY (no cursor)
+}
+
+type LibraryDeck = DeckWithAuthor & {
+  isOwner: boolean;
+  studiedCount: number;               // distinct cards the requester studied (0 if never)
+  lastStudiedAt: string | null;       // ISO 8601; null = never studied (own decks only)
+  // deck.stats is the REQUESTER's progress, as GET /decks/:id
+};
+
+type LibraryFacets = {
+  scopes: { all: number; my: number; learning: number };    // ignore scope/subject/lang
+  subjects: { subject: Subject; count: number }[];          // within scope; taxonomy order; zeros omitted
+  languages: { lang: string; count: number }[];             // within scope, decks with subject='languages'
+};
+// Errors: 400 VALIDATION_ERROR (scope / subject / lang / limit) · 400 INVALID_CURSOR
+```
+Membership:
+- **my** — `authorId = requester`.
+- **learning** — the requester has studied `>= LEAST(5, cardCount)` distinct
+  cards of the deck (so a fully studied 3-card deck counts; an empty deck never
+  does), **and** the deck is still readable by them (theirs, or `isPublic`).
+- **all** — my ∪ learning.
+
+"Studied" means any mode: an SRS rating, progress through a flashcard /
+multiple-choice round (the cards before `cardIndex`), or a completed round —
+including browse mode (SRS off), abandoned rounds and review runs. A card
+counts once however often it is studied. It is a best-effort side effect: it
+never changes XP, streaks, daily activity, achievements or `/stats/*`.
+
+Sort: `COALESCE(lastStudiedAt, deck.createdAt) DESC, id DESC` — most recently
+studied first, and a just-created own deck lands on top. The cursor is opaque
+(keyset on that key). A deck another user makes private (or deletes) leaves the
+requester's Learning on the next load; their progress is kept, so it returns
+if the deck becomes public again.
+
 ### Discover  *(P2)*
 
 Browse, search, and clone public decks.
@@ -1284,8 +1347,9 @@ Paginated public-deck catalog. Same opaque cursor model as `GET /decks`.
 ?cursor?=string
 &limit?=number(<=50)             // default 20
 &q?=string                       // case-insensitive search on title/description
-&lang?=string                    // ISO 639-1; matches sourceLanguage OR targetLanguage
-&subject?=string                 // e.g. 'languages', 'science'
+&lang?=string                    // ISO 639-1 (aliases normalize; unknown → 400); matches
+                                 // targetLanguage ONLY — the language being learned
+&subject?=Subject                // one of the 12 fixed subjects; anything else → 400
 &sort?='popular' | 'recent'      // default 'recent'
 
 // 200 Response: PageWithTotal<DeckWithAuthor>
@@ -1302,10 +1366,15 @@ Curator-flagged decks (`featured = true`), max 12. Sorted by `updatedAt DESC`.
 ```
 
 #### `GET /discover/categories`  *(auth)*
-Distinct `subject` values across the public catalog, with deck counts. Top 50
-by count.
+Public-catalog deck counts per fixed subject, plus the language facet.
 ```ts
-// 200 Response: { items: { subject: string; count: number }[] }
+// 200 Response
+{
+  items: { subject: Subject; count: number }[];   // always all 12, taxonomy order,
+                                                  // zero counts included (FE hides empties)
+  languages: { lang: string; count: number }[];   // targetLanguage of public decks with
+                                                  // subject='languages', count > 0, by count DESC
+}
 ```
 
 #### `POST /decks/:id/copy`  *(auth)*
@@ -1435,7 +1504,7 @@ not persist** — the FE shows the draft and the user accepts via
     description: string;
     sourceLanguage: string;
     targetLanguage: string;
-    subject?: string;
+    subject?: Subject;             // always one of the 12 (server-normalized; never free text)
     glyph?: string;
     cards: AiCardDraft[];
   };
@@ -1480,7 +1549,7 @@ Request is `multipart/form-data` (not JSON):
     description: string;
     sourceLanguage: string;
     targetLanguage: string;
-    subject?: string;
+    subject?: Subject;             // always one of the 12 (server-normalized; never free text)
     glyph?: string;
     cards: AiCardDraft[];        // may be empty — see `note` below
   };
@@ -1530,6 +1599,30 @@ data: { "meta": { "durationMs": 1200, "tokensInput": 900, "tokensOutput": 300 } 
 A `no_text` result streams `start` → `header` (explaining there's nothing to
 learn) → `done` with `note: 'no_text'` and zero `card` events — the FE can
 treat "no cards arrived" and `note` as the same signal.
+
+#### `POST /ai/classify-subject`  *(auth)*
+Files a deck under one of the 12 fixed subjects. Used by the AI-import dialog
+when its category picker is left on **Auto-detect**. One enum answer from the
+cheapest model on ≤ 20 words.
+
+**Not budgeted:** no `ai_usage` reservation, no cap, never `403
+PREMIUM_REQUIRED` / `AI_BUDGET_EXCEEDED` — a system cost, identical for free and
+premium. Only the 30/min per-user rate limit applies. **Never fails on an AI
+problem:** a provider error, a 4 s timeout or an off-list answer returns the
+keyword rules' answer (then the language heuristic) with `source: 'rules'`.
+```ts
+// Request
+{
+  title: string;              // 1–120
+  description?: string;       // ≤ 500
+  sourceLanguage: string;     // as POST /decks (aliases normalize; unknown → 400)
+  targetLanguage: string;
+  words?: string[];           // ≤ 20 entries, ≤ 80 chars each; default []
+}
+// 200 Response
+{ subject: Subject; source: 'ai' | 'rules' }
+// Errors: 400 VALIDATION_ERROR · 429 RATE_LIMITED
+```
 
 #### `POST /ai/suggest`  *(auth)*
 Contextual Mimi nudge for the dashboard / deck detail / review screens.
@@ -1609,6 +1702,9 @@ example/part of speech by field name); everything else is kept in
 `Card.sourceData` / `Deck.sourceData` (never returned by the API).
 ```ts
 // Fields: file (the .apkg) · sourceLanguage · targetLanguage (as in POST /decks)
+//         · subject? (one of the 12). Present → applied to every deck created.
+//           Absent → each deck is classified from its title + first 10 card words
+//           (system cost; falls back to rules, never fails the import).
 // 201 Response
 {
   decks: { id: string; title: string; cardCount: number }[];
@@ -1865,6 +1961,14 @@ grounded in what was actually saved rather than re-deriving it from memory.
 The `topic` branch (`generateDeck`) additionally gets one deterministic retry
 if the draft comes back empty or well short of the requested `count`.
 
+**Subject:** `create_deck` also takes `subject` (enum = the 12) and
+`targetLanguage` (enum = the 28 codes; the preferred spelling of
+`wordsLanguage`, which stays accepted), so the model picks both in the **same
+call** — there is no separate classification request. A missing or invalid
+`subject` falls back to the keyword rules on the title, then to `languages`
+(source ≠ target) / `other`. The deck is stored with `subjectSource 'ai'` or
+`'rules'` accordingly.
+
 **Language:** `add_cards` always uses the open deck's own pair. For
 `create_deck` the model sees `wordsLanguage` (the language being learned →
 `Deck.targetLanguage`) and `definitionsLanguage` (the language the user knows →
@@ -1967,7 +2071,7 @@ on the sitemap.
 ```ts
 // Same query string as authed GET /discover/decks:
 //   ?cursor?=string&limit?=number(<=50)&q?=string&lang?=string
-//   &subject?=string&sort?=popular|recent   (default 'recent')
+//   &subject?=Subject&sort?=popular|recent   (default 'recent')
 // 200 Response: PageWithTotal<DeckWithAuthor>
 ```
 
@@ -1976,10 +2080,23 @@ Per-user mastery is omitted (no viewer concept). `stats.mastered`,
 `stats.masteredPct` still come from the deck's own `cardCount`.
 
 #### `GET /public/discover/categories`  *(public)*
+Identical body to the authed `GET /discover/categories` (`{ items, languages }`).
+
+#### `GET /public/taxonomy`  *(public, `Cache-Control: public, max-age=3600`)*
+The single source of the fixed lists. Labels are the FE's job (`subject.<slug>`,
+`lang.<code>` in en + uk).
 ```ts
-// 200 Response: { items: { subject: string; count: number }[] }
+// 200 Response
+{
+  subjects: Subject[];                      // the 12, display order
+  languages: string[];                      // the 28 supported ISO 639-1 codes
+  legacySubjects: Record<string, Subject>;  // pre-002 category slug → new slug
+}
 ```
-Identical body to the authed variant.
+**SEO rule:** every legacy `/discover/<old-subject>` URL must answer an HTTP
+**301** to `/discover/<mapped slug>` (FE, server-side in the SSR pass; look the
+slug up, lower-cased, in `legacySubjects`). The sitemap is generated from
+`subjects` only — never from deck data or legacy keys.
 
 #### `GET /public/decks/:id`  *(public)*
 ```ts

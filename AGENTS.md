@@ -88,6 +88,16 @@ errors. Services translate "not found / not owned" into `AppError` subclasses.
   return raw Prisma models to the client.
 - **One active study session per user** — enforced inside Prisma transactions
   plus a Postgres partial unique index. Don't bypass the transaction.
+- **Deck `subject` is one of 12 fixed slugs** (`shared/subjects.ts`; never null,
+  never free text) and language decks facet on `targetLanguage` (the 28 codes in
+  `shared/lang.ts`). Every write path validates with `z.enum(SUBJECTS)`; model
+  output goes through `normalizeSubject` (exact/legacy only) → `matchSubjectKeywords`
+  → `inferSubject`. Keyword rules over-match, so they are a fallback only — never
+  use them in a migration. Changing the list means
+  `LEGACY_SUBJECT_MAP`, the FE labels, and `GET /public/taxonomy` consumers.
+- **`user_decks` is a best-effort side effect** (`services/user-decks.service.ts`):
+  call `trackStudied` fire-and-forget, never await it on the XP/streak path, and
+  never let it feed XP, streaks, DailyActivity, achievements or `/stats/*`.
 - IDs are UUID strings; dates ISO-8601 UTC; birthday `YYYY-MM-DD`.
 - **Refresh token** lives only in the `mnemio_refresh` HttpOnly cookie (scoped to
   `/api/v1/auth`); rotates every `/auth/refresh`; reuse revokes all of a user's
@@ -148,6 +158,7 @@ activation milestones).
 - **Events wired:** `account_created` (auth.service first-verify / new-OAuth only),
   `first_value_reached` (milestone.service: first deck/session/review),
   `ai_cap_reached` (ai.budget.service guard — enrich/generate/suggest only),
+  `deck_subject_classified` (subjects.service — apkg import, `/ai/classify-subject`, backfill),
   and the Stripe revenue set in `billing.service.ts`
   (`subscription_started/renewed/canceled`, `trial_started/converted`).
 - **Webhook rule:** the Stripe handler ACKs **first**, then fires analytics — a

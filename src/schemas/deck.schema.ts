@@ -1,12 +1,15 @@
 import { z } from 'zod';
 import { langSchema } from './lang.schema.js';
+import { SUBJECTS } from '../shared/subjects.js';
 
 // P2 cosmetic / discovery fields. All optional; default to null when unset.
 const coverColorSchema = z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/, 'coverColor must be a #RRGGBB hex string');
 const glyphSchema = z.string().trim().min(1).max(8); // emoji or short symbol
-const subjectSchema = z.string().trim().min(1).max(40); // e.g. 'languages', 'science'
+// One of the 12 fixed subjects (spec 002). Omitted on create → the server
+// infers one; never nullable.
+export const subjectSchema = z.enum(SUBJECTS);
 
 export const deckBaseSchema = z.object({
     title: z.string().trim().min(2, 'Title must be at least 2 characters').max(120),
@@ -16,7 +19,7 @@ export const deckBaseSchema = z.object({
     isPublic: z.boolean().optional(),
     coverColor: coverColorSchema.nullable().optional(),
     glyph: glyphSchema.nullable().optional(),
-    subject: subjectSchema.nullable().optional(),
+    subject: subjectSchema.optional(),
 });
 
 export const createDeckSchema = deckBaseSchema;

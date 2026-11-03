@@ -3,8 +3,11 @@ import {
     runCreateDeck,
     runAddCards,
     resolveDeckLanguages,
+    CREATE_DECK_TOOL_DEF,
     type UserLanguages,
 } from '../src/services/chat.tools.js';
+import { SUBJECTS } from '../src/shared/subjects.js';
+import { SUPPORTED_LANG_LIST } from '../src/shared/lang.js';
 import * as aiService from '../src/services/ai.service.js';
 import * as budget from '../src/services/ai.budget.service.js';
 import * as decksService from '../src/services/decks.service.js';
@@ -62,7 +65,8 @@ const fakeDeck = (overrides: Record<string, unknown> = {}) =>
         cardCount: 0,
         coverColor: null,
         glyph: null,
-        subject: null,
+        subject: 'other',
+        subjectSource: 'user',
         featured: false,
         copyCount: 0,
         sourceDeckId: null,
@@ -281,6 +285,7 @@ describe('chat.tools / runCreateDeck — words branch', () => {
                 sourceLanguage: 'uk',
                 targetLanguage: 'es',
             }),
+            expect.anything(),
         );
         expect(mCards.bulkCreate).toHaveBeenCalledWith(
             'u1',
@@ -303,6 +308,7 @@ describe('chat.tools / runCreateDeck — words branch', () => {
         expect(mDecks.create).toHaveBeenCalledWith(
             'u1',
             expect.objectContaining({ title: 'Spanish basics' }),
+            expect.anything(),
         );
     });
 });
@@ -359,6 +365,7 @@ describe('chat.tools / runCreateDeck — topic branch', () => {
         expect(mDecks.create).toHaveBeenCalledWith(
             'u1',
             expect.objectContaining({ sourceLanguage: 'uk', targetLanguage: 'en' }),
+            expect.anything(),
         );
     });
 
@@ -419,7 +426,8 @@ const fakeDeckRow = (overrides: Record<string, unknown> = {}) =>
         cardCount: 5,
         coverColor: null,
         glyph: null,
-        subject: null,
+        subject: 'other',
+        subjectSource: 'user',
         featured: false,
         copyCount: 0,
         sourceDeckId: null,
@@ -675,6 +683,7 @@ describe('chat.tools / deck title', () => {
         expect(mDecks.create).toHaveBeenCalledWith(
             'u1',
             expect.objectContaining({ title: 'QA-ES-PT' }),
+            expect.anything(),
         );
     });
 
@@ -783,5 +792,65 @@ describe('chat.tools / what the user is charged', () => {
         expect(r).toMatchObject({ ok: false, reason: 'AI_BUDGET_EXCEEDED' });
         expect(mAi.fillCards).not.toHaveBeenCalled();
         expect(mCards.bulkCreate).not.toHaveBeenCalled();
+    });
+});
+
+describe('chat.tools / runCreateDeck — subject and targetLanguage in the tool call', () => {
+    const words = {
+        cards: [{ word: 'agua', definition: 'water' }],
+        meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
+    };
+
+    it("stores the model's subject as ai-picked", async () => {
+        mAi.fillCards.mockResolvedValue(words as never);
+        await runCreateDeck('u1', { words: ['agua'], subject: 'medicine' }, UK_ES);
+        expect(mDecks.create).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({ subject: 'medicine' }),
+            { subjectSource: 'ai' },
+        );
+    });
+
+    it('falls back to the rules when the subject is missing or invalid, with no extra AI call', async () => {
+        mAi.fillCards.mockResolvedValue(words as never);
+        await runCreateDeck('u1', { words: ['agua'], subject: 'astrology-ish' }, UK_ES);
+        expect(mDecks.create).toHaveBeenLastCalledWith(
+            'u1',
+            expect.objectContaining({ subject: 'languages' }),
+            { subjectSource: 'rules' },
+        );
+        await runCreateDeck('u1', { words: ['agua'] }, UK_ES);
+        expect(mDecks.create).toHaveBeenLastCalledWith(
+            'u1',
+            expect.objectContaining({ subject: 'languages' }),
+            { subjectSource: 'rules' },
+        );
+        expect(mAi.fillCards).toHaveBeenCalledTimes(2);
+    });
+
+    it('takes targetLanguage as the words language, preferring a valid value over wordsLanguage', async () => {
+        mAi.fillCards.mockResolvedValue(words as never);
+        await runCreateDeck('u1', { words: ['agua'], targetLanguage: 'fr' }, UK_ES);
+        expect(mDecks.create).toHaveBeenLastCalledWith(
+            'u1',
+            expect.objectContaining({ targetLanguage: 'fr' }),
+            expect.anything(),
+        );
+        await runCreateDeck(
+            'u1',
+            { words: ['agua'], targetLanguage: 'zz', wordsLanguage: 'de' },
+            UK_ES,
+        );
+        expect(mDecks.create).toHaveBeenLastCalledWith(
+            'u1',
+            expect.objectContaining({ targetLanguage: 'de' }),
+            expect.anything(),
+        );
+    });
+
+    it('advertises subject and targetLanguage as enums of the fixed lists', () => {
+        const props = CREATE_DECK_TOOL_DEF.input_schema.properties;
+        expect(props.subject.enum).toEqual([...SUBJECTS]);
+        expect(props.targetLanguage.enum).toEqual([...SUPPORTED_LANG_LIST]);
     });
 });

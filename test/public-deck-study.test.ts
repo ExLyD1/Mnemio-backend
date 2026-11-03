@@ -9,6 +9,9 @@ import * as sessionsService from '../src/services/sessions.service.js';
 import * as srsService from '../src/services/srs.service.js';
 import { NotFoundError, ForbiddenError } from '../src/shared/errors.js';
 
+// Library tracking is a side effect with its own tests (user-decks-record.test.ts).
+vi.mock('../src/services/user-decks.service.js', () => ({ trackStudied: vi.fn() }));
+
 vi.mock('../src/repositories/decks.repository.js', () => ({
     findDeckByIdUnscoped: vi.fn(),
     findDeckById: vi.fn(),

@@ -1,9 +1,12 @@
 import type { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
+import type { Subject, SubjectSource } from '../shared/subjects.js';
 
 export type ImportedDeck = {
     title: string;
     description: string;
+    subject: Subject;
+    subjectSource: SubjectSource;
     sourceData: Prisma.InputJsonObject;
     cards: Omit<Prisma.CardCreateManyInput, 'deckId' | 'userId' | 'position'>[];
 };
@@ -21,6 +24,8 @@ export const createApkgDecks = (
                         authorId: userId,
                         title: input.title,
                         description: input.description,
+                        subject: input.subject,
+                        subjectSource: input.subjectSource,
                         ...languages,
                         sourceData: input.sourceData,
                         cardCount: input.cards.length,

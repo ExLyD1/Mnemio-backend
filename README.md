@@ -150,6 +150,21 @@ npm run seed
 
 Idempotent — re-running is safe.
 
+### Subject / language cleanup (spec 002, one-off)
+
+After the `20261029000000_fixed_subjects` migration, decks it couldn't place are
+`subjectSource = 'pending'`. Back up the database first, then:
+
+```bash
+psql "$SNAPSHOT_URL" -f scripts/sql/preview-subject-mapping.sql   # read-only: what the migration will do
+npx tsx scripts/backfill-subjects.ts --dry-run                    # AI calls, prints every change, WRITES NOTHING
+npx tsx scripts/backfill-subjects.ts --apply                      # writes (only still-pending decks; idempotent)
+psql "$DATABASE_URL" -f scripts/sql/check-subjects.sql            # expect 0 invalid, 0 pending
+```
+
+Without `--apply` the script is always a dry run, and it prints the database
+host before doing anything. The AI calls are a system cost (no user budget).
+
 ### Dev server
 
 ```bash
@@ -220,7 +235,7 @@ Every `Deck` response includes embedded `stats { total, mastered, learning, new,
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/decks` | ✓ | Paginated deck list (`{ items, nextCursor, total }`), `?q=` search |
-| POST | `/decks` | ✓ | Create deck (incl. `coverColor`, `glyph`, `subject`, `isPublic`) |
+| POST | `/decks` | ✓ | Create deck (incl. `coverColor`, `glyph`, `subject` — one of the 12 fixed subjects, inferred when omitted — `isPublic`) |
 | GET | `/decks/:id` | ✓ | Deck + **full inline `cards: Card[]`** (cap 1000) |
 | PATCH | `/decks/:id` | ✓ | Update any subset of deck fields |
 | DELETE | `/decks/:id` | ✓ | Delete (cascades to cards, progress, sessions) |
@@ -284,13 +299,25 @@ Scheduling is Mnemio's SM-2-family engine with Anki-compatible defaults (learnin
 
 Catalog is code-defined ([`src/services/achievements.catalog.ts`](./src/services/achievements.catalog.ts)); auto-evaluated on session-complete / rate / card-create.
 
+### Library
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/library` | ✓ | Decks I authored + decks (mine or others') I've studied ≥ `min(5, cardCount)` cards of, most recently studied first (`?scope=all\|my\|learning`, `?subject`, `?lang`, cursor). First page carries chip `facets`. |
+
+Subjects are a fixed list of 12 ([`src/shared/subjects.ts`](./src/shared/subjects.ts));
+language decks facet on `targetLanguage` from the 28 supported codes. Both
+lists are served by `GET /public/taxonomy`. "Studied" is tracked per user and
+deck in `user_decks` (best-effort side effect of rating / session progress).
+
 ### Discover
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/discover/decks` | ✓ | Public catalog (`?q`, `?lang`, `?subject`, `?sort=popular\|recent`) |
+| GET | `/discover/decks` | ✓ | Public catalog (`?q`, `?lang` = language being learned, `?subject`, `?sort=popular\|recent`) |
 | GET | `/discover/featured` | ✓ | Curator-flagged decks (≤12) |
-| GET | `/discover/categories` | ✓ | Distinct subjects with deck counts |
+| GET | `/discover/categories` | ✓ | All 12 subjects with public-deck counts + the languages of public language decks |
+| GET | `/public/taxonomy` | — | The fixed subject + language lists and the legacy-slug map (for 301s) |
 
 ### AI
 
@@ -298,6 +325,7 @@ Catalog is code-defined ([`src/services/achievements.catalog.ts`](./src/services
 |---|---|---|---|
 | POST | `/ai/enrich-words` | ✓ | **Key feature.** User pastes a word list (≤100); AI returns one card per word (order preserved). FE persists via existing `/decks/:id/cards/bulk`. Streams via SSE when `Accept: text/event-stream`. |
 | POST | `/ai/generate-deck` | ✓ | Returns an ephemeral deck draft from a topic. Streams via SSE when `Accept: text/event-stream`. |
+| POST | `/ai/classify-subject` | ✓ | Files a deck under one of the 12 subjects (one cheap enum call; **unbudgeted**, falls back to keyword rules) |
 | POST | `/ai/suggest` | ✓ | Mimi contextual nudge (`dashboard` / `deck_detail` / `review`) |
 
 **Providers** (`AI_PROVIDER` env):

@@ -4,6 +4,7 @@ import { env } from '../src/config/env.js';
 import { setAiCallListener, type AiCallRecord } from '../src/services/ai.usage-log.js';
 import { AiProviderError, AiValidationFailedError } from '../src/shared/errors.js';
 import type { GenerateDeckEvent } from '../src/services/ai.provider.js';
+import { SUBJECTS } from '../src/shared/subjects.js';
 
 const sdk = vi.hoisted(() => ({ stream: vi.fn() }));
 vi.mock('@anthropic-ai/sdk', () => ({
@@ -281,5 +282,40 @@ describe('streaming (SSE) callers', () => {
         expect(result.cards.map((c) => c.definition !== '')).toEqual([true, false, false]);
         expect(result.cards[2]?.tags).toEqual(['ai-unfilled']);
         expect(sdk.stream).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('subject enum in tool schemas', () => {
+    const toolOf = (i: number) =>
+        (
+            body(i)['tools'] as {
+                name: string;
+                input_schema: { properties: Record<string, unknown> };
+            }[]
+        )[0];
+
+    it('emit_deck constrains subject to the 12', async () => {
+        sdk.stream.mockImplementation(() => fakeStream(toolReply('emit_deck', deck(3))));
+        await generate(3);
+        const props = toolOf(0)?.input_schema.properties as { subject: { enum: string[] } };
+        expect(props.subject.enum).toEqual([...SUBJECTS]);
+    });
+
+    it('classifySubject calls emit_subject with the same enum and returns the pick', async () => {
+        sdk.stream.mockImplementation(() =>
+            fakeStream(toolReply('emit_subject', { subject: 'medicine' })),
+        );
+        const r = await anthropicProvider.classifySubject({
+            title: 'Anatomy',
+            sourceLanguage: 'en',
+            targetLanguage: 'en',
+            words: ['femur'],
+        });
+        expect(r).toEqual({ subject: 'medicine' });
+        const tool = toolOf(0);
+        expect(tool?.name).toBe('emit_subject');
+        const props = tool?.input_schema.properties as { subject: { enum: string[] } };
+        expect(props.subject.enum).toEqual([...SUBJECTS]);
+        expect(calls[0]?.op).toBe('classify_subject');
     });
 });

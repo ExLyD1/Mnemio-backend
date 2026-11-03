@@ -11,7 +11,12 @@ model Deck {
   // Cosmetic / discovery fields (P2)
   coverColor     String?
   glyph          String?
-  subject        String?
+  // One of the 12 SUBJECTS (src/shared/subjects.ts) — enforced by Zod on every
+  // write; no DB enum so the list can change without a migration.
+  subject        String   @default("other")
+  // Where `subject` came from: 'user' | 'rules' | 'ai' | 'pending'. 'pending'
+  // = the 002 migration couldn't place it; scripts/backfill-subjects.ts does.
+  subjectSource  String   @default("user")
   // Featured by curators for the Discover landing — toggle by an admin in DB
   // for MVP; eventual surface: POST /admin/decks/:id/feature.
   featured       Boolean  @default(false)
@@ -27,10 +32,12 @@ model Deck {
   folderDecks   FolderDeck[]
   copies        Deck[]             @relation("DeckCopies")
   source        Deck?              @relation("DeckCopies", fields: [sourceDeckId], references: [id], onDelete: SetNull)
+  subjectBackfill DeckSubjectBackfill?
+  learners        UserDeck[]
 
   @@index([authorId, updatedAt])
   @@index([isPublic, updatedAt])
-  @@index([isPublic, subject])
+  @@index([isPublic, subject, targetLanguage])
   @@index([isPublic, featured])
   @@map("decks")
 }
@@ -47,4 +54,21 @@ model DeckCollaborator {
 
   @@unique([deckId, userId])
   @@map("deck_collaborators")
+}
+
+// Audit trail of the 002 subject migration: one row per deck whose subject the
+// migration changed, with the raw pre-002 value. Gives the AI backfill script
+// the original text and lets ops revert a bad mapping. Drop once the backfill
+// is verified in production.
+model DeckSubjectBackfill {
+  deckId     String   @id
+  rawSubject String?
+  subject    String
+  // 'legacy' | 'keyword' | 'pending'
+  method     String
+  createdAt  DateTime @default(now())
+
+  deck Deck @relation(fields: [deckId], references: [id], onDelete: Cascade)
+
+  @@map("deck_subject_backfill")
 }

@@ -2,6 +2,7 @@ import { prisma } from '../db/prisma.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import type { AiCardDraft } from '../services/ai.provider.js';
 import type { ChatAttachment } from '../shared/mappers.chat.js';
+import type { Subject, SubjectSource } from '../shared/subjects.js';
 
 // The message and side effect commit together. A reaped placeholder therefore
 // carries its attachment even if the process dies before the provider returns.
@@ -9,7 +10,15 @@ export const writeDeck = async (params: {
     userId: string;
     assistantMessageId: string;
     deckId?: string;
-    meta: { title: string; description?: string; sourceLanguage: string; targetLanguage: string };
+    meta: {
+        title: string;
+        description?: string;
+        sourceLanguage: string;
+        targetLanguage: string;
+        // Only used when creating a deck (no deckId).
+        subject?: Subject;
+        subjectSource?: SubjectSource;
+    };
     cards: AiCardDraft[];
     skippedCount?: number;
 }): Promise<ChatAttachment> =>

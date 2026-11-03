@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import {
+    classifySubjectSchema,
     deckFromImageSchema,
     enrichWordsSchema,
     generateDeckSchema,
@@ -7,6 +8,7 @@ import {
 } from '../schemas/ai.schema.js';
 import * as aiService from '../services/ai.service.js';
 import * as budget from '../services/ai.budget.service.js';
+import * as subjectsService from '../services/subjects.service.js';
 import { startSse, wantsSse } from '../shared/sse.js';
 import { AppError, BadRequestError } from '../shared/errors.js';
 import { multipartTextFields, readAiImage } from '../shared/ai-image.js';
@@ -121,6 +123,17 @@ export const deckFromImage = async (request: FastifyRequest, reply: FastifyReply
     }
     sse.end();
     return reply;
+};
+
+// Unbudgeted by design (see subjects.service): never 402/429-by-cap, never
+// fails on an AI error — a rules answer comes back instead.
+export const classifySubject = async (request: FastifyRequest, reply: FastifyReply) => {
+    const input = classifySubjectSchema.parse(request.body);
+    const result = await subjectsService.classify(input, {
+        userId: request.currentUser.sub,
+        origin: 'classify_endpoint',
+    });
+    reply.send(result);
 };
 
 export const suggest = async (request: FastifyRequest, reply: FastifyReply) => {

@@ -23,7 +23,15 @@ import type { AiCardDraft } from './ai.provider.js';
 import type { ChatAttachment } from '../shared/mappers.chat.js';
 import { AppError } from '../shared/errors.js';
 import type { CreateCardInput } from '../schemas/card.schema.js';
-import { langDisplayName, normalizeLang } from '../shared/lang.js';
+import { SUPPORTED_LANG_LIST, langDisplayName, normalizeLang } from '../shared/lang.js';
+import {
+    SUBJECTS,
+    inferSubject,
+    matchSubjectKeywords,
+    normalizeSubject,
+    type Subject,
+    type SubjectSource,
+} from '../shared/subjects.js';
 
 // ---------- Public types ----------
 
@@ -36,6 +44,10 @@ export type CreateDeckToolInput = {
     title?: string;
     wordsLanguage?: string;
     definitionsLanguage?: string;
+    // Picked by the model in the same call (enum-constrained, spec 002).
+    // `targetLanguage` is the preferred spelling of `wordsLanguage`.
+    subject?: string;
+    targetLanguage?: string;
     count?: number;
 };
 
@@ -119,6 +131,24 @@ export const CREATE_DECK_TOOL_DEF = {
                 description:
                     'ISO 639-1 code of the language the user already KNOWS — ' +
                     'the language of the definitions and translations (e.g. "uk").',
+            },
+            subject: {
+                type: 'string' as const,
+                enum: [...SUBJECTS],
+                description:
+                    'The ONE subject the deck belongs to. "languages" when the ' +
+                    'cards are words/phrases of a language to learn; otherwise ' +
+                    'the field of knowledge (medicine, science, math, ' +
+                    'technology, humanities, social, business, law, arts, ' +
+                    'test-prep); "other" if none fits. Always pass it.',
+            },
+            targetLanguage: {
+                type: 'string' as const,
+                enum: [...SUPPORTED_LANG_LIST],
+                description:
+                    'ISO 639-1 code of the language of the words on the cards ' +
+                    '(same meaning as wordsLanguage — prefer this field). Pass it ' +
+                    'whenever the conversation settles it.',
             },
             count: { type: 'integer' as const, minimum: 3, maximum: 20 },
         },
@@ -270,9 +300,35 @@ const cardFromDraft = (c: AiCardDraft): CreateCardInput => ({
     ...(c.difficulty ? { difficulty: c.difficulty } : {}),
 });
 
+// The subject the chat model chose in the create_deck call. Anything it left
+// out or got wrong falls back to the rules (keywords in the title, then the
+// language heuristic) — never a second AI call.
+const deckSubject = (
+    modelSubject: string | undefined,
+    meta: { title: string; description?: string; sourceLanguage: string; targetLanguage: string },
+): { subject: Subject; subjectSource: SubjectSource } => {
+    const fromModel = normalizeSubject(modelSubject);
+    if (fromModel) {
+        return { subject: fromModel, subjectSource: 'ai' };
+    }
+    return {
+        subject:
+            matchSubjectKeywords(`${meta.title} ${meta.description ?? ''}`) ??
+            inferSubject(meta.sourceLanguage, meta.targetLanguage),
+        subjectSource: 'rules',
+    };
+};
+
 const persistDeck = async (
     userId: string,
-    meta: { title: string; description?: string; sourceLanguage: string; targetLanguage: string },
+    meta: {
+        title: string;
+        description?: string;
+        sourceLanguage: string;
+        targetLanguage: string;
+        subject: Subject;
+        subjectSource: SubjectSource;
+    },
     cards: AiCardDraft[],
     assistantMessageId?: string,
 ): Promise<{ attachment: ChatAttachment; words: string[] }> => {
@@ -282,12 +338,17 @@ const persistDeck = async (
         await achievements.evaluate(userId, 'card_create').catch(() => []);
         return { attachment, words: cards.map((c) => c.word) };
     }
-    const deck = await decksService.create(userId, {
-        title: meta.title,
-        description: meta.description ?? '',
-        sourceLanguage: meta.sourceLanguage,
-        targetLanguage: meta.targetLanguage,
-    });
+    const deck = await decksService.create(
+        userId,
+        {
+            title: meta.title,
+            description: meta.description ?? '',
+            sourceLanguage: meta.sourceLanguage,
+            targetLanguage: meta.targetLanguage,
+            subject: meta.subject,
+        },
+        { subjectSource: meta.subjectSource },
+    );
     await cardsService.bulkCreate(userId, deck.id, {
         cards: cards.map(cardFromDraft),
     });
@@ -413,7 +474,12 @@ const buildDeck = async (
         ctx.signal?.throwIfAborted();
         const persisted = await persistDeck(
             userId,
-            { title, sourceLanguage, targetLanguage },
+            {
+                title,
+                sourceLanguage,
+                targetLanguage,
+                ...deckSubject(input.subject, { title, sourceLanguage, targetLanguage }),
+            },
             enriched.cards,
             ctx.assistantMessageId,
         );
@@ -434,15 +500,22 @@ const buildDeck = async (
         ...(input.count ? { count: input.count } : {}),
     });
     ctx.signal?.throwIfAborted();
+    const topicTitle = resolveTitle({
+        modelTitle: input.title ?? draft.title,
+        userMessage: ctx.userMessage,
+        fallback: DEFAULT_TITLE_FALLBACK,
+    });
     const persisted = await persistDeck(
         userId,
         {
-            title: resolveTitle({
-                modelTitle: input.title ?? draft.title,
-                userMessage: ctx.userMessage,
-                fallback: DEFAULT_TITLE_FALLBACK,
-            }),
+            title: topicTitle,
             description: draft.description,
+            ...deckSubject(input.subject, {
+                title: topicTitle,
+                description: draft.description,
+                sourceLanguage,
+                targetLanguage,
+            }),
             // The resolved pair is authoritative — it is what the prompt
             // told the model to write in. Don't let the model's own echo of
             // the languages (draft.sourceLanguage/targetLanguage) override
@@ -480,8 +553,17 @@ export const runCreateDeck = async (
         };
     }
 
+    // `targetLanguage` (enum) is the preferred spelling; `wordsLanguage` stays
+    // accepted. Use whichever the resolver can read, so a stray value in one
+    // doesn't hide a good one in the other.
+    const wordsLanguage =
+        [input.targetLanguage, input.wordsLanguage].find(
+            (l) => l !== undefined && normalizeLang(l) !== null,
+        ) ??
+        input.targetLanguage ??
+        input.wordsLanguage;
     const langs = resolveDeckLanguages({
-        wordsLanguage: input.wordsLanguage,
+        wordsLanguage,
         definitionsLanguage: input.definitionsLanguage,
         userLangs,
         locale,
@@ -493,7 +575,7 @@ export const runCreateDeck = async (
         wordsCount: input.words?.length ?? 0,
         topic: input.topic,
         locale,
-        requested: { words: input.wordsLanguage, definitions: input.definitionsLanguage },
+        requested: { words: wordsLanguage, definitions: input.definitionsLanguage },
         profile: userLangs,
         resolved: langs.ok
             ? { sourceLanguage: langs.sourceLanguage, targetLanguage: langs.targetLanguage }

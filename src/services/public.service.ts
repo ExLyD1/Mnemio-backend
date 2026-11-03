@@ -21,6 +21,8 @@ import {
     type PageWithTotal,
 } from '../shared/pagination.js';
 import { NotFoundError } from '../shared/errors.js';
+import { SUBJECTS, LEGACY_SUBJECT_MAP, type Subject } from '../shared/subjects.js';
+import { SUPPORTED_LANG_LIST } from '../shared/lang.js';
 import {
     toPublicCard,
     toPublicDeckWithAuthor,
@@ -80,12 +82,8 @@ export const listPublicDecks = async (
 
 // ---------- /public/discover/categories ----------
 
-export const publicCategories = async (): Promise<{
-    items: { subject: string; count: number }[];
-}> => {
-    const items = await discoverRepo.categories();
-    return { items };
-};
+export const publicCategories = (): Promise<discoverRepo.DiscoverCategories> =>
+    discoverRepo.categories();
 
 // ---------- /public/decks/:id ----------
 
@@ -126,3 +124,19 @@ export const sitemapDecks = async (): Promise<{ items: SitemapDeck[] }> => {
         })),
     };
 };
+
+// ---------- /public/taxonomy ----------
+
+export type Taxonomy = {
+    subjects: readonly Subject[];
+    languages: readonly string[];
+    // Pre-002 category slugs → the 12, so the FE can 301 old /discover URLs.
+    legacySubjects: Readonly<Record<string, Subject>>;
+};
+
+// The single source of the fixed lists (labels are the FE's job).
+export const taxonomy = (): Taxonomy => ({
+    subjects: SUBJECTS,
+    languages: SUPPORTED_LANG_LIST,
+    legacySubjects: LEGACY_SUBJECT_MAP,
+});
