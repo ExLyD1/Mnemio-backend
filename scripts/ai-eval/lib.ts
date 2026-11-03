@@ -135,3 +135,73 @@ export const pool = async <T>(limit: number, tasks: (() => Promise<T>)[]): Promi
     await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
     return results;
 };
+
+// ---------- shared helpers (grader and variant eval) ----------
+
+export type Card = {
+    word: string;
+    definition: string;
+    partOfSpeech?: string;
+    example?: string;
+    exampleTranslation?: string;
+    tags?: string[];
+};
+
+export const median = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length === 0
+        ? NaN
+        : s.length % 2
+          ? (s[m] ?? NaN)
+          : ((s[m - 1] ?? 0) + (s[m] ?? 0)) / 2;
+};
+export const pct = (xs: number[], p: number) => {
+    const s = [...xs].sort((a, b) => a - b);
+    return s.length === 0
+        ? NaN
+        : (s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] ?? NaN);
+};
+export const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
+
+export const compareKey = (s: string) =>
+    s
+        .toLowerCase()
+        .replace(/[«»"'`’‘”“]/g, '')
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim();
+
+/** Cards a run's raw output holds, whatever the op. */
+export const cardsOfOutput = (output: unknown): Card[] => {
+    const o = output as {
+        cards?: Card[];
+        draft?: { cards?: Card[] };
+        generated?: { cards?: Card[] } | null;
+    } | null;
+    return o?.cards ?? o?.draft?.cards ?? o?.generated?.cards ?? [];
+};
+
+// Lenient Ukrainian match: every word of a reference must appear by stem
+// (Ukrainian inflects the last letters), e.g. «доглядати» ~ «доглядає».
+const stem = (w: string) => w.slice(0, Math.max(4, w.length - 2));
+const norm = (s: string) => s.toLowerCase().replace(/[’ʼ`]/g, "'");
+const mentions = (text: string, ref: string) => {
+    const t = norm(text);
+    return norm(ref)
+        .split(/\s+/)
+        .filter((w) => w.length >= 3)
+        .every((w) => t.includes(stem(w)));
+};
+export const refMatch = (
+    item: QualityItem | undefined,
+    card: Card,
+): 'match' | 'trap' | 'miss' | 'n/a' => {
+    if (!item?.refUk) {
+        return 'n/a';
+    }
+    const text = `${card.definition} ${card.exampleTranslation ?? ''}`;
+    if (item.refUk.some((r) => mentions(text, r))) {
+        return 'match';
+    }
+    return item.wrongUk?.some((r) => mentions(card.definition, r)) ? 'trap' : 'miss';
+};

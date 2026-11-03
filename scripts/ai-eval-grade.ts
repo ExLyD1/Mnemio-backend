@@ -18,10 +18,16 @@ import {
     Ledger,
     OUT,
     appendJsonl,
+    cardsOfOutput,
+    compareKey,
+    mean,
+    median,
+    pct,
     readJson,
     readJsonl,
+    refMatch,
+    type Card,
     type Lang,
-    type QualityItem,
     type QualitySet,
 } from './ai-eval/lib.js';
 import { estimateCostUsd } from '../src/services/ai.usage-log.js';
@@ -36,13 +42,6 @@ const BASELINE = opt('baseline') ?? 'today';
 const JUDGE = args.includes('--judge');
 const JUDGE_MODEL = 'claude-sonnet-5-5';
 
-type Card = {
-    word: string;
-    definition: string;
-    example?: string;
-    exampleTranslation?: string;
-    tags?: string[];
-};
 type Call = {
     evt: 'ai_call';
     arm: string;
@@ -89,61 +88,9 @@ const callsOf = (r: Run) =>
 
 // ---------- helpers ----------
 
-const median = (xs: number[]) => {
-    const s = [...xs].sort((a, b) => a - b);
-    const m = Math.floor(s.length / 2);
-    return s.length === 0
-        ? NaN
-        : s.length % 2
-          ? (s[m] ?? NaN)
-          : ((s[m - 1] ?? 0) + (s[m] ?? 0)) / 2;
-};
-const pct = (xs: number[], p: number) => {
-    const s = [...xs].sort((a, b) => a - b);
-    return s.length === 0
-        ? NaN
-        : (s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] ?? NaN);
-};
-const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
 const usd = (n: number) => (Number.isNaN(n) ? '—' : n < 0.01 ? n.toFixed(4) : n.toFixed(3));
-const compareKey = (s: string) =>
-    s
-        .toLowerCase()
-        .replace(/[«»"'`’‘”“]/g, '')
-        .replace(/[^\p{L}\p{N}]+/gu, ' ')
-        .trim();
-
 /** Cards a run produced, whatever the op. */
-const cardsOf = (r: Run): Card[] => {
-    const o = r.output as {
-        cards?: Card[];
-        draft?: { cards?: Card[] };
-        generated?: { cards?: Card[] } | null;
-    } | null;
-    return o?.cards ?? o?.draft?.cards ?? o?.generated?.cards ?? [];
-};
-
-// Lenient Ukrainian match: every word of a reference must appear by stem
-// (Ukrainian inflects the last letters), e.g. «доглядати» ~ «доглядає».
-const stem = (w: string) => w.slice(0, Math.max(4, w.length - 2));
-const norm = (s: string) => s.toLowerCase().replace(/[’ʼ`]/g, "'");
-const mentions = (text: string, ref: string) => {
-    const t = norm(text);
-    return norm(ref)
-        .split(/\s+/)
-        .filter((w) => w.length >= 3)
-        .every((w) => t.includes(stem(w)));
-};
-const refMatch = (item: QualityItem | undefined, card: Card): 'match' | 'trap' | 'miss' | 'n/a' => {
-    if (!item?.refUk) {
-        return 'n/a';
-    }
-    const text = `${card.definition} ${card.exampleTranslation ?? ''}`;
-    if (item.refUk.some((r) => mentions(text, r))) {
-        return 'match';
-    }
-    return item.wrongUk?.some((r) => mentions(card.definition, r)) ? 'trap' : 'miss';
-};
+const cardsOf = (r: Run): Card[] => cardsOfOutput(r.output);
 
 /** Automatic critical errors on a word-list run: invented meanings, followed injections, false-friend traps. */
 const autoCriticals = (r: Run): { word: string; why: string }[] => {

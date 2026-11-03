@@ -21,6 +21,9 @@
  *   --concurrency N  cells in flight at once (default 3)
  *   --budget-usd X   stop before the eval's cumulative spend could pass X (default 5)
  *   --out FILE       JSONL with every ai_call line and every run's raw output
+ *   --prompt-rules F eval-only: insert the rules in F into the emit_cards / emit_deck
+ *                    system prompt (production prompts are not changed)
+ *   --photo-runs N   passes over the photo set (default 1; photo runs = photos × N)
  *
  * The API key comes from .env and is never printed. Use a dev key.
  */
@@ -100,7 +103,48 @@ import type {
 import type { AddCardsToolInput, CreateDeckToolInput } from '../src/services/chat.tools.js';
 import type { ChatBudgetContext, ChatDeckContext } from '../src/services/chat.prompt.js';
 
+// ---------- eval-only prompt variant ----------
+
+// Wraps the SDK's stream() for this process only: the real provider path (retries,
+// max_tokens, effort) still runs, and ai.prompts.ts is untouched.
+const patchStats = { generatorCalls: 0, patched: 0 };
+const rulesArg = opt('prompt-rules');
+if (rulesArg) {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const rules = readFileSync(
+        isAbsolute(rulesArg) ? rulesArg : join(FIXTURES, rulesArg),
+        'utf8',
+    ).trim();
+    type StreamBody = {
+        system?: string | { type: string; text?: string }[];
+        tools?: { name: string }[];
+    };
+    const proto = Anthropic.Messages.prototype as unknown as {
+        stream: (body: StreamBody, options?: unknown) => unknown;
+    };
+    const original = proto.stream;
+    // "Call the emit_cards tool exactly once with all entries." / "…emit_deck tool exactly once."
+    const ANCHOR = /\nCall the emit_(?:cards|deck) tool exactly once/;
+    proto.stream = function (this: unknown, body: StreamBody, options?: unknown) {
+        const toolName = body.tools?.[0]?.name ?? '';
+        if (!/^emit_(cards|deck)$/.test(toolName)) {
+            return original.call(this, body, options);
+        }
+        patchStats.generatorCalls++;
+        const blocks = Array.isArray(body.system) ? body.system : [];
+        const last = blocks[blocks.length - 1];
+        if (!last?.text || !ANCHOR.test(last.text)) {
+            throw new Error('prompt-rules: closing "Call the emit_… tool" line not found');
+        }
+        const text = last.text.replace(ANCHOR, (m) => `\n${rules}\n${m}`);
+        patchStats.patched++;
+        const system = [...blocks.slice(0, -1), { ...last, text }];
+        return original.call(this, { ...body, system }, options);
+    };
+}
+
 const RUNS = Number(opt('runs') ?? 3);
+const PHOTO_PASSES = Number(opt('photo-runs') ?? 1);
 const CONCURRENCY = Number(opt('concurrency') ?? 3);
 const BUDGET = Number(opt('budget-usd') ?? 5);
 const OUT_FILE = (() => {
@@ -405,7 +449,7 @@ for (const lang of langs) {
             op: 'photo',
             lang,
             label: `photo → deck [${lang}]`,
-            runs: photos.length,
+            runs: photos.length * PHOTO_PASSES,
             run: (i) => {
                 const file = photos[i % photos.length] ?? '';
                 const ext = extname(file).toLowerCase();
@@ -594,6 +638,18 @@ const tasks = selected.flatMap((cell) =>
 );
 await pool(CONCURRENCY, tasks);
 process.stderr.write('\n');
+if (rulesArg) {
+    appendJsonl(OUT_FILE, { evt: 'patch', arm: ARM, ...patchStats });
+    console.log(
+        `prompt-rules: patched ${patchStats.patched} of ${patchStats.generatorCalls} generator calls`,
+    );
+    if (patchStats.patched === 0 || patchStats.patched !== patchStats.generatorCalls) {
+        console.error(
+            'prompt-rules: not every generator call carried the rules — discard this run.',
+        );
+        process.exit(3);
+    }
+}
 console.log(
     `${state.stopped ? 'STOPPED at the budget ceiling. ' : ''}Eval spend so far: $${ledger.spentUsd.toFixed(4)} of $${BUDGET.toFixed(2)}. Output: ${OUT_FILE.replace(`${OUT}/`, 'out/')}`,
 );
