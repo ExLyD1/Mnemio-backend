@@ -16,6 +16,7 @@ export const startSession = (data: {
     mode: string;
     cardIds: string[];
     srsEnabled: boolean;
+    runId: string | null;
 }) =>
     prisma.$transaction(async (tx) => {
         await tx.studySession.updateMany({
@@ -30,6 +31,7 @@ export const startSession = (data: {
                 status: 'active',
                 cardIds: data.cardIds,
                 srsEnabled: data.srsEnabled,
+                runId: data.runId,
             },
         });
     });
@@ -57,7 +59,7 @@ export const updateProgress = (id: string, userId: string, patch: SessionProgres
 export const completeSession = (
     id: string,
     userId: string,
-    data: {
+    data: SessionProgressPatch & {
         xpAwarded: number;
         cardsStudied: number;
         correctAnswers: number;
@@ -69,17 +71,23 @@ export const completeSession = (
     prisma.studySession.updateMany({
         where: { id, userId, status: 'active' },
         data: {
+            ...data,
             status: 'complete',
-            xpAwarded: data.xpAwarded,
-            cardsStudied: data.cardsStudied,
-            correctAnswers: data.correctAnswers,
-            cardIndex: data.cardIndex,
-            correct: data.correct,
-            durationMs: data.durationMs,
             endedAt: new Date(),
             completedAt: new Date(),
         },
     });
+
+// Whether another session of this review run already completed (and so took
+// the run's one +25 bonus).
+export const hasCompletedInRun = async (
+    userId: string,
+    runId: string,
+    excludeId: string,
+): Promise<boolean> =>
+    (await prisma.studySession.count({
+        where: { userId, runId, status: 'complete', NOT: { id: excludeId } },
+    })) > 0;
 
 export const findLatestIncomplete = (userId: string) =>
     prisma.studySession.findFirst({

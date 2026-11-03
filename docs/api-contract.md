@@ -43,7 +43,7 @@ unless it says so explicitly.
 | 2 | Access token in `localStorage`, sent as `Authorization: Bearer …`. |
 | 3 | On `{ code: 'AUTH_INVALID_TOKEN' }` → `POST /auth/refresh` (no body), retry once; on `{ code: 'AUTH_INVALID_REFRESH' }` → hard logout, never retry. |
 | 4 | `POST /srs/rate` body is `{ cardId, rating, tz? }` — `'again'\|'hard'\|'good'\|'easy'`. Server derives `deckId`. |
-| 5 | Session XP is **server-computed** `correct*10 + 25`. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
+| 5 | Session XP is **server-computed** `correct*10 + 25`. The +25 is awarded **at most once per `runId`**, to the first session of the run that completes; sessions without `runId` always get it. Never send `xp`. The user's total `xp` changes server-side — refresh via `/auth/me` or `/dashboard.stats.xp`. |
 | 6 | `User.fullName` (was `displayName`); `User.streak` is exposed but always `0` — use `/stats/overview.streak` instead. |
 | 7 | Username-taken error code is `AUTH_USERNAME_TAKEN`. |
 | 8 | Every list response is `{ items, nextCursor }`; one variant (`GET /decks`) adds `total`. Cursor is opaque. |
@@ -134,6 +134,7 @@ type ApiError = {
 | `DECK_NOT_FOUND` / `CARD_NOT_FOUND` / `SESSION_NOT_FOUND` | resource routes | 404 page or toast |
 | `DECK_EMPTY` | `POST /sessions` | Disable "Study" CTA when `cardCount === 0` |
 | `SESSION_NOT_ACTIVE` | `POST /sessions/:id/complete` | Refetch session, sync FE state |
+| `SESSION_NO_CARDS` | `POST /sessions` | None of the `cardIds` belong to this deck — a client bug; show a generic error |
 | `AI_TOO_MANY_WORDS` | `POST /ai/enrich-words` | "Max {max} words per batch — got {got}." `details.{max,got}` |
 | `AI_BUDGET_EXCEEDED` | any `/ai/*` | "Daily AI quota reached." `details.kind`, `details.capPerDay` |
 | `AI_PROVIDER_ERROR` | any `/ai/*` | Generic "AI is having a moment — try again." `details.providerStatus` for logs |
@@ -339,6 +340,7 @@ type StudySession = {
   counts: SessionCounts;       // P1: per-grade tally
   revisitCardIds: string[];    // P1: cards the user flagged to revisit
   durationMs: number;          // P1: ms spent in this session
+  runId: string | null;        // groups the per-deck sessions of one review run
   startedAt: string;
   endedAt: string | null;
   completedAt: string;
@@ -820,12 +822,23 @@ session is flipped to `incomplete` before the new one becomes `active`.
 //   deckId: string;
 //   mode: 'flashcard' | 'multiple_choice' | 'srs';
 //   srsEnabled?: boolean;      // default true; false = "Just browse" (no SM-2 grading)
+//   cardIds?: string[];        // 1–1000 uuids: the cards this round will show, in order.
+//                              // Intersected with the deck's cards; none left → 400 SESSION_NO_CARDS.
+//                              // Absent = the whole deck.
+//   runId?: string;            // uuid; groups the sessions of one review run (see below)
 // }
 
-// 201 Response: StudySession  (status: 'active', cardIds: deck snapshot,
-//                              cardIndex: 0, correct: 0)
-// Errors: 404 DECK_NOT_FOUND · 400 DECK_EMPTY
+// 201 Response: StudySession  (status: 'active', cardIds: deck snapshot or the
+//                              requested subset, cardIndex: 0, correct: 0)
+// Errors: 404 DECK_NOT_FOUND · 400 DECK_EMPTY · 400 SESSION_NO_CARDS
 ```
+> **Review runs.** `/review` keeps no session open while reviewing. When the run
+> ends (or the user leaves) the client writes one session per deck it touched —
+> `POST /sessions { deckId, mode, srsEnabled, runId, cardIds }` then
+> `POST /sessions/:id/complete { correct, counts, revisitCardIds, durationMs }` —
+> sequentially, all with the same client-generated `runId`. Only the first of
+> them to complete gets the +25 (invariant #5), so a run over N decks earns
+> exactly `10 × Σcorrect + 25`.
 
 #### `PATCH /sessions/:id`  *(auth)*
 Append progress and Session Summary state mid-session. **At least one** field
@@ -844,10 +857,19 @@ required; FE patches incrementally.
 ```
 
 #### `POST /sessions/:id/complete`  *(auth)*
-Close session. **XP is server-computed**: `correct * 10 + 25`. User's total XP
-incremented atomically.
+Close session. **XP is server-computed**: `correct * 10 + 25`, where the +25 is
+skipped if another session with the same `runId` already completed. User's total
+XP incremented atomically.
 ```ts
-// Request: (empty body)
+// Request: optional; an empty body behaves exactly as before.
+// {
+//   correct?: number;
+//   counts?: { again, hard, good, easy };
+//   revisitCardIds?: string[];                // ≤ 1000 ids
+//   durationMs?: number;
+// }
+// Same field rules as PATCH /sessions/:id. Applied and completed in a single
+// write, so XP uses the snapshot's `correct`.
 // 200 Response: StudySession & { newAchievements: Achievement[] }
 //   (status: 'complete', xpAwarded set)
 // Errors: 400 SESSION_NOT_ACTIVE · 404 SESSION_NOT_FOUND
@@ -926,7 +948,10 @@ type Previews = Record<'again'|'hard'|'good'|'easy', { kind: 'secs' | 'days'; va
 The Anki-style study queue for "now", ready to render in one response (no
 client-side per-deck fan-out).
 ```ts
-// Query: ?deckId?=uuid &extraNew?=0..100 &limit?=number(<=2000, due reviews; default 200)
+// Query: ?deckId?=uuid
+//        &deckIds?=uuid,uuid,…   // 1–50, comma-separated, deduped; NOT with deckId
+//        &extraNew?=0..100       // only meaningful with deckId; ignored otherwise
+//        &limit?=number(<=2000, due reviews; default 200)
 // Timezone: X-Timezone header (else ?tz), as everywhere else
 // 200 Response
 {
@@ -943,13 +968,31 @@ client-side per-deck fan-out).
   nextDueAt: string | null;      // earliest future due beyond the returned items
   newAvailable: number;          // new cards held back by the daily limit
   limits: { newPerDay: number; newIntroducedToday: number };
+  byDeck: {
+    deckId: string;
+    deckTitle: string;
+    coverColor: string | null;
+    glyph: string | null;
+    due: number;                 // ≥ 1
+  }[];
 }
-// Errors: 404 DECK_NOT_FOUND · 403 CARD_FORBIDDEN · 400 VALIDATION_ERROR
+// Errors: 404 DECK_NOT_FOUND · 403 CARD_FORBIDDEN (deckId only) · 400 VALIDATION_ERROR
 ```
 With `deckId`: due (re)learning + due reviews + new cards by `position`
-(20/day per deck, + `extraNew`). Without: due cards across all accessible
+(20/day per deck, + `extraNew`). With `deckIds`: the same due cards as the
+unscoped queue, narrowed to those decks (no new cards; `limit` caps reviews
+across the selection). If **any** id is missing or private-not-owned → `404
+DECK_NOT_FOUND` (not 403, so private decks can't be enumerated). `deckId` +
+`deckIds`, more than 50 ids, an empty list or a non-uuid → `400
+VALIDATION_ERROR`. Without either: due cards across all accessible
 decks, no new cards. Order: due learning, then reviews with new cards mixed in
 evenly, then learning cards due within 20 minutes (learn-ahead).
+
+`byDeck` is always present (may be `[]`): per deck in the request's scope, the
+due cards the query would return **ignoring `limit`** (`nextReviewAt ≤ now`,
+plus intraday learning/relearning within the learn-ahead window). New cards are
+never counted; only decks with `due ≥ 1`. Order: `due DESC, deckTitle ASC,
+deckId ASC`. Powers the `/review` hub.
 
 #### `GET /srs/due`  *(auth)*
 ```ts
@@ -2379,6 +2422,8 @@ return this error; if it did, hide all upgrade/subscription UI silently.
 - Exit button → `POST /sessions/:id/exit`.
 - "Continue studying" → `POST /sessions/:id/resume` then route into the study page.
 - Don't send `xp` to `/complete`; read it back from the response.
+- Review runs (`/review`) open no session while reviewing; they write one
+  completed session per deck touched at the end, sharing a `runId`.
 
 ### Pagination wiring
 Stash `nextCursor` per list view. "Load more" passes `?cursor=<nextCursor>`.

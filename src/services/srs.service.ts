@@ -1,4 +1,5 @@
 import * as srsRepo from '../repositories/srs.repository.js';
+import type { DeckScope } from '../repositories/srs.repository.js';
 import * as cardsRepo from '../repositories/cards.repository.js';
 import * as decksRepo from '../repositories/decks.repository.js';
 import * as activityRepo from '../repositories/activity.repository.js';
@@ -12,6 +13,7 @@ import { SRS_DEFAULTS } from './srs-engine.js';
 import { dayNumber, rollover } from './srs-clock.js';
 import { DEFAULT_TZ } from './tz.js';
 import {
+    toPublicDeckDue,
     toPublicProgress,
     type PublicCardProgress,
     type Previews,
@@ -125,11 +127,21 @@ export type QueueItem = {
 /**
  * The study queue, ready to render, in one response (no per-deck fan-out).
  * With a deck: due (re)learning + due reviews + that deck's new cards under
- * Anki's daily limit. Without: due cards across every accessible deck.
+ * Anki's daily limit. With a set of decks: due cards in those decks only.
+ * Without: due cards across every accessible deck.
  */
 export const queue = async (userId: string, query: QueueQuery, tz: string = DEFAULT_TZ) => {
-    const { deckId, extraNew } = query;
-    if (deckId) {
+    const { deckId, deckIds } = query;
+    // New cards (and so extraNew) only exist in a single-deck scope.
+    const extraNew = deckIds ? 0 : query.extraNew;
+    if (deckIds) {
+        // 404 for missing and private-not-owned alike, so a private deck can't be
+        // told apart from a nonexistent one (invariant #9).
+        const readable = await decksRepo.findReadableDeckIds(userId, deckIds);
+        if (readable.length !== deckIds.length) {
+            throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
+        }
+    } else if (deckId) {
         const deck = await decksRepo.findDeckByIdUnscoped(deckId);
         if (!deck) {
             throw new NotFoundError('DECK_NOT_FOUND', 'Deck not found');
@@ -140,16 +152,21 @@ export const queue = async (userId: string, query: QueueQuery, tz: string = DEFA
     }
     const now = new Date();
     const today = rollover(dayNumber(now, tz), tz);
-    const introduced = await srsRepo.newIntroducedToday(userId, deckId, today);
+    const scope: DeckScope = deckIds ?? deckId;
+    const introduced = await srsRepo.newIntroducedToday(userId, scope, today);
     const newLimit = Math.max(0, SRS_DEFAULTS.newPerDay - introduced + extraNew);
-    const data = await srsRepo.queueData(
-        userId,
-        deckId,
-        now,
-        new Date(now.getTime() + SRS_DEFAULTS.learnAheadMinutes * 60_000),
-        newLimit,
-        query.limit ?? SRS_DEFAULTS.reviewsPerDay,
-    );
+    const ahead = new Date(now.getTime() + SRS_DEFAULTS.learnAheadMinutes * 60_000);
+    const [data, byDeck] = await Promise.all([
+        srsRepo.queueData(
+            userId,
+            scope,
+            now,
+            ahead,
+            newLimit,
+            query.limit ?? SRS_DEFAULTS.reviewsPerDay,
+        ),
+        srsRepo.dueByDeck(userId, scope, now, ahead),
+    ]);
     const mapProgress = (p: (typeof data.reviews)[number]): QueueItem => ({
         card: toPublicCard(p.card),
         state: p.state as SrsState,
@@ -175,7 +192,7 @@ export const queue = async (userId: string, query: QueueQuery, tz: string = DEFA
     ];
     const future = await srsRepo.nextFutureDue(
         userId,
-        deckId,
+        scope,
         now,
         data.learnAhead.map((p) => p.cardId),
     );
@@ -189,6 +206,8 @@ export const queue = async (userId: string, query: QueueQuery, tz: string = DEFA
         nextDueAt: future?.nextReviewAt.toISOString() ?? null,
         newAvailable: Math.max(0, data.newTotal - fresh.length),
         limits: { newPerDay: SRS_DEFAULTS.newPerDay, newIntroducedToday: introduced },
+        // Uncapped per-deck due counts for the review hub (sorted by the query).
+        byDeck: byDeck.map(toPublicDeckDue),
     };
 };
 

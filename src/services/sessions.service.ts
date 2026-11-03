@@ -7,12 +7,17 @@ import * as milestone from './milestone.service.js';
 import { BadRequestError, NotFoundError } from '../shared/errors.js';
 import { toPublicSession, type PublicSession } from '../shared/mappers.session.js';
 import { DEFAULT_TZ } from './tz.js';
-import type { CreateSessionInput, UpdateSessionInput } from '../schemas/session.schema.js';
+import type {
+    CompleteSessionInput,
+    CreateSessionInput,
+    UpdateSessionInput,
+} from '../schemas/session.schema.js';
 
 // XP formula (locked by frontend plan): correct * 10 + (completed ? 25 : 0).
-// Server is authoritative — clients cannot supply xp.
-export const computeXp = (correct: number, completed: boolean): number =>
-    correct * 10 + (completed ? 25 : 0);
+// Server is authoritative — clients cannot supply xp. The +25 is withheld when
+// another session of the same review run already took it (bonusEligible false).
+export const computeXp = (correct: number, completed: boolean, bonusEligible = true): number =>
+    correct * 10 + (completed && bonusEligible ? 25 : 0);
 
 // Session duration persisted on completion (powers /stats/study-time). Prefer a
 // duration the client already reported via PATCH /sessions/:id (it reflects real
@@ -59,17 +64,14 @@ export const start = async (ownerId: string, input: CreateSessionInput): Promise
         mode: input.mode,
         cardIds: sessionCardIds,
         srsEnabled: input.srsEnabled,
+        runId: input.runId ?? null,
     });
     return toPublicSession(session);
 };
 
-export const updateProgress = async (
-    ownerId: string,
-    sessionId: string,
-    input: UpdateSessionInput,
-): Promise<PublicSession> => {
+const toProgressPatch = (input: UpdateSessionInput | CompleteSessionInput) => {
     const patch: sessionsRepo.SessionProgressPatch = {};
-    if (input.cardIndex !== undefined) {
+    if ('cardIndex' in input && input.cardIndex !== undefined) {
         patch.cardIndex = input.cardIndex;
     }
     if (input.correct !== undefined) {
@@ -87,7 +89,15 @@ export const updateProgress = async (
     if (input.durationMs !== undefined) {
         patch.durationMs = input.durationMs;
     }
+    return patch;
+};
 
+export const updateProgress = async (
+    ownerId: string,
+    sessionId: string,
+    input: UpdateSessionInput,
+): Promise<PublicSession> => {
+    const patch = toProgressPatch(input);
     const { count } = await sessionsRepo.updateProgress(sessionId, ownerId, patch);
     if (count === 0) {
         throw new NotFoundError('SESSION_NOT_FOUND', 'Active session not found');
@@ -103,6 +113,7 @@ export const complete = async (
     ownerId: string,
     sessionId: string,
     tz: string = DEFAULT_TZ,
+    snapshot: CompleteSessionInput = {},
 ): Promise<PublicSession & { newAchievements: PublicAchievement[] }> => {
     const session = await sessionsRepo.findSessionOwned(sessionId, ownerId);
     if (!session) {
@@ -112,12 +123,27 @@ export const complete = async (
         throw new BadRequestError('SESSION_NOT_ACTIVE', 'Session is not active');
     }
 
-    const xp = computeXp(session.correct, true);
+    // A final snapshot (if any) wins over what was PATCHed, and lands in the same
+    // write as the completion, so XP is computed from the snapshot's `correct`.
+    const patch = toProgressPatch(snapshot);
+    const correctAnswers = patch.correct ?? session.correct;
+    // A review run writes one session per deck it touched; only the first of
+    // them to complete earns the +25, so N decks never out-earn one session.
+    // No race: only the single active session can complete, and a run's
+    // sessions are started one after another.
+    const bonusEligible =
+        !session.runId ||
+        !(await sessionsRepo.hasCompletedInRun(ownerId, session.runId, sessionId));
+    const xp = computeXp(correctAnswers, true, bonusEligible);
     const cardsStudied = session.cardIds.length;
-    const correctAnswers = session.correct;
-    const durationMs = resolveDurationMs(session.durationMs, session.startedAt, new Date());
+    const durationMs = resolveDurationMs(
+        patch.durationMs ?? session.durationMs,
+        session.startedAt,
+        new Date(),
+    );
 
     const { count } = await sessionsRepo.completeSession(sessionId, ownerId, {
+        ...patch,
         xpAwarded: xp,
         cardsStudied,
         correctAnswers,

@@ -1,5 +1,6 @@
 import type { CardProgressModel } from '../../generated/prisma/models/CardProgress.js';
 import type { Rating, SrsMemory, SrsOptions } from '../services/srs-engine.js';
+import type { DeckDueRow } from '../repositories/srs.repository.js';
 
 export type SrsState = 'new' | 'learning' | 'review' | 'relearning';
 export type IntervalPreview = { kind: 'secs' | 'days'; value: number };
@@ -41,4 +42,18 @@ export const toPreviews = (options: SrsOptions): Previews => ({
     hard: intervalPreview(options.hard),
     good: intervalPreview(options.good),
     easy: intervalPreview(options.easy),
+});
+export type PublicDeckDue = {
+    deckId: string;
+    deckTitle: string;
+    coverColor: string | null;
+    glyph: string | null;
+    due: number;
+};
+export const toPublicDeckDue = (r: DeckDueRow): PublicDeckDue => ({
+    deckId: r.deckId,
+    deckTitle: r.deckTitle,
+    coverColor: r.coverColor,
+    glyph: r.glyph,
+    due: Number(r.due),
 });
