@@ -409,6 +409,19 @@ const resolveTitle = (params: {
     return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1).trimEnd()}…` : title;
 };
 
+// Mimi must not create a second deck with a name the user already has: «Школа» → «Школа 2».
+// shortcut: only the 500 most recent decks are checked (listDeckTitles cap), and two
+// simultaneous creates can still pick the same number; upgrade to a DB unique index if it matters.
+const uniqueTitle = async (userId: string, title: string): Promise<string> => {
+    const taken = new Set((await decksRepo.listDeckTitles(userId)).map((d) => compareKey(d.title)));
+    let candidate = title;
+    for (let n = 2; taken.has(compareKey(candidate)); n += 1) {
+        const suffix = ` ${n}`;
+        candidate = `${title.slice(0, TITLE_MAX - suffix.length).trimEnd()}${suffix}`;
+    }
+    return candidate;
+};
+
 // Friendly fallback title when the user gave words but no title hint.
 const titleForWordList = (input: CreateDeckToolInput, targetLanguage: string): string => {
     if (input.topic) {
@@ -466,11 +479,14 @@ const buildDeck = async (
     const { words, topic, sourceLanguage, targetLanguage } = p;
     if (words) {
         const enriched = await aiService.fillCards({ words, sourceLanguage, targetLanguage });
-        const title = resolveTitle({
-            modelTitle: input.title,
-            userMessage: ctx.userMessage,
-            fallback: titleForWordList(input, targetLanguage),
-        });
+        const title = await uniqueTitle(
+            userId,
+            resolveTitle({
+                modelTitle: input.title,
+                userMessage: ctx.userMessage,
+                fallback: titleForWordList(input, targetLanguage),
+            }),
+        );
         ctx.signal?.throwIfAborted();
         const persisted = await persistDeck(
             userId,
@@ -500,11 +516,14 @@ const buildDeck = async (
         ...(input.count ? { count: input.count } : {}),
     });
     ctx.signal?.throwIfAborted();
-    const topicTitle = resolveTitle({
-        modelTitle: input.title ?? draft.title,
-        userMessage: ctx.userMessage,
-        fallback: DEFAULT_TITLE_FALLBACK,
-    });
+    const topicTitle = await uniqueTitle(
+        userId,
+        resolveTitle({
+            modelTitle: input.title ?? draft.title,
+            userMessage: ctx.userMessage,
+            fallback: DEFAULT_TITLE_FALLBACK,
+        }),
+    );
     const persisted = await persistDeck(
         userId,
         {

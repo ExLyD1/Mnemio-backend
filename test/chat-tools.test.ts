@@ -698,6 +698,28 @@ describe('chat.tools / deck title', () => {
         const title = (mDecks.create.mock.calls[0]?.[1] as { title: string }).title;
         expect(title.length).toBeLessThanOrEqual(120);
     });
+
+    it.each([
+        [[], 'Школа'],
+        [['Школа'], 'Школа 2'],
+        [['школа!', 'Школа 2'], 'Школа 3'],
+    ])('with existing decks %j the new deck is called %s', async (existing, expected) => {
+        mDecksRepo.listDeckTitles.mockResolvedValue(
+            existing.map((title, i) => ({ id: `d${i}`, title })) as never,
+        );
+        mAi.fillCards.mockResolvedValue({
+            cards: [{ word: 'hola', definition: 'hello' }],
+            meta: { requested: 1, enriched: 1, durationMs: 0, tokensInput: 0, tokensOutput: 0 },
+        } as never);
+
+        await runCreateDeck('u1', { words: ['hola'], title: 'Школа' }, UK_ES, 'en');
+
+        expect(mDecks.create).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({ title: expected }),
+            expect.anything(),
+        );
+    });
 });
 
 describe('chat.tools / what the user is charged', () => {
