@@ -69,7 +69,7 @@ const subscriptionEvent = (overrides: Record<string, unknown> = {}) => ({
                     billing_cycle: { interval: 'month', frequency: 1 },
                     trial_period: { interval: 'day', frequency: 7 },
                     tax_mode: 'account_setting',
-                    unit_price: { amount: '1000', currency_code: 'USD' },
+                    unit_price: { amount: '800', currency_code: 'USD' },
                     unit_price_overrides: [],
                     quantity: { minimum: 1, maximum: 100 },
                     status: 'active',
@@ -125,6 +125,22 @@ vi.mock('../src/services/analytics.service.js', () => ({
     setUserProps: vi.fn(),
 }));
 
+// Signature checking stays real; only the follow-up "what does this customer
+// really pay" lookup is faked, so no test ever calls Paddle's servers.
+const getSubMock = vi.hoisted(() => vi.fn());
+vi.mock('@paddle/paddle-node-sdk', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@paddle/paddle-node-sdk')>();
+    return {
+        ...actual,
+        Paddle: class extends actual.Paddle {
+            constructor(...args: ConstructorParameters<typeof actual.Paddle>) {
+                super(...args);
+                Object.assign(this, { subscriptions: { get: getSubMock } });
+            }
+        },
+    };
+});
+
 describe('billing webhook', () => {
     beforeEach(() => {
         vi.resetModules();
@@ -132,6 +148,11 @@ describe('billing webhook', () => {
         findUniqueSubMock.mockReset();
         findUniqueSubMock.mockResolvedValue(null);
         recordedEvents.clear();
+        // Ukrainian customer: base $8, country price $5 + 20% VAT = $6.00 per period.
+        getSubMock.mockReset();
+        getSubMock.mockResolvedValue({
+            recurringTransactionDetails: { totals: { total: '600', currencyCode: 'USD' } },
+        });
         process.env.PADDLE_API_KEY = 'pdl_sdbx_test_key';
         process.env.PADDLE_WEBHOOK_SECRET = SECRET;
         process.env.PADDLE_ENV = 'sandbox';
@@ -185,6 +206,41 @@ describe('billing webhook', () => {
             paddleProductId: 'pro_test',
             cancelAtPeriodEnd: false,
         });
+    });
+
+    it('stores what the customer really pays, not the base price', async () => {
+        const billing = await import('../src/services/billing.service.js');
+        const body = JSON.stringify(subscriptionEvent());
+
+        await billing.handleWebhookEvent(body, signPayload(body));
+
+        const arg = upsertMock.mock.calls[0]![0] as { create: Record<string, unknown> };
+        expect(arg.create).toMatchObject({ priceAmount: 600, currency: 'USD' });
+        expect(getSubMock).toHaveBeenCalledWith('sub_01htest000000000000000000', {
+            include: ['recurring_transaction_details'],
+        });
+    });
+
+    it('falls back to the base price when Paddle gives no recurring total', async () => {
+        getSubMock.mockResolvedValue({ recurringTransactionDetails: null });
+        const billing = await import('../src/services/billing.service.js');
+        const body = JSON.stringify(subscriptionEvent());
+
+        await billing.handleWebhookEvent(body, signPayload(body));
+
+        const arg = upsertMock.mock.calls[0]![0] as { create: Record<string, unknown> };
+        expect(arg.create).toMatchObject({ priceAmount: 800, currency: 'USD' });
+    });
+
+    it('fails the webhook (so Paddle retries) when the price lookup fails', async () => {
+        getSubMock.mockRejectedValue(new Error('network down'));
+        const billing = await import('../src/services/billing.service.js');
+        const body = JSON.stringify(subscriptionEvent());
+
+        await expect(billing.handleWebhookEvent(body, signPayload(body))).rejects.toThrow();
+
+        expect(upsertMock).not.toHaveBeenCalled();
+        expect(recordedEvents.size).toBe(0);
     });
 
     it('is idempotent — a redelivered event applies exactly once', async () => {

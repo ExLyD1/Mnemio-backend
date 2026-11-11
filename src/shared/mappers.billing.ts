@@ -92,10 +92,32 @@ type PaddleSubscription = Pick<
     SubscriptionNotification,
     'id' | 'status' | 'customerId' | 'items' | 'currentBillingPeriod' | 'scheduledChange'
 >;
+// unitPrice is the BASE price: it ignores country overrides and tax. So prefer the
+// recurring total; if we have none, keep the stored amount while the price id is
+// unchanged (cancel/pause must not overwrite $6 with the base $8).
+const recurringPrice = (
+    price: { id: string; unitPrice?: { amount: string; currencyCode: string } | null },
+    previous: SubscriptionRow | null,
+    recurring?: { total: string; currencyCode: string } | null,
+) => {
+    if (recurring) {
+        return { priceAmount: Number(recurring.total), currency: recurring.currencyCode };
+    }
+    if (previous?.paddlePriceId === price.id && previous.priceAmount !== null) {
+        return { priceAmount: previous.priceAmount, currency: previous.currency };
+    }
+    return {
+        priceAmount: price.unitPrice ? Number(price.unitPrice.amount) : null,
+        currency: price.unitPrice?.currencyCode ?? null,
+    };
+};
 export const subscriptionData = (
     sub: PaddleSubscription,
     userId: string,
     previous: SubscriptionRow | null,
+    // What the customer really pays per period (after country price, incl. tax).
+    // Only the webhook path fetches it; other callers pass nothing.
+    recurring?: { total: string; currencyCode: string } | null,
 ): UpsertSubscriptionData | null => {
     const item = sub.items[0];
     if (!item?.price?.id) {
@@ -125,8 +147,7 @@ export const subscriptionData = (
         scheduledChangeAt: scheduled?.effectiveAt ? new Date(scheduled.effectiveAt) : null,
         scheduledResumeAt: scheduled?.resumeAt ? new Date(scheduled.resumeAt) : null,
         trialEnd: item.trialDates?.endsAt ? new Date(item.trialDates.endsAt) : null,
-        priceAmount: item.price.unitPrice ? Number(item.price.unitPrice.amount) : null,
-        currency: item.price.unitPrice?.currencyCode ?? null,
+        ...recurringPrice(item.price, previous, recurring),
         ...(sub.status !== 'past_due' ? clearedPastDue : {}),
         ...(previous?.scheduledPlan === plan ? { scheduledPlan: null } : {}),
     };

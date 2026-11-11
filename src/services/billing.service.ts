@@ -243,7 +243,7 @@ export const previewPlanChange = async (userId: string, input: ChangePlanInput) 
     return {
         ...input,
         newPrice: {
-            amount: lowestUnitToMajor(unit?.amount ?? recurring?.total, currency),
+            amount: lowestUnitToMajor(recurring?.total ?? unit?.amount, currency),
             currency,
         },
         credit: {
@@ -415,10 +415,21 @@ type AnalyticsEmit = DeferredEmit;
 
 type Tx = subscriptionRepo.Tx;
 
+type Recurring = { total: string; currencyCode: string } | null;
+
+// Asked of Paddle BEFORE the DB transaction opens, so a slow call never holds it.
+const fetchRecurring = async (paddle: Paddle, subId: string): Promise<Recurring> => {
+    const sub = await provider(() =>
+        paddle.subscriptions.get(subId, { include: ['recurring_transaction_details'] }),
+    );
+    const totals = sub.recurringTransactionDetails?.totals;
+    return totals ? { total: totals.total, currencyCode: totals.currencyCode } : null;
+};
+
 const handleSubscriptionUpsert = async (
     tx: Tx,
     sub: SubscriptionNotification,
-    ctx: { isCreated: boolean; occurredAt: string },
+    ctx: { isCreated: boolean; occurredAt: string; recurring: Recurring },
 ): Promise<AnalyticsEmit[]> => {
     const item = sub.items[0];
     const priceId = item?.price?.id;
@@ -432,7 +443,7 @@ const handleSubscriptionUpsert = async (
     }
 
     const previous = await subscriptionRepo.findInTransaction(tx, userId);
-    const data = subscriptionData(sub, userId, previous);
+    const data = subscriptionData(sub, userId, previous, ctx.recurring);
     if (!data) {
         return [];
     }
@@ -466,10 +477,7 @@ const handleSubscriptionUpsert = async (
         emits.push(() => analytics.setUserProps(userId, { plan: 'premium', is_ever_paid: true }));
     } else if (previous?.status === 'trialing' && sub.status === 'active') {
         // trialing → active is the trial converting into a paid term.
-        const price = lowestUnitToMajor(
-            item.price.unitPrice?.amount,
-            item.price.unitPrice?.currencyCode ?? 'USD',
-        );
+        const price = lowestUnitToMajor(row.priceAmount ?? undefined, row.currency ?? 'USD');
         emits.push(() =>
             analytics.track(userId, 'trial_converted', { billing_plan: billingPlan, price }),
         );
@@ -482,7 +490,7 @@ const handleSubscriptionCanceled = async (
     sub: SubscriptionNotification,
     occurredAt: string,
 ): Promise<AnalyticsEmit[]> => {
-    await handleSubscriptionUpsert(tx, sub, { isCreated: false, occurredAt });
+    await handleSubscriptionUpsert(tx, sub, { isCreated: false, occurredAt, recurring: null });
 
     const userId = await resolveUserId(sub.customData, sub.customerId);
     if (!userId) {
@@ -663,6 +671,12 @@ export const handleWebhookEvent = async (
         return [];
     }
 
+    const isUpsert =
+        event.eventType.startsWith('subscription.') && event.eventType !== 'subscription.canceled';
+    const recurring = isUpsert
+        ? await fetchRecurring(paddle, (event.data as SubscriptionNotification).id)
+        : null;
+
     try {
         return await subscriptionRepo.transaction(async (tx): Promise<AnalyticsEmit[]> => {
             // Inside the transaction: the primary-key conflict on a concurrent
@@ -674,6 +688,7 @@ export const handleWebhookEvent = async (
                     return handleSubscriptionUpsert(tx, event.data as SubscriptionNotification, {
                         isCreated: true,
                         occurredAt: event.occurredAt,
+                        recurring,
                     });
                 case 'subscription.activated':
                 case 'subscription.trialing':
@@ -684,6 +699,7 @@ export const handleWebhookEvent = async (
                     return handleSubscriptionUpsert(tx, event.data, {
                         isCreated: false,
                         occurredAt: event.occurredAt,
+                        recurring,
                     });
                 case 'subscription.canceled':
                     return handleSubscriptionCanceled(tx, event.data, event.occurredAt);

@@ -231,7 +231,7 @@ type SubscriptionDto = {
         effectiveAt: string;
         resumeAt: string | null;
     } | null;
-    price: Money | null;
+    price: Money | null; // what the customer pays per period: country price, incl. tax (not the base list price)
     paymentMethod: {
         brand: string;
         last4: string;
@@ -2216,7 +2216,7 @@ The backend processes:
 | Paddle event | Effect |
 |---|---|
 | `subscription.created` | Upsert subscription row (→ `trialing`/`active`) |
-| `subscription.activated` / `.trialing` / `.updated` / `.paused` / `.resumed` | Update status, plan, period, scheduled change, price and cancelAtPeriodEnd; clear failure totals when status leaves past_due. |
+| `subscription.activated` / `.trialing` / `.updated` / `.paused` / `.resumed` | Fetch the real recurring total from Paddle first (a failed fetch fails the webhook so Paddle retries). Update status, plan, period, scheduled change, price and cancelAtPeriodEnd; clear failure totals when status leaves past_due. |
 | `subscription.canceled` | Persist status, scheduled change, price and period; clear past-due fields. |
 | `transaction.completed` | Revenue analytics, captured card, clear decline/past-due fields. No receipt email. |
 | `transaction.payment_failed` | Store eligible renewal/past-due transaction totals, failure date and error code; no status change or email. |

@@ -22,6 +22,7 @@ const sdk = vi.hoisted(() => {
             pause: vi.fn(),
             resume: vi.fn(),
             update: vi.fn(),
+            get: vi.fn(),
             previewUpdate: vi.fn(),
             getPaymentMethodChangeTransaction: vi.fn(),
         },
@@ -93,7 +94,7 @@ const paddleSub = (over: Record<string, unknown> = {}) => ({
             price: {
                 id: 'pri_monthly',
                 productId: 'pro_premium',
-                unitPrice: { amount: '1000', currencyCode: 'USD' },
+                unitPrice: { amount: '800', currencyCode: 'USD' },
                 quantity: { minimum: 1, maximum: 100 },
                 billingCycle: { interval: 'month', frequency: 1 },
             },
@@ -114,7 +115,7 @@ const seedSubscription = (over: Record<string, unknown> = {}) =>
             plan: 'monthly',
             currentPeriodStart: new Date(start),
             currentPeriodEnd: new Date(end),
-            priceAmount: 1000,
+            priceAmount: 800,
             currency: 'USD',
             ...over,
         },
@@ -142,7 +143,7 @@ const apiTransaction = (over: Record<string, unknown> = {}) => ({
     items: paddleSub().items,
     payments: [],
     details: {
-        totals: { total: '1000', grandTotal: '1000', currencyCode: 'USD' },
+        totals: { total: '800', grandTotal: '800', currencyCode: 'USD' },
         taxRatesUsed: [],
         lineItems: [],
     },
@@ -231,12 +232,13 @@ beforeEach(async () => {
     sdk.transactions.get.mockResolvedValue(apiTransaction());
     sdk.transactions.getInvoicePDF.mockResolvedValue({ url: 'https://paddle.test/invoice.pdf' });
     sdk.transactions.list.mockReturnValue({ next: vi.fn().mockResolvedValue([apiTransaction()]) });
+    sdk.subscriptions.get.mockResolvedValue({ recurringTransactionDetails: null });
     sdk.subscriptions.previewUpdate.mockResolvedValue({
-        items: [{ price: { unitPrice: { amount: '9600', currencyCode: 'USD' } } }],
+        items: [{ price: { unitPrice: { amount: '8000', currencyCode: 'USD' } } }],
         currencyCode: 'USD',
         nextBilledAt: end,
-        immediateTransaction: { details: { totals: { grandTotal: '9000', currencyCode: 'USD' } } },
-        updateSummary: { credit: { amount: '600', currencyCode: 'USD' } },
+        immediateTransaction: { details: { totals: { grandTotal: '7500', currencyCode: 'USD' } } },
+        updateSummary: { credit: { amount: '500', currencyCode: 'USD' } },
     });
 });
 afterAll(async () => {
@@ -628,9 +630,9 @@ describe('billing management routes', () => {
             expect(res.json()).toEqual({
                 plan: 'annual',
                 when,
-                newPrice: { amount: 96, currency: 'USD' },
-                credit: { amount: 6, currency: 'USD' },
-                dueToday: { amount: when === 'now' ? 90 : 0, currency: 'USD' },
+                newPrice: { amount: 80, currency: 'USD' },
+                credit: { amount: 5, currency: 'USD' },
+                dueToday: { amount: when === 'now' ? 75 : 0, currency: 'USD' },
                 nextBilledAt: end,
             });
             expect(sdk.subscriptions.previewUpdate).toHaveBeenCalledWith('sub_own', {
@@ -647,13 +649,13 @@ describe('billing management routes', () => {
             await seedSubscription();
             const annual = paddleSub();
             annual.items[0]!.price.id = 'pri_annual';
-            annual.items[0]!.price.unitPrice.amount = '9600';
+            annual.items[0]!.price.unitPrice.amount = '8000';
             sdk.subscriptions.update.mockResolvedValueOnce(annual);
             const res = await request('POST', '/billing/change-plan', { plan: 'annual', when });
             expect(res.statusCode).toBe(200);
             expect(res.json()).toMatchObject({
                 plan: 'annual',
-                price: { amount: 96, currency: 'USD' },
+                price: { amount: 80, currency: 'USD' },
                 scheduledPlanChange: when === 'renewal' ? 'annual' : null,
             });
             expect(sdk.subscriptions.update).toHaveBeenCalledWith('sub_own', {
@@ -702,10 +704,10 @@ describe('billing management routes', () => {
             currencyCode: 'USD',
             nextBilledAt: null,
             immediateTransaction: null,
-            nextTransaction: { details: { totals: { total: '9600', currencyCode: 'USD' } } },
+            nextTransaction: { details: { totals: { total: '8000', currencyCode: 'USD' } } },
             updateSummary: {
                 credit: { amount: '-100', currencyCode: 'USD' },
-                result: { action: 'charge', amount: '9500' },
+                result: { action: 'charge', amount: '7900' },
             },
         });
         const res = await request('POST', '/billing/change-plan/preview', {
@@ -715,11 +717,44 @@ describe('billing management routes', () => {
         expect(res.json()).toEqual({
             plan: 'annual',
             when: 'now',
-            newPrice: { amount: 96, currency: 'USD' },
+            newPrice: { amount: 80, currency: 'USD' },
             credit: { amount: 1, currency: 'USD' },
-            dueToday: { amount: 95, currency: 'USD' },
+            dueToday: { amount: 79, currency: 'USD' },
             nextBilledAt: null,
         });
+    });
+    it('previews the real regional charge, not the $8 base price', async () => {
+        await seedSubscription();
+        // Ukraine yearly: base $80, country price $50 + 20% VAT => $60.00 per year.
+        sdk.subscriptions.previewUpdate.mockResolvedValueOnce({
+            items: [{ price: { unitPrice: { amount: '8000', currencyCode: 'USD' } } }],
+            currencyCode: 'USD',
+            nextBilledAt: null,
+            immediateTransaction: null,
+            recurringTransactionDetails: { totals: { total: '6000', currencyCode: 'USD' } },
+            updateSummary: { credit: { amount: '0', currencyCode: 'USD' } },
+        });
+        const res = await request('POST', '/billing/change-plan/preview', {
+            plan: 'annual',
+            when: 'renewal',
+        });
+        expect(res.json().newPrice).toEqual({ amount: 60, currency: 'USD' });
+    });
+    it('stores the regional charge from a webhook and keeps it through a cancel', async () => {
+        await seedSubscription();
+        sdk.subscriptions.get.mockResolvedValueOnce({
+            recurringTransactionDetails: { totals: { total: '600', currencyCode: 'USD' } },
+        });
+        await deliver('subscription.updated', paddleSub());
+        expect(await row()).toMatchObject({ priceAmount: 600, currency: 'USD' });
+        // A user action returns the base price ($8); the stored $6 must survive.
+        sdk.subscriptions.cancel.mockResolvedValueOnce(
+            paddleSub({ scheduledChange: { action: 'cancel', effectiveAt: end, resumeAt: null } }),
+        );
+        expect((await request('POST', '/billing/cancel', { reason: 'other' })).statusCode).toBe(
+            200,
+        );
+        expect(await row()).toMatchObject({ priceAmount: 600, cancelAtPeriodEnd: true });
     });
     it('does not persist an action response for a different Paddle subscription', async () => {
         const before = await seedSubscription();
@@ -774,7 +809,7 @@ describe('billing management routes', () => {
         ]);
         expect(res.json().items[3].hasPdf).toBe(false);
         expect(res.json().items[0]).toMatchObject({
-            amount: 10,
+            amount: 8,
             currency: 'USD',
             plan: 'monthly',
             hasPdf: true,
@@ -1072,7 +1107,7 @@ describe('billing notifications and trial reminders', () => {
             );
             expect(await row()).toMatchObject({
                 status,
-                pastDueAmount: 1000,
+                pastDueAmount: 800,
                 pastDueCurrency: 'USD',
                 pastDueAt: new Date(start),
                 declineReason: 'declined',
@@ -1088,7 +1123,7 @@ describe('billing notifications and trial reminders', () => {
         );
         expect(await row()).toMatchObject({
             status: 'active',
-            pastDueAmount: 1000,
+            pastDueAmount: 800,
             pastDueAt: new Date(start),
         });
         expect(mail).not.toHaveBeenCalled();
@@ -1145,7 +1180,7 @@ describe('billing notifications and trial reminders', () => {
         await seedSubscription({
             status: 'past_due',
             pastDueAt: new Date(start),
-            pastDueAmount: 1000,
+            pastDueAmount: 800,
             pastDueCurrency: 'USD',
             scheduledPlan: 'annual',
         });
@@ -1158,11 +1193,11 @@ describe('billing notifications and trial reminders', () => {
             scheduledChange: { action: 'resume', effectiveAt: end, resumeAt: null },
         });
         sub.items[0]!.price.id = 'pri_annual';
-        sub.items[0]!.price.unitPrice.amount = '9600';
+        sub.items[0]!.price.unitPrice.amount = '8000';
         await deliver(type, sub);
         expect(await row()).toMatchObject({
             plan: 'annual',
-            priceAmount: 9600,
+            priceAmount: 8000,
             currency: 'USD',
             scheduledChangeAction: 'resume',
             scheduledChangeAt: new Date(end),
@@ -1188,7 +1223,7 @@ describe('billing notifications and trial reminders', () => {
     it('records a captured card and clears decline and past-due fields without a receipt email', async () => {
         await seedSubscription({
             declineReason: 'declined',
-            pastDueAmount: 1000,
+            pastDueAmount: 800,
             pastDueCurrency: 'USD',
             pastDueAt: new Date(start),
         });
@@ -1228,7 +1263,7 @@ describe('billing notifications and trial reminders', () => {
         });
         expect(analytics.track).toHaveBeenCalledWith(userId, 'subscription_renewed', {
             billing_plan: 'monthly',
-            price: 10,
+            price: 8,
         });
         expect(mail).not.toHaveBeenCalled();
     });
@@ -1244,7 +1279,7 @@ describe('billing notifications and trial reminders', () => {
         expect(await row()).toMatchObject({
             status: 'active',
             declineReason: 'declined',
-            pastDueAmount: 1000,
+            pastDueAmount: 800,
             pastDueCurrency: 'USD',
             pastDueAt: new Date(start),
         });
@@ -1280,7 +1315,7 @@ describe('billing notifications and trial reminders', () => {
         await seedSubscription();
         await deliver('transaction.past_due', apiTransaction({ status: 'past_due' }));
         expect(await row()).toMatchObject({
-            pastDueAmount: 1000,
+            pastDueAmount: 800,
             pastDueCurrency: 'USD',
             pastDueAt: new Date(start),
             declineReason: null,
@@ -1306,11 +1341,11 @@ describe('billing notifications and trial reminders', () => {
             id: 'adj_test',
             items: [],
             totals: {
-                subtotal: '1000',
+                subtotal: '800',
                 tax: '0',
-                total: '1000',
+                total: '800',
                 fee: '0',
-                earnings: '1000',
+                earnings: '800',
                 currencyCode: 'USD',
             },
         });
@@ -1332,7 +1367,7 @@ describe('billing notifications and trial reminders', () => {
         expect((await row()).trialEndingEmailSentAt).toBeInstanceOf(Date);
         expect(mail.mock.calls[0]![0]).toMatchObject({
             subject: expect.stringMatching(/^Your free trial ends /),
-            text: expect.stringContaining('$10.00'),
+            text: expect.stringContaining('$8.00'),
             html: expect.stringContaining('Mnemio'),
         });
         expect(registerTrialEndingJob(app.log)).toBeUndefined();
